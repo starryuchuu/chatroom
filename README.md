@@ -1,5 +1,7 @@
 # 简易聊天程序项目说明
 
+[For English users, please refer to the README_en.md](./README_en.md)
+
 ## 一、项目概述
 本项目实现了一个简易聊天程序，包括服务端和客户端两个部分。  
 - **服务端（server.py）**：负责处理用户注册、登录、聊天记录存储、好友申请及群聊/私聊消息转发。  
