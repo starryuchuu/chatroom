@@ -21,6 +21,10 @@ user_friends = {}            # 储存每个用户的好友集合：{username: se
 KEY = b'\xe5\xc6\xba\xd9?x\\f(\x9f\x02B6\x9e\xdd\xd9'  # 16字节AES密钥，保证加密安全
 BLOCK_SIZE = 16              # AES算法要求的数据块大小为16字节
 
+# 添加AI相关常量和全局变量
+AI_FRIEND_NAME = "AI_Bot"
+ai_conversations = {}  # 存储每个用户与AI之间的对话历史
+
 # 辅助函数：从socket中接收n个字节数据
 def recvall(sock, n):
     """
@@ -289,6 +293,31 @@ def get_sock_by_username(username):
             return sock
     return None
 
+def get_ai_response(username, user_message):
+    # 初始化对话历史，加入系统提示词
+    if username not in ai_conversations:
+        ai_conversations[username] = [{"role": "system", "content": "You are a helpful assistant."}]
+    ai_conversations[username].append({"role": "user", "content": user_message})
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key="<your_api_key>",
+        )
+        completion = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": "openrouter.ai",
+                "X-Title": "openrouter.ai",
+            },
+            model="deepseek/deepseek-r1-0528:free",
+            messages=ai_conversations[username],
+        )
+        reply = completion.choices[0].message.content
+    except Exception as e:
+        reply = "抱歉，AI服务暂时不可用。"
+    ai_conversations[username].append({"role": "assistant", "content": reply})
+    return reply
+
 def handle_client(client_sock, addr):
     """
     处理单个客户端连接，负责认证、消息收发及协议处理。
@@ -323,9 +352,14 @@ def handle_client(client_sock, addr):
             if validate_user(username, password):
                 usernames[client_sock] = username   # 记录socket对应的用户名
                 user_friends[username] = load_friends(username)  # 从数据库加载好友列表
+                # 自动添加AI好友到好友列表（不会存入数据库）
+                if AI_FRIEND_NAME not in user_friends[username]:
+                    user_friends[username].add(AI_FRIEND_NAME)
                 send_msg(client_sock, '__LOGIN_SUCCESS__')
                 logging.info(f"User {username} logged in")
-                send_history(client_sock, username)  # 登录后发送历史消息记录
+                send_history(client_sock, username)  # 发送历史消息记录
+                # 发送添加AI好友指令给客户端
+                send_msg(client_sock, f'__ADD_AI_FRIEND__:{AI_FRIEND_NAME}')
             else:
                 send_msg(client_sock, '__LOGIN_FAIL__:用户名或密码错误')
                 logging.error(f"Login failed for {username}: 用户名或密码错误")
@@ -392,23 +426,32 @@ def handle_client(client_sock, addr):
                 _, to_user, encrypted_content = msg.split(':', 2)
                 if to_user == usernames[client_sock]:
                     continue  # 不允许发送给自己
-                if to_user in user_friends[usernames[client_sock]]:
-                    to_sock = get_sock_by_username(to_user)
-                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    # 解密、再加密，以便发送
+                now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                if to_user == AI_FRIEND_NAME:
                     plaintext = decrypt_message(encrypted_content)
-                    encrypted_msg = encrypt_message(plaintext)
-                    message_to_send = f'__PRIVATE__:{usernames[client_sock]}:{encrypted_msg}:__TIME__:{now}'
-                    # 发送给接收方
-                    if to_sock:
-                        send_msg(to_sock, message_to_send)
-                    # 也回显给自己
-                    from_sock = get_sock_by_username(usernames[client_sock])
-                    if from_sock:
-                        send_msg(from_sock, message_to_send)
-                    # 保存私聊历史消息
-                    save_message('private', usernames[client_sock], to_user, plaintext, now)
-                continue
+                    # 先将用户的消息回显给客户端
+                    user_echo = f'__PRIVATE__:{usernames[client_sock]}:{encrypt_message(plaintext)}:__TIME__:{now}'
+                    send_msg(client_sock, user_echo)
+                    # 调用AI接口获取回复
+                    ai_reply = get_ai_response(usernames[client_sock], plaintext)
+                    encrypted_reply = encrypt_message(ai_reply)
+                    ai_msg = f'__PRIVATE__:{AI_FRIEND_NAME}:{encrypted_reply}:__TIME__:{now}'
+                    send_msg(client_sock, ai_msg)
+                    # 保存双方的对话历史
+                    save_message('private', usernames[client_sock], AI_FRIEND_NAME, plaintext, now)
+                    save_message('private', AI_FRIEND_NAME, usernames[client_sock], ai_reply, now)
+                else:
+                    if to_user in user_friends[usernames[client_sock]]:
+                        to_sock = get_sock_by_username(to_user)
+                        plaintext = decrypt_message(encrypted_content)
+                        encrypted_msg = encrypt_message(plaintext)
+                        message_to_send = f'__PRIVATE__:{usernames[client_sock]}:{encrypted_msg}:__TIME__:{now}'
+                        if to_sock:
+                            send_msg(to_sock, message_to_send)
+                        from_sock = get_sock_by_username(usernames[client_sock])
+                        if from_sock:
+                            send_msg(from_sock, message_to_send)
+                        save_message('private', usernames[client_sock], to_user, plaintext, now)
             # 处理群聊消息协议，广播给所有在线用户
             if msg.startswith('__GROUP__'):
                 _, encrypted_content = msg.split(':', 1)
@@ -425,7 +468,6 @@ def handle_client(client_sock, addr):
                 # 保存群聊历史消息
                 save_message('group', from_user, None, plaintext, now)
                 continue
-            # ...existing code...
     except Exception as e:
         logging.exception("Exception in client handler")
     finally:
