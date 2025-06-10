@@ -111,7 +111,7 @@ class ChatClient:
             - 添加用户名、密码输入框，以及登录与注册按钮。
         """
         self.clear_window()             # 清除已有控件
-        self.master.geometry('800x530')   # 设置窗口尺寸
+        self.master.geometry('950x530')   # 设置窗口尺寸
         self.master.configure(bg="#ffffff")  # 背景色设为白色
         login_frame = tk.Frame(self.master, bg="#ffffff", bd=0, highlightthickness=0)
         login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)  # 将框架居中显示
@@ -162,7 +162,7 @@ class ChatClient:
         self.friends_listbox.pack(fill=tk.Y, expand=True)
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
         tk.Button(left_frame, text="添加好友", command=self.add_friend).pack(pady=5)
-        self.friends_listbox.insert(0, "[全体群组]")  # 默认显示“全体群组”
+        self.friends_listbox.insert(0, "[全体群组]")
         online_frame = tk.Frame(self.master)
         online_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
         tk.Label(online_frame, text="在线用户").pack(pady=5)
@@ -170,17 +170,30 @@ class ChatClient:
         self.online_listbox.pack(fill=tk.Y, expand=True)
         right_frame = tk.Frame(self.master)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.chat_canvas = tk.Canvas(right_frame, bg="#f5f5f5", highlightthickness=0, width=520)
-        self.chat_canvas.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
-        self.chat_scrollbar = tk.Scrollbar(right_frame, orient="vertical", command=self.chat_canvas.yview)
+        # 聊天显示区域
+        chat_display_frame = tk.Frame(right_frame)
+        chat_display_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.chat_canvas = tk.Canvas(chat_display_frame, bg="#f5f5f5", highlightthickness=0)
+        self.chat_canvas.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+        self.chat_scrollbar = tk.Scrollbar(chat_display_frame, orient="vertical", command=self.chat_canvas.yview)
         self.chat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.chat_canvas.configure(yscrollcommand=self.chat_scrollbar.set)
         self.chat_frame = tk.Frame(self.chat_canvas, bg="#f5f5f5")
-        self.chat_canvas.create_window((0, 0), window=self.chat_frame, anchor="nw", width=500)
+        # 创建window时去掉固定宽度，绑定<Configure>事件更新宽度
+        self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_frame, anchor="nw")
         self.chat_frame.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
-        self.msg_entry = tk.Entry(right_frame, width=50)
-        self.msg_entry.pack(side=tk.LEFT, padx=10, pady=5)
-        tk.Button(right_frame, text="发送", command=self.send_msg).pack(side=tk.LEFT, padx=5)
+        self.chat_canvas.bind("<Configure>", lambda e: self.chat_canvas.itemconfig(self.chat_window, width=e.width))
+        # 鼠标滚轮绑定
+        self.chat_canvas.bind_all("<MouseWheel>", lambda event: self.chat_canvas.yview_scroll(int(-1*(event.delta/120)), "units"))
+        # 输入区域：位于聊天显示区域下方，使用Text控件以支持多行输入
+        input_frame = tk.Frame(right_frame)
+        input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        # 修改此处由Entry改为Text，设置高度为2
+        self.msg_entry = tk.Text(input_frame, height=2)
+        self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(input_frame, text="发送", command=self.send_msg).pack(side=tk.LEFT, padx=5)
+        # 绑定Enter键事件：Enter发送消息，Ctrl+Enter换行
+        self.msg_entry.bind("<Return>", self.on_message_entry_key)
         # 初始化聊天数据结构：保存当前聊天对象、好友列表、私聊及群聊记录
         self.current_friend = None
         self.friends = []
@@ -408,30 +421,33 @@ class ChatClient:
 
     def send_msg(self):
         """
-        发送消息操作。
-        功能:
-            从消息输入框读取文本，
-            判断当前聊天对象是群聊或私聊，
-            加密消息后发送至服务器，并清空输入框。
+        修改发送消息操作：从Text控件获取消息内容，发送后清空输入区域。
         """
-        msg = self.msg_entry.get().strip()
+        msg = self.msg_entry.get("1.0", "end-1c").strip()
         if msg:
             if self.current_friend == "[全体群组]":
                 send_text = f'__GROUP__:{encrypt_message(msg)}'
                 try:
                     send_msg(self.sock, send_text)
-                    self.msg_entry.delete(0, tk.END)
                 except:
                     messagebox.showerror("发送失败", "群聊消息发送失败")
             elif self.current_friend:
                 send_text = f'__PRIVATE__:{self.current_friend}:{encrypt_message(msg)}'
                 try:
                     send_msg(self.sock, send_text)
-                    self.msg_entry.delete(0, tk.END)
                 except:
                     messagebox.showerror("发送失败", "消息发送失败")
             else:
                 messagebox.showwarning("提示", "请选择好友或群组进行聊天")
+        self.msg_entry.delete("1.0", tk.END)
+
+    def on_message_entry_key(self, event):
+        # 如果按下Ctrl键（event.state中含Ctrl位0x4），则插入换行；否则发送消息
+        if event.state & 0x4:
+            self.msg_entry.insert(tk.INSERT, "\n")
+        else:
+            self.send_msg()
+        return "break"
 
     def update_online_users(self, user_list):
         """
@@ -459,6 +475,13 @@ class ChatClient:
                 if msg is None:
                     logging.info("Server closed connection")
                     break
+                if msg.startswith('__ADD_AI_FRIEND__'):
+                    _, ai_friend = msg.split(':', 1)
+                    if ai_friend not in self.friends:
+                        self.friends.append(ai_friend)
+                        self.friends_listbox.insert(tk.END, ai_friend)
+                        self.private_chats[ai_friend] = []
+                    continue
                 if msg.startswith('__FRIEND_REQUEST_FAIL__'):
                     self.friend_request_result = False
                     error_msg = msg.split(':', 1)[1]
