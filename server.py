@@ -82,9 +82,11 @@ def encrypt_message(message):
     返回:
         加密后的消息，base64编码的字符串
     """
-    cipher = AES.new(KEY, AES.MODE_ECB)
+    from Crypto.Random import get_random_bytes
+    iv = get_random_bytes(BLOCK_SIZE)
+    cipher = AES.new(KEY, AES.MODE_CBC, iv)
     encrypted = cipher.encrypt(pad(message.encode(), BLOCK_SIZE))
-    return base64.b64encode(encrypted).decode()
+    return base64.b64encode(iv + encrypted).decode()
 
 # 解密消息，使用AES-ECB模式
 def decrypt_message(encrypted_message):
@@ -95,8 +97,10 @@ def decrypt_message(encrypted_message):
     返回:
         解密后的消息字符串
     """
-    cipher = AES.new(KEY, AES.MODE_ECB)
-    decrypted = unpad(cipher.decrypt(base64.b64decode(encrypted_message)), BLOCK_SIZE)
+    decoded_data = base64.b64decode(encrypted_message)
+    iv = decoded_data[:BLOCK_SIZE]
+    cipher = AES.new(KEY, AES.MODE_CBC, iv)
+    decrypted = unpad(cipher.decrypt(decoded_data[BLOCK_SIZE:]), BLOCK_SIZE)
     return decrypted.decode()
 
 # 初始化数据库，创建用户、消息和好友关系表
