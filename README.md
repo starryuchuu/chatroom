@@ -1,5 +1,5 @@
-# 简易聊天室 v1.0.1
-[For English users, please refer to the README_en.md](./README_en.md)
+# 简易聊天室 v1.0.2
+
 ## 项目简介
 本项目实现了一个基于Python的简易聊天室，包含服务端和客户端两部分，支持多用户注册、登录、群聊、私聊、好友管理，并新增AI聊天机器人（AI_Bot）功能。
 
@@ -10,6 +10,7 @@
 - 聊天记录本地持久化，支持历史消息回溯
 - 新增AI_Bot，支持与AI对话
 - 图形化客户端（Tkinter），美观易用
+- 优化聊天界面，改进消息显示和滚动体验
 
 ## 环境依赖
 - Python 3.7及以上
@@ -22,9 +23,9 @@
 
 ## 目录结构
 ```
-chatroom_v1.0.1/
-├── server_v1.0.1.py   # 服务端代码
-├── client_v1.0.1.py   # 客户端代码
+chatroom_v1.0.2/
+├── server_v1.0.2.py   # 服务端代码
+├── client_v1.0.2.py   # 客户端代码
 ├── README_zh.md       # 中文说明
 ├── README_en.md       # English README
 ```
@@ -34,14 +35,14 @@ chatroom_v1.0.1/
 1. 打开命令行，进入项目目录
 2. 运行：
    ```
-   python server_v1.0.1.py
+   python server_v1.0.2.py
    ```
 
 ### 启动客户端
 1. 在另一命令行窗口进入项目目录
 2. 运行：
    ```
-   python client_v1.0.1.py
+   python client_v1.0.2.py
    ```
 
 ## 注意事项
@@ -56,6 +57,11 @@ chatroom_v1.0.1/
 - 数据库异常：请确保有写权限，或检查sqlite3安装
 
 ## Release
+### What's Changed (v1.0.2)
+- 优化客户端聊天界面，改进消息显示逻辑和滚动体验
+- 增强AI服务请求重试机制，提高AI_Bot响应稳定性
+- 代码结构和注释进一步优化，提升可读性
+
 ### What's Changed (v1.0.1)
 - 新增AI_Bot聊天机器人，支持与AI对话
 - 优化好友管理协议，增加失败提示
