@@ -197,7 +197,6 @@ class ChatClient:
         self.chat_container.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
         self.chat_canvas.bind("<Configure>", lambda e: self.chat_canvas.itemconfig(self.chat_window, width=e.width))
         self.chat_canvas.bind_all("<MouseWheel>", lambda event: self.chat_canvas.yview_scroll(int(-1*(event.delta/120)), "units"))
-
         input_frame = tk.Frame(right_frame)
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         self.msg_entry = tk.Text(input_frame, height=2)
@@ -330,7 +329,6 @@ class ChatClient:
             chat_frame = self.chat_frames[friend]
         else:
             chat_frame = self.chat_container
-
         bubble_frame = tk.Frame(chat_frame, bg="#f5f5f5")
         if is_self:
             bubble = tk.Label(bubble_frame, text=msg, bg="#aee1f9", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="e")
