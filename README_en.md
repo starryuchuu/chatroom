@@ -1,70 +1,102 @@
-# Simple Chatroom v1.0.2
-[中文文档请点击这里](./README.md)
+# Encrypted Chat Room
+
+[中文文档](./README.md)
+
 ## Project Overview
-This project implements a simple chatroom based on Python, consisting of server and client components. It supports multiple user registration, login, group chat, private chat, friend management, and introduces an AI chatbot (AI_Bot) feature.
+This project is a secure encrypted chat room system implemented in Python, featuring end-to-end encryption using modern cryptographic techniques (RSA+AES-GCM). The system supports multiple features including user registration, login, group chat, private chat, friend management, and group management. All messages are persisted in SQLite database, and sensitive information (such as passwords) is securely stored using the Argon2 hashing algorithm.
 
 ## Key Features
-- Multi-user registration and login with duplicate login prevention
-- Group and private chat with AES-encrypted message transmission
-- Friend request, response, and management
-- Local persistence of chat history with message retrieval
-- Introduction of AI_Bot for AI conversations
-- Graphical client (Tkinter) for a user-friendly experience
-- Optimized chat interface with improved message display and scrolling experience
+- 🔒 **Security**
+  - End-to-end encrypted communication using RSA for key exchange
+  - AES-GCM mode encryption for all messages
+  - Argon2 algorithm for password hashing
+  - Secure session key management
+
+- 💬 **Social Features**
+  - Support for private and group chat
+  - Friend request and management
+  - Group creation and management
+  - Real-time online status updates
+
+- 💾 **Data Management**
+  - SQLite database persistence
+  - Chat history retrieval
+  - User information management
+  - Group information maintenance
+
+- 🎨 **User Experience**
+  - Clean and intuitive graphical interface
+  - Real-time message notifications
+  - Group member management
+  - User-friendly error handling
+
+- 🛠 **Technical Stack**
+  - Python 3.x
+  - Tkinter (GUI interface)
+  - pycryptodome (Encryption features)
+  - argon2-cffi (Password hashing)
+  - SQLite3 (Data storage)
+  - Built-in modules (socket, threading, datetime, logging, etc.)
+
+## Security Design
+- All messages are encrypted with AES-GCM, session key is dynamically generated per login
+- Session key is securely exchanged using RSA public key encryption between client and server
+- User passwords are stored using Argon2 hash algorithm
+- All user, message, friend, and group info are persisted in SQLite database
 
 ## Environment Requirements
-- Python 3.7 or higher
+- Python 3.12 or higher
 - Required modules:
-  - socket, threading, datetime, sqlite3, hashlib, logging (Built-in with Python)
-  - struct (Message packet handling, built-in)
-  - pycryptodome (AES encryption/decryption, install via `pip install pycryptodome`)
-  - openai (AI chat, install via `pip install openai`, required for AI_Bot functionality)
+  - socket, threading, datetime, sqlite3, hashlib, logging (built-in)
+  - struct, json (built-in)
+  - pycryptodome (AES, RSA encryption/decryption, install via `pip install pycryptodome`)
+  - argon2-cffi (password hashing, install via `pip install argon2-cffi`)
   - Tkinter (GUI, usually built-in, may require separate installation on some systems)
 
 ## Directory Structure
 ```
-chatroom_v1.0.2/
-├── server_v1.0.2.py   # Server code
-├── client_v1.0.2.py   # Client code
-├── README_zh.md       # Chinese documentation
-├── README_en.md       # English README
+chatroom/
+├── server.py         # Server code (group chat/session key/group management/database persistence)
+├── client.py         # Client code (group chat/session key/group management/GUI)
+├── requirements.txt  # Dependency list
+├── README.md         # Chinese documentation
+└── README_en.md      # English README
 ```
 
 ## Running Instructions
-### Starting the Server
-1. Open a command line and navigate to the project directory
-2. Run:
-   ```
-   python server_v1.0.2.py
-   ```
+### 1. Start the server
+```bash
+python server.py
+```
+The server will automatically generate RSA key pair (private_key.pem and public_key.pem) on first startup.
 
-### Starting the Client
-1. Open another command line window and navigate to the project directory
-2. Run:
-   ```
-   python client_v1.0.2.py
-   ```
+### 2. Start the client
+```bash
+python server.py
+```
+
+### 3. Start the client
+```bash
+python client.py
+```
 
 ## Notes
 - The default database file is `chat.db`, ensure read/write permissions
-- All messages are AES-encrypted for security
-- Log information is output to the terminal for debugging purposes
-- AI_Bot requires an API Key configuration (if using online AI services)
+- All messages are AES-GCM encrypted for security
+- Session key is exchanged via RSA public key encryption
+- User passwords are stored using Argon2 hash algorithm
+- Log information is output to the terminal for debugging
 
 ## Common Issues
 - Port occupied: Check if the port is in use or change it
 - Connection failure: Ensure the server is running and the network is operational
 - Database errors: Verify write permissions or check sqlite3 installation
+- Group chat issues: Ensure group members are correct, owner cannot leave group directly
 
-## Release Notes
-### What's Changed (v1.0.2)
-- Optimized client chat interface with improved message display logic and scrolling experience
-- Enhanced AI service request retry mechanism for better AI_Bot response stability
-- Further optimization of code structure and comments for improved readability
-
-### What's Changed (v1.0.1)
-- Introduced AI_Bot chatbot for AI conversations
-- Optimized friend management protocol with failure notifications
-- Improved chat history structure for message retrieval
-- Enhanced client UI details for a better user experience
-- Optimized code structure and comments
+## develop branch highlights
+End-to-end encryption: AES-GCM for messages, session key exchanged via RSA public key
+Password security: Argon2 hash for user passwords
+Group features: group creation, invitation, join, kick, owner management, persistent group info
+All messages use structured JSON protocol
+Robust error handling and logging
+Further optimized code structure and comments for better readability
