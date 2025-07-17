@@ -862,6 +862,12 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group invite from '{inviter}' failed: User '{to_user}' does not exist.")
                         continue
 
+                    # 检查是否是好友关系
+                    if to_user not in user_friends.get(inviter, set()):
+                        send_msg(client_sock, {"type": "group_invite_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
+                        logging.warning(f"Group invite from '{inviter}' to '{to_user}' blocked: not friends.")
+                        continue
+
                     to_sock = get_sock_by_username(to_user)
                     if to_sock:
                         send_msg(to_sock, {"type": "group_invite", "from": inviter, "gid": gid, "group_name": group["group_name"]})

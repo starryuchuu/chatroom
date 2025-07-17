@@ -855,6 +855,12 @@ class ChatClient:
                             error_msg = msg.get("error", "好友申请失败")
                             self.master.after(0, lambda: messagebox.showerror("好友申请失败", error_msg))
                     
+                    elif mtype == "group_invite_result":
+                        logging.info(f"Received group invite result: {msg}")
+                        if not msg.get("success"):
+                            error_msg = msg.get("error", "群邀请失败")
+                            self.master.after(0, lambda: messagebox.showerror("群邀请失败", error_msg))
+                    
                 else:
                     logging.warning(f"收到未知格式消息: {msg}")
 
