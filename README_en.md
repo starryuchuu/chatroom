@@ -93,7 +93,7 @@ python client.py
 - Database errors: Verify write permissions or check sqlite3 installation
 - Group chat issues: Ensure group members are correct, owner cannot leave group directly
 
-## develop branch highlights
+## Highlights
 End-to-end encryption: AES-GCM for messages, session key exchanged via RSA public key
 Password security: Argon2 hash for user passwords
 Group features: group creation, invitation, join, kick, owner management, persistent group info
