@@ -6,6 +6,7 @@ import hashlib
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad, unpad
+import os
 import base64
 import struct
 import logging
@@ -28,6 +29,28 @@ with open("private_key.pem", "rb") as f:
 with open("public_key.pem", "rb") as f:
     public_key_pem = f.read()
 
+cipher_rsa_decrypt = PKCS1_OAEP.new(private_key)
+
+def ensure_rsa_keys():
+    """
+    检查并生成RSA密钥对文件。
+    """
+    if not (os.path.exists("private_key.pem") and os.path.exists("public_key.pem")):
+        key = RSA.generate(2048)
+        private_key = key.export_key()
+        with open('private_key.pem', 'wb') as f:
+            f.write(private_key)
+        public_key = key.publickey().export_key()
+        with open('public_key.pem', 'wb') as f:
+            f.write(public_key)
+        print("RSA密钥对 'private_key.pem' 和 'public_key.pem' 已成功生成。")
+    with open("private_key.pem", "rb") as f:
+        private_key = RSA.import_key(f.read())
+    with open("public_key.pem", "rb") as f:
+        public_key_pem = f.read()
+    return private_key, public_key_pem
+
+private_key, public_key_pem = ensure_rsa_keys()
 cipher_rsa_decrypt = PKCS1_OAEP.new(private_key)
 
 # 接收指定字节数的数据
