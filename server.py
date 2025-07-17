@@ -212,13 +212,15 @@ def save_friend_relationship(user1, user2):
 # 对密码进行哈希处理
 def hash_password(password):
     """
-    对密码进行SHA-256哈希处理。
+    对密码进行Argon2哈希处理。
     参数:
         password: 明文密码
     返回:
-        哈希后的密码字符串
+        哈希后的密码字符串（带盐，安全）
     """
-    return hashlib.sha256(password.encode()).hexdigest()
+    from argon2 import PasswordHasher
+    ph = PasswordHasher()
+    return ph.hash(password)
 
 # 注册新用户
 def register_user(username, password):
@@ -254,10 +256,17 @@ def validate_user(username, password):
     """
     conn = sqlite3.connect("chat.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username=? AND password=?", 
-                  (username, hash_password(password)))
-    result = cursor.fetchone()
+    cursor.execute("SELECT password FROM users WHERE username=?", (username,))
+    row = cursor.fetchone()
     conn.close()
+    if row:
+        from argon2 import PasswordHasher, exceptions
+        ph = PasswordHasher()
+        try:
+            return ph.verify(row[0], password)
+        except exceptions.VerifyMismatchError:
+            return False
+    return False
     return bool(result)
 
 # 保存消息到数据库
