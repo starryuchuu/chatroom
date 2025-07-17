@@ -1,29 +1,34 @@
-import tkinter as tk            # 导入tkinter，用于构建图形界面
-from tkinter import simpledialog, messagebox, scrolledtext   # 导入对话框和滚动文本控件
-import socket                   # 导入socket模块，实现网络通信
-import threading                # 导入threading模块，处理多线程操作
-from Crypto.Cipher import AES   # 导入AES模块，进行加密解密操作
-from Crypto.Util.Padding import pad, unpad  # 导入填充与去填充函数
-import base64                   # 导入base64模块，用于数据编码转换
-import struct                   # 导入struct模块，构造定长消息包
-import logging                  # 导入logging模块，记录日志信息
+import tkinter as tk
+from tkinter import simpledialog, messagebox, scrolledtext
+import socket
+import threading
+from Crypto.Cipher import AES, PKCS1_OAEP
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
+from Crypto.Util.Padding import pad, unpad
+import base64
+import struct
+import logging
+import json
+import time
 
-# 设置日志输出级别为INFO，并设置输出格式（包含时间、级别、消息）
+# 配置日志记录，设置日志级别为INFO，格式为时间-级别-消息
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-KEY = b'\xe5\xc6\xba\xd9?x\\f(\x9f\x02B6\x9e\xdd\xd9'  # 16字节AES密钥，用于加密和解密
-BLOCK_SIZE = 16               # AES加密块的大小：16字节
-SERVER_HOST = '127.0.0.1'   # 服务器地址
-SERVER_PORT = 12345           # 服务器端口号
+# 服务器地址
+SERVER_HOST = '127.0.0.1'
+# 服务器端口
+SERVER_PORT = 12345
 
+# 接收指定字节数的数据
 def recvall(sock, n):
     """
-    从socket中不断接收数据，直到接收指定的n个字节。
+    从套接字接收指定字节数的数据。
     参数:
-        sock: 操作的socket对象。
-        n: 需要接收的字节总数。
+        sock: 套接字对象
+        n: 需要接收的字节数
     返回:
-        如果成功接收则返回数据，否则返回None。
+        接收到的数据，如果连接关闭则返回None
     """
     data = b''
     while len(data) < n:
@@ -33,88 +38,102 @@ def recvall(sock, n):
         data += packet
     return data
 
+# 发送消息，包含消息长度头部
 def send_msg(sock, msg):
     """
-    发送消息给服务器。
+    向套接字发送消息，消息前附加长度头部。
     参数:
-        sock: 用于网络通信的socket对象。
-        msg: 待发送的消息字符串。
-    实现步骤:
-        1. 将消息编码为UTF-8字节。
-        2. 使用struct打包消息头（4字节的消息长度）。
-        3. 发送打包头部和消息内容。
+        sock: 套接字对象
+        msg: 要发送的消息字符串或字典
     """
-    data = msg.encode('utf-8')
+    if isinstance(msg, dict):
+        data = json.dumps(msg).encode('utf-8')
+    else:
+        data = str(msg).encode('utf-8')  # 修复：原来是'极-8'
     header = struct.pack('!I', len(data))
     sock.sendall(header + data)
 
+# 接收消息，读取消息长度头部并接收完整消息
 def recv_msg(sock):
     """
-    从socket中接收一条完整消息。
+    从套接字接收消息，首先读取长度头部，然后接收完整消息。
     参数:
-        sock: 与服务器通信的socket对象。
+        sock: 套接字对象
     返回:
-        接收到的消息字符串；如果接收失败则返回None。
-    实现:
-        先接收4字节头，再根据消息长度接收消息体数据。
+        接收到的消息字符串或字典，如果连接关闭则返回None
     """
     header = recvall(sock, 4)
     if not header:
         return None
     msg_len = struct.unpack('!I', header)[0]
     data = recvall(sock, msg_len)
-    return data.decode('utf-8') if data else None
+    if not data:
+        return None
+    try:
+        return json.loads(data.decode('utf-8'))
+    except Exception:
+        return data.decode('utf-8')
 
-def encrypt_message(message):
+# 使用AES-GCM模式加密消息
+def encrypt_message(message, key):
     """
-    采用AES算法对消息进行加密，并返回Base64编码后的字符串。
+    使用AES-GCM模式加密消息。
     参数:
-        message: 待加密的明文消息。
+        message: 要加密的消息字符串
+        key: 会话密钥
+    返回:
+        加密后的消息 (nonce, ciphertext, tag)，base64编码
     """
-    cipher = AES.new(KEY, AES.MODE_ECB)
-    encrypted = cipher.encrypt(pad(message.encode(), BLOCK_SIZE))
-    return base64.b64encode(encrypted).decode()
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(message.encode('utf-8'))
+    return base64.b64encode(cipher.nonce + ciphertext + tag).decode('utf-8')
 
-def decrypt_message(encrypted_message):
+# 使用AES-GCM模式解密消息
+def decrypt_message(encrypted_message, key):
     """
-    解密经过AES加密且Base64编码的消息，还原为明文。
+    使用AES-GCM模式解密消息。
     参数:
-        encrypted_message: 加密的Base64字符串。
+        encrypted_message: 加密的消息，base64编码
+        key: 会话密钥
+    返回:
+        解密后的消息字符串
     """
-    cipher = AES.new(KEY, AES.MODE_ECB)
-    decrypted = unpad(cipher.decrypt(base64.b64decode(encrypted_message)), BLOCK_SIZE)
-    return decrypted.decode()
+    data = base64.b64decode(encrypted_message)
+    nonce = data[:16]
+    ciphertext = data[16:-16]
+    tag = data[-16:]
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
 
+# 聊天客户端类
 class ChatClient:
     def __init__(self, master):
         """
-        初始化聊天客户端应用程序。
+        初始化聊天客户端。
         参数:
-            master: Tkinter主窗口对象。
-        功能:
-            - 设置窗口标题、初始化socket及当前用户名。
-            - 构建登录界面以进行身份认证。
+            master: Tkinter窗口对象
         """
         self.master = master
         self.master.title("简易聊天客户端")
-        self.sock = None                 # 初始化socket为空，后续连接服务器时赋值
-        self.username = None             # 当前登录用户，初始为空
-        self.friend_request_result = None  # 用于保存发送好友申请后的反馈结果
-        self.build_login()               # 构建并显示登录页面
+        self.sock = None
+        self.session_key = None
+        self.username = None
+        self.friend_request_result = None
+        self.chat_frames = {}  # 用于存储每个好友或群组的聊天框架
+        self.current_chat_frame = None  # 当前显示的聊天框架
+        self.is_loading_messages = False  # 标记是否正在加载消息
+        self.running = True  # 控制接收线程
+        self.build_login()
 
     def build_login(self):
         """
-        构建登录窗口界面。
-        功能:
-            - 清空主窗口内容。
-            - 设置窗口大小及背景色。
-            - 添加用户名、密码输入框，以及登录与注册按钮。
+        构建登录界面，包含用户名和密码输入框，以及登录和注册按钮。
         """
-        self.clear_window()             # 清除已有控件
-        self.master.geometry('950x530')   # 设置窗口尺寸
-        self.master.configure(bg="#ffffff")  # 背景色设为白色
+        self.clear_window()
+        self.master.geometry('950x530')
+        self.master.configure(bg="#ffffff")
         login_frame = tk.Frame(self.master, bg="#ffffff", bd=0, highlightthickness=0)
-        login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)  # 将框架居中显示
+        login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         tk.Label(login_frame, text="简易聊天室登录", font=("微软雅黑", 20, "bold"), bg="#ffffff", fg="#3a7bd5").pack(pady=(0, 25))
         tk.Label(login_frame, text="用户名:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(0, 8))
         entry_style = {"font": ("微软雅黑", 12), "relief": tk.FLAT, "highlightthickness": 2, "highlightbackground": "#aee1f9", "highlightcolor": "#3a7bd5", "bd": 0, "width": 22}
@@ -124,37 +143,24 @@ class ChatClient:
         self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
         self.password_entry.pack(ipady=6)
         login_btn = tk.Button(login_frame, text="登录", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", activebackground="#5596e6", activeforeground="#fff", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.login)
-        login_btn.pack(pady=(0, 10))
+        login_btn.pack(pady=(20, 10))
         register_btn = tk.Button(login_frame, text="注册", font=("微软雅黑", 12), bg="#f0f0f0", fg="#3a7bd5", activebackground="#dcdcdc", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.register)
         register_btn.pack(pady=(0, 10))
-        self.username_entry.focus_set()  # 使用户名输入框获得焦点，方便直接输入
-        self.master.bind('<Return>', lambda e: self.login())  # 绑定回车键，便于快速登录
-
-    def display_message(self, msg, is_self=False):
-        """
-        以普通文本形式显示接收到的消息。（旧方法，保留兼容性）
-        参数:
-            msg: 消息文本内容。
-            is_self: 布尔值，指示消息是否是自己发送。
-        """
-        self.chat_area.config(state='normal')  # 允许修改文本框
-        if is_self:
-            self.chat_area.insert(tk.END, f'{msg}\n', 'right')  # 自己发送的消息右对齐
-        else:
-            self.chat_area.insert(tk.END, f'{msg}\n', 'left')   # 他人消息左对齐
-        self.chat_area.config(state='disabled')  # 禁止手动编辑
-        self.chat_area.see(tk.END)  # 自动滚动到最新消息
+        self.username_entry.focus_set()
+        self.master.bind('<Return>', lambda e: self.login())
 
     def build_chat(self):
         """
-        构建主聊天界面。
-        功能:
-            - 清空登录界面后构建显示聊天内容的各个区域，如顶部显示当前用户名、左侧好友列表、右侧在线用户及中间聊天区和输入框。
+        构建聊天界面，包含好友列表、在线用户列表、聊天显示区域和消息输入框。
         """
-        self.clear_window()             # 移除登录界面的所有控件
+        self.clear_window()
         top_frame = tk.Frame(self.master)
         top_frame.pack(side=tk.TOP, fill=tk.X)
         tk.Label(top_frame, text=f"当前用户：{self.username}", fg="green").pack(side=tk.LEFT, padx=10, pady=5)
+        
+        # 添加断开连接按钮
+        tk.Button(top_frame, text="断开连接", command=self.disconnect).pack(side=tk.RIGHT, padx=10, pady=5)
+        
         left_frame = tk.Frame(self.master)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         tk.Label(left_frame, text="好友列表").pack(pady=5)
@@ -162,15 +168,23 @@ class ChatClient:
         self.friends_listbox.pack(fill=tk.Y, expand=True)
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
         tk.Button(left_frame, text="添加好友", command=self.add_friend).pack(pady=5)
-        self.friends_listbox.insert(0, "[全体群组]")
+        tk.Button(left_frame, text="创建群聊", command=self.create_group).pack(pady=5)
+        
+        # 群组列表
+        tk.Label(left_frame, text="群组列表").pack(pady=(10, 5))
+        self.group_listbox = tk.Listbox(left_frame, width=18)
+        self.group_listbox.pack(fill=tk.Y, expand=True)
+        self.group_listbox.bind('<<ListboxSelect>>', self.select_group)
+        self.group_listbox.bind('<Double-1>', self.show_group_info_on_double_click)
+        
         online_frame = tk.Frame(self.master)
         online_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
         tk.Label(online_frame, text="在线用户").pack(pady=5)
         self.online_listbox = tk.Listbox(online_frame, width=18)
         self.online_listbox.pack(fill=tk.Y, expand=True)
+
         right_frame = tk.Frame(self.master)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # 聊天显示区域
         chat_display_frame = tk.Frame(right_frame)
         chat_display_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.chat_canvas = tk.Canvas(chat_display_frame, bg="#f5f5f5", highlightthickness=0)
@@ -178,34 +192,43 @@ class ChatClient:
         self.chat_scrollbar = tk.Scrollbar(chat_display_frame, orient="vertical", command=self.chat_canvas.yview)
         self.chat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.chat_canvas.configure(yscrollcommand=self.chat_scrollbar.set)
-        self.chat_frame = tk.Frame(self.chat_canvas, bg="#f5f5f5")
-        # 创建window时去掉固定宽度，绑定<Configure>事件更新宽度
-        self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_frame, anchor="nw")
-        self.chat_frame.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
+        self.chat_container = tk.Frame(self.chat_canvas, bg="#f5f5f5")
+        self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_container, anchor="nw")
+        self.chat_container.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
         self.chat_canvas.bind("<Configure>", lambda e: self.chat_canvas.itemconfig(self.chat_window, width=e.width))
-        # 鼠标滚轮绑定
         self.chat_canvas.bind_all("<MouseWheel>", lambda event: self.chat_canvas.yview_scroll(int(-1*(event.delta/120)), "units"))
-        # 输入区域：位于聊天显示区域下方，使用Text控件以支持多行输入
+
         input_frame = tk.Frame(right_frame)
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
-        # 修改此处由Entry改为Text，设置高度为2
         self.msg_entry = tk.Text(input_frame, height=2)
         self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         tk.Button(input_frame, text="发送", command=self.send_msg).pack(side=tk.LEFT, padx=5)
-        # 绑定Enter键事件：Enter发送消息，Ctrl+Enter换行
         self.msg_entry.bind("<Return>", self.on_message_entry_key)
-        # 初始化聊天数据结构：保存当前聊天对象、好友列表、私聊及群聊记录
+        
+        # 初始化变量
         self.current_friend = None
+        self.current_group = None
         self.friends = []
         self.private_chats = {}
         self.group_chat = []
+        self.groups = {}  # gid: {group_name, members}
+
+    def disconnect(self):
+        """断开连接并返回登录界面"""
+        if not self.running: # 防止重复调用
+            return
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except:
+                pass
+            self.sock = None
+        self.build_login()
 
     def add_friend(self):
         """
-        添加好友操作：
-        功能:
-            - 弹出对话框输入想要添加的好友用户名，
-            - 检查输入后向服务器发送好友申请协议。
+        添加好友功能，弹出输入框让用户输入好友用户名，并发送好友请求。
         """
         friend = simpledialog.askstring("添加好友", "请输入好友用户名：")
         if not friend:
@@ -217,44 +240,56 @@ class ChatClient:
         if friend in self.friends:
             messagebox.showerror("错误", f"{friend} 已经是你的好友")
             return
+        
+        self.friend_request_result = None
+        req = {
+            "type": "friend_request",
+            "from": self.username,
+            "to": friend.strip()
+        }
         try:
-            self.friend_request_result = None  # 重置好友申请反馈状态
-            send_msg(self.sock, f'__FRIEND_REQUEST__:{friend.strip()}')
+            logging.info(f"Sending friend request to '{friend.strip()}'.")
+            send_msg(self.sock, req)
             threading.Timer(0.5, self.maybe_show_friend_request_success, args=(friend.strip(),)).start()
         except Exception as e:
+            logging.error(f"发送好友请求失败: {e}")
             messagebox.showerror("发送失败", "好友申请发送失败")
 
     def maybe_show_friend_request_success(self, friend):
         """
-        定时器回调函数：检查好友申请反馈状态，若无反馈则弹窗提示已发送成功。
+        在发送好友请求后，延迟显示请求发送成功的提示。
         参数:
-            friend: 好友用户名。
+            friend: 好友用户名
         """
         if self.friend_request_result is None:
             messagebox.showinfo("提示", "好友申请发送成功")
 
     def handle_friend_request(self, from_user):
         """
-        处理收到的好友申请请求。
+        处理收到的好友请求，弹出对话框询问是否同意。
         参数:
-            from_user: 请求添加自己为好友的用户名。
-        功能:
-            弹出询问窗口，确认是否接受，由用户选择后发送响应给服务器。
+            from_user: 请求添加好友的用户名
         """
         result = messagebox.askyesno("好友申请", f"{from_user} 请求添加你为好友，是否同意？")
-        if result:
-            send_msg(self.sock, f'__FRIEND_RESPONSE__:{from_user}:ACCEPT')
-        else:
-            send_msg(self.sock, f'__FRIEND_RESPONSE__:{from_user}:REJECT')
+        resp = {
+            "type": "friend_response",
+            "from": self.username,
+            "to": from_user,
+            "accepted": bool(result)
+        }
+        try:
+            logging.info(f"Sending friend response to '{from_user}'. Accepted: {result}")
+            send_msg(self.sock, resp)
+        except Exception as e:
+            logging.error(f"发送好友响应失败: {e}")
+            messagebox.showerror("发送失败", "好友响应发送失败")
 
     def handle_friend_response(self, from_user, accepted):
         """
-        处理好友申请响应结果。
+        处理好友请求的响应，显示是否被接受的信息。
         参数:
-            from_user: 响应好友申请的用户名。
-            accepted: 布尔值，表示是否同意好友请求。
-        功能:
-            更新好友列表，并弹出提示告知申请结果。
+            from_user: 响应好友请求的用户名
+            accepted: 是否接受好友请求
         """
         if accepted:
             if from_user not in self.friends:
@@ -265,63 +300,114 @@ class ChatClient:
         else:
             messagebox.showinfo("好友申请", f"{from_user} 拒绝了你的好友申请")
 
-    def clear_chat_bubbles(self):
+    def clear_chat_bubbles(self, friend=None):
         """
-        清空聊天区中所有已显示的消息气泡。
-        在切换聊天对象时调用，保证界面清晰。
+        清除聊天区域中的所有消息气泡。
+        参数:
+            friend: 好友或群组名称，用于确定使用哪个聊天框架
         """
-        for widget in self.chat_frame.winfo_children():
+        if friend is None:
+            friend = self.current_friend or self.current_group
+        if friend and friend in self.chat_frames:
+            chat_frame = self.chat_frames[friend]
+        else:
+            chat_frame = self.chat_container
+        for widget in chat_frame.winfo_children():
             widget.destroy()
 
-    def display_message_with_time(self, msg, time_str, is_self=False):
+    def display_message_with_time(self, msg, time_str, is_self=False, friend=None):
         """
-        以气泡样式显示消息及其发送时间。
+        在聊天区域显示带有时间戳的消息。
         参数:
-            msg: 消息内容字符串。
-            time_str: 消息发送的时间字符串。
-            is_self: 布尔值，指示是否为自己发的消息。
-        实现:
-            根据消息来源决定气泡样式（背景颜色、对齐方式）。
+            msg: 要显示的消息
+            time_str: 消息的时间戳
+            is_self: 是否是自己发送的消息，影响显示位置
+            friend: 好友或群组名称，用于确定使用哪个聊天框架
         """
-        bubble_frame = tk.Frame(self.chat_frame, bg="#f5f5f5")
+        if friend is None:
+            friend = self.current_friend or self.current_group
+        if friend and friend in self.chat_frames:
+            chat_frame = self.chat_frames[friend]
+        else:
+            chat_frame = self.chat_container
+
+        bubble_frame = tk.Frame(chat_frame, bg="#f5f5f5")
         if is_self:
             bubble = tk.Label(bubble_frame, text=msg, bg="#aee1f9", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="e")
             bubble.pack(side=tk.RIGHT, padx=8, pady=2)
         else:
             bubble = tk.Label(bubble_frame, text=msg, bg="#ffffff", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="w", relief="solid", bd=1)
             bubble.pack(side=tk.LEFT, padx=8, pady=2)
+        
         if time_str:
             time_label = tk.Label(bubble_frame, text=time_str, bg="#f5f5f5", fg="#888888", font=("微软雅黑", 8))
             time_label.pack(side=tk.BOTTOM, anchor="e" if is_self else "w", padx=8)
+        
         bubble_frame.pack(fill=tk.X, anchor="e" if is_self else "w")
+        
+        # 强制更新UI并滚动到底部
+        if not self.is_loading_messages:
+            self.master.after_idle(self.scroll_to_bottom)
+
+    def scroll_to_bottom(self):
+        """滚动到聊天区域底部"""
         self.chat_canvas.update_idletasks()
+        self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all"))
         self.chat_canvas.yview_moveto(1.0)
 
     def select_friend(self, event):
         """
-        处理好友列表选择事件。
-        功能:
-            根据用户选择的好友或群组更新聊天记录显示区域。
+        选择好友，显示对应的聊天记录。
+        参数:
+            event: 列表框选择事件
         """
-        selection = self.friends_listbox.curselection()
-        if selection:
-            friend = self.friends_listbox.get(selection[0])
-            self.current_friend = friend
-            self.clear_chat_bubbles()
-            if friend == "[全体群组]":
-                for (msg, time_str), is_self in self.group_chat:
-                    self.display_message_with_time(msg, time_str, is_self)
-            else:
-                for (msg, time_str), is_self in self.private_chats.get(friend, []):
-                    self.display_message_with_time(msg, time_str, is_self)
+        if not self.running or self.is_loading_messages:
+            return
+        try:
+            selection = self.friends_listbox.curselection()
+            if selection:
+                friend = self.friends_listbox.get(selection[0])
+                self.current_friend = friend
+                self.current_group = None
+                self.switch_chat_frame(friend)
+        except tk.TclError:
+            # Widget may have been destroyed during disconnect
+            logging.warning("select_friend called on a destroyed widget.")
+            return
+
+
+    def switch_chat_frame(self, chat_id):
+        """切换聊天框架"""
+        if self.current_chat_frame:
+            self.current_chat_frame.pack_forget()
+        
+        if chat_id not in self.chat_frames:
+            self.chat_frames[chat_id] = tk.Frame(self.chat_container, bg="#f5f5f5")
+        
+        self.chat_frames[chat_id].pack(fill=tk.BOTH, expand=True)
+        self.current_chat_frame = self.chat_frames[chat_id]
+        
+        # 清除当前框架中的消息
+        self.clear_chat_bubbles(chat_id)
+        
+        self.is_loading_messages = True
+        # 重新显示历史消息
+        if chat_id in self.groups:
+            # 群组聊天记录
+            group_messages = getattr(self, f'group_messages_{chat_id}', [])
+            for (msg, time_str), is_self in group_messages:
+                self.display_message_with_time(msg, time_str, is_self, friend=chat_id)
+        else:
+            # 私聊记录
+            for (msg, time_str), is_self in self.private_chats.get(chat_id, []):
+                self.display_message_with_time(msg, time_str, is_self, friend=chat_id)
+        
+        self.is_loading_messages = False
+        self.scroll_to_bottom()
 
     def login(self):
         """
-        处理用户登录按钮点击事件。
-        功能:
-            验证用户名和密码不为空，
-            保存当前用户名，
-            调用连接服务器和认证操作。
+        处理登录逻辑，验证用户名和密码，并连接到服务器。
         """
         username = self.username_entry.get().strip()
         password = self.password_entry.get().strip()
@@ -329,54 +415,127 @@ class ChatClient:
             messagebox.showerror("错误", "用户名和密码不能为空！")
             return
         self.username = username
-        logging.info(f"Login attempt for user: {self.username_entry.get().strip()}")
+        logging.info(f"Login attempt for user: {username}")
         self.connect_server(username, password)
 
     def connect_server(self, username, password):
         """
-        与服务器建立TCP连接并进行用户登录验证。
+        连接到聊天服务器，发送登录信息。
         参数:
-            username: 用户名。
-            password: 明文密码。
-        实现:
-            1. 创建socket并连接到预设的服务器地址与端口；
-            2. 发送登录协议字符串；
-            3. 根据服务器响应构建聊天界面或提示错误。
+            username: 用户名
+            password: 密码
         """
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(10)  # 设置连接超时
             self.sock.connect((SERVER_HOST, SERVER_PORT))
-            logging.info(f"Connected to server {SERVER_HOST}:{SERVER_PORT}")
-            send_msg(self.sock, f'__LOGIN__:{username}:{password}')
-            auth_response = recv_msg(self.sock)
-            if auth_response.startswith('__LOGIN_SUCCESS__'):
-                logging.info("Login successful")
-                self.build_chat()
-                threading.Thread(target=self.receive_msg, daemon=True).start()
-                return
-            elif auth_response.startswith('__LOGIN_FAIL__'):
-                parts = auth_response.split(':', 1)
-                error_msg = parts[1] if len(parts)>1 else auth_response
-                logging.error(f"Login failed: {error_msg}")
-                messagebox.showerror("登录失败", error_msg)
+            self.sock.settimeout(None)  # 连接后取消超时
+
+            # 密钥交换
+            # 1. 接收公钥
+            public_key_data = recv_msg(self.sock)
+            if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
+                messagebox.showerror("连接失败", "未能从服务器获取公钥")
                 self.sock.close()
                 self.sock = None
-                self.build_login()
                 return
+            
+            public_key = RSA.import_key(public_key_data["key"])
+            cipher_rsa_encrypt = PKCS1_OAEP.new(public_key)
+
+            # 2. 生成并发送会话密钥
+            self.session_key = get_random_bytes(16) # 16 bytes for AES-128
+            encrypted_session_key = cipher_rsa_encrypt.encrypt(self.session_key)
+            send_msg(self.sock, {"type": "session_key", "key": base64.b64encode(encrypted_session_key).decode('utf-8')})
+            logging.info("Session key sent to server.")
+
         except Exception as e:
-            logging.exception("Failed connecting to server")
-            messagebox.showerror("连接失败", str(e))
+            logging.error(f"Socket连接失败: {e}")
+            messagebox.showerror("连接失败", f"无法连接到服务器: {e}")
             if self.sock:
                 self.sock.close()
             self.sock = None
-            self.build_login()
+            return
+
+        try:
+            login_data = {
+                "type": "login",
+                "from": username,
+                "password": password
+            }
+            send_msg(self.sock, login_data)
+            logging.info(f"Connected to server {SERVER_HOST}:{SERVER_PORT}")
+            
+            auth_response = recv_msg(self.sock)
+            if isinstance(auth_response, dict) and auth_response.get("type") == "login_result":
+                if auth_response.get("success"):
+                    logging.info("Login successful")
+                    self.running = True
+                    self.build_chat()
+                    threading.Thread(target=self.receive_msg, daemon=True).start()
+                    return
+                else:
+                    error_msg = auth_response.get("error", "登录失败")
+                    logging.error(f"Login failed: {error_msg}")
+                    messagebox.showerror("登录失败", error_msg)
+            else:
+                logging.error(f"未知登录响应: {auth_response}")
+                messagebox.showerror("登录失败", f"未知响应: {auth_response}")
+        except Exception as e:
+            logging.exception("登录过程异常")
+            messagebox.showerror("登录异常", str(e))
+        
+        if self.sock:
+            self.sock.close()
+        self.sock = None
+
+    def send_msg(self):
+        """
+        发送消息，根据当前选择的好友或群组发送私聊或群聊消息。
+        """
+        msg = self.msg_entry.get("1.0", "end-1c").strip()
+        if not msg:
+            return
+            
+        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        
+        try:
+            if not self.session_key:
+                messagebox.showerror("错误", "会话密钥未建立，无法发送消息")
+                return
+
+            if self.current_group:
+                data = {
+                    "type": "group_chat",
+                    "from": self.username,
+                    "gid": self.current_group,
+                    "content": encrypt_message(msg, self.session_key),
+                    "timestamp": ts
+                }
+                logging.info(f"Sending group message to GID '{self.current_group}'.")
+                send_msg(self.sock, data)
+            elif self.current_friend:
+                data = {
+                    "type": "private_chat",
+                    "from": self.username,
+                    "to": self.current_friend,
+                    "content": encrypt_message(msg, self.session_key),
+                    "timestamp": ts
+                }
+                logging.info(f"Sending private message to '{self.current_friend}'.")
+                send_msg(self.sock, data)
+            else:
+                messagebox.showwarning("提示", "请选择好友或群组进行聊天")
+                return
+        except Exception as e:
+            logging.error(f"发送消息失败: {e}")
+            messagebox.showerror("发送失败", "消息发送失败")
+        
+        self.msg_entry.delete("1.0", tk.END)
 
     def register(self):
         """
-        打开注册窗口，允许新用户输入注册信息。
-        内部:
-            弹出新窗口，包含用户名和密码输入框，
-            点击提交后发送注册请求到服务器，反馈注册状态。
+        打开注册窗口，允许用户输入用户名和密码进行注册。
         """
         register_window = tk.Toplevel(self.master)
         register_window.title("注册")
@@ -390,60 +549,76 @@ class ChatClient:
         tk.Label(register_window, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         password_entry = tk.Entry(register_window, **entry_style, bg="#f5faff", show="*")
         password_entry.pack(ipady=6)
+        
         def do_register():
-            """
-            内部函数：处理注册操作逻辑。
-            获取输入信息并向服务器发送注册协议，显示结果反馈。
-            """
             username = username_entry.get().strip()
             password = password_entry.get().strip()
             if not username or not password:
                 messagebox.showerror("错误", "用户名和密码不能为空！")
                 return
+            
+            temp_sock = None
             try:
+                # 1. 连接服务器并完成密钥交换
                 temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                temp_sock.settimeout(10)
                 temp_sock.connect((SERVER_HOST, SERVER_PORT))
-                send_msg(temp_sock, f'__REGISTER__:{username}:{password}')
-                response = recv_msg(temp_sock)
-                if response == '__REGISTER_SUCCESS__':
-                    messagebox.showinfo("成功", "注册成功！")
-                    register_window.destroy()
-                    temp_sock.close()
-                    return
-                elif response.startswith('__REGISTER_FAIL__'):
-                    messagebox.showerror("失败", response.split(':', 1)[1])
-                    temp_sock.close()
-                    return
-            except Exception as e:
-                messagebox.showerror("错误", str(e))
-        tk.Button(register_window, text="提交注册", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff",
-                  command=do_register).pack(pady=20)
+                temp_sock.settimeout(None)
 
-    def send_msg(self):
-        """
-        修改发送消息操作：从Text控件获取消息内容，发送后清空输入区域。
-        """
-        msg = self.msg_entry.get("1.0", "end-1c").strip()
-        if msg:
-            if self.current_friend == "[全体群组]":
-                send_text = f'__GROUP__:{encrypt_message(msg)}'
-                try:
-                    send_msg(self.sock, send_text)
-                except:
-                    messagebox.showerror("发送失败", "群聊消息发送失败")
-            elif self.current_friend:
-                send_text = f'__PRIVATE__:{self.current_friend}:{encrypt_message(msg)}'
-                try:
-                    send_msg(self.sock, send_text)
-                except:
-                    messagebox.showerror("发送失败", "消息发送失败")
-            else:
-                messagebox.showwarning("提示", "请选择好友或群组进行聊天")
-        self.msg_entry.delete("1.0", tk.END)
+                public_key_data = recv_msg(temp_sock)
+                if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
+                    messagebox.showerror("注册失败", "未能从服务器获取公钥")
+                    temp_sock.close()
+                    return
+                
+                public_key = RSA.import_key(public_key_data["key"])
+                cipher_rsa_encrypt = PKCS1_OAEP.new(public_key)
+                
+                session_key = get_random_bytes(16)
+                encrypted_session_key = cipher_rsa_encrypt.encrypt(session_key)
+                send_msg(temp_sock, {"type": "session_key", "key": base64.b64encode(encrypted_session_key).decode('utf-8')})
+                
+                # 2. 加密并发送注册信息
+                reg_data = {
+                    "type": "register",
+                    "from": username,
+                    "password": password
+                }
+                encrypted_reg_data = encrypt_message(json.dumps(reg_data), session_key)
+                send_msg(temp_sock, {"type": "encrypted_register", "data": encrypted_reg_data})
+                
+                logging.info(f"Attempting to register new user '{username}'.")
+                
+                # 3. 接收注册结果
+                response = recv_msg(temp_sock)
+                logging.info(f"Registration response for '{username}': {response}")
+                
+                if isinstance(response, dict) and response.get("type") == "register_result":
+                    if response.get("success"):
+                        messagebox.showinfo("注册成功", "注册成功，请登录！")
+                        register_window.destroy()
+                    else:
+                        error_msg = response.get("error", "注册失败")
+                        messagebox.showerror("注册失败", error_msg)
+                else:
+                    messagebox.showerror("注册失败", str(response))
+
+            except Exception as e:
+                logging.error(f"注册异常: {e}")
+                messagebox.showerror("错误", f"注册失败: {e}")
+            finally:
+                if temp_sock:
+                    temp_sock.close()
+        
+        tk.Button(register_window, text="提交注册", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", command=do_register).pack(pady=20)
 
     def on_message_entry_key(self, event):
-        # 如果按下Ctrl键（event.state中含Ctrl位0x4），则插入换行；否则发送消息
-        if event.state & 0x4:
+        """
+        处理消息输入框的按键事件，Enter键发送消息，Ctrl+Enter换行。
+        参数:
+            event: 按键事件
+        """
+        if event.state & 0x4:  # Ctrl键被按下
             self.msg_entry.insert(tk.INSERT, "\n")
         else:
             self.send_msg()
@@ -451,11 +626,9 @@ class ChatClient:
 
     def update_online_users(self, user_list):
         """
-        更新并显示在线用户列表。
+        更新在线用户列表。
         参数:
-            user_list: 来自服务器的在线用户名列表。
-        实现:
-            首先清空现有列表，然后逐个插入最新用户名。
+            user_list: 在线用户列表
         """
         self.online_listbox.delete(0, tk.END)
         for user in user_list:
@@ -463,121 +636,393 @@ class ChatClient:
 
     def receive_msg(self):
         """
-        后台线程函数：不断监听并处理从服务器收到的消息。
-        功能:
-            根据消息前缀区分不同协议，
-            调用相应函数更新界面或内部数据结构。
+        接收服务器消息的线程函数，处理各种类型的消息，包括群聊、私聊、好友请求等。
         """
-        while True:
+        while self.running:
             try:
                 msg = recv_msg(self.sock)
-                logging.debug(f"Received message: {msg}")
-                if msg is None:
-                    logging.info("Server closed connection")
+                if not msg:
+                    logging.info("服务器断开连接")
+                    self.master.after(0, lambda: messagebox.showerror("连接断开", "与服务器的连接已断开"))
+                    self.master.after(0, self.disconnect)
                     break
-                if msg.startswith('__ADD_AI_FRIEND__'):
-                    _, ai_friend = msg.split(':', 1)
-                    if ai_friend not in self.friends:
-                        self.friends.append(ai_friend)
-                        self.friends_listbox.insert(tk.END, ai_friend)
-                        self.private_chats[ai_friend] = []
-                    continue
-                if msg.startswith('__FRIEND_REQUEST_FAIL__'):
-                    self.friend_request_result = False
-                    error_msg = msg.split(':', 1)[1]
-                    messagebox.showerror("好友申请失败", error_msg)
-                    continue
-                if msg.startswith('__GROUP_HISTORY__'):
-                    parts = msg.split(':', 4)
-                    from_user = parts[1]
-                    encrypted_content = parts[2]
-                    time_str = parts[4] if len(parts) > 4 and parts[3]=='__TIME__' else ''
-                    content = decrypt_message(encrypted_content)
-                    show = f'{from_user}(群聊): {content}'
-                    is_self = (from_user == self.username)
-                    self.group_chat.append(((show, time_str), is_self))
-                    if self.current_friend == "[全体群组]":
-                        self.display_message_with_time(show, time_str, is_self)
-                    continue
-                if msg.startswith('__PRIVATE_HISTORY__'):
-                    parts = msg.split(':', 5)
-                    from_user = parts[1]
-                    to_user = parts[2]
-                    encrypted_content = parts[3]
-                    time_str = parts[5] if len(parts) > 5 and parts[4]=='__TIME__' else ''
-                    content = decrypt_message(encrypted_content)
-                    friend = to_user if from_user == self.username else from_user
-                    show = f'{from_user}: {content}'
-                    if friend not in self.private_chats:
-                        self.private_chats[friend] = []
-                        if friend not in self.friends and friend != self.username:
-                            self.friends.append(friend)
-                            self.friends_listbox.insert(tk.END, friend)
-                    self.private_chats[friend].append(((show, time_str), from_user==self.username))
-                    if self.current_friend == friend:
-                        self.display_message_with_time(show, time_str, is_self=(from_user==self.username))
-                    continue
-                if msg.startswith('__FRIEND_REQUEST__:'):
-                    from_user = msg.split(':', 1)[1]
-                    self.handle_friend_request(from_user)
-                    continue
-                if msg.startswith('__FRIEND_RESPONSE__:'):
-                    parts = msg.split(':')
-                    from_user = parts[1]
-                    accepted = parts[2] == 'ACCEPT'
-                    self.handle_friend_response(from_user, accepted)
-                    continue
-                if msg.startswith('__PRIVATE__'):
-                    parts = msg.split(':', 4)
-                    from_user = parts[1]
-                    encrypted_content = parts[2]
-                    time_str = parts[4] if len(parts)>4 and parts[3]=='__TIME__' else ''
-                    content = decrypt_message(encrypted_content)
-                    show = f'{from_user}: {content}'
-                    if from_user == self.username:
-                        if self.current_friend and self.current_friend in self.friends:
-                            self.private_chats[self.current_friend].append(((show, time_str), True))
-                            self.display_message_with_time(show, time_str, is_self=True)
-                        continue
-                    if from_user not in self.friends:
-                        self.friends.append(from_user)
-                        self.friends_listbox.insert(tk.END, from_user)
-                        self.private_chats[from_user] = []
-                    self.private_chats[from_user].append(((show, time_str), False))
-                    if self.current_friend == from_user:
-                        self.display_message_with_time(show, time_str, is_self=False)
-                    continue
-                if msg.startswith('__GROUP__'):
-                    parts = msg.split(':', 4)
-                    from_user = parts[1]
-                    encrypted_content = parts[2]
-                    time_str = parts[4] if len(parts)>4 and parts[3]=='__TIME__' else ''
-                    content = decrypt_message(encrypted_content)
-                    show = f'{from_user}(群聊): {content}'
-                    is_self = (from_user == self.username)
-                    self.group_chat.append(((show, time_str), is_self))
-                    if self.current_friend == "[全体群组]":
-                        self.display_message_with_time(show, time_str, is_self)
-                    continue
-                if msg.startswith('__ONLINE_USERS__'):
-                    user_str = msg.split(':', 1)[1]
-                    user_list = [u for u in user_str.split(',') if u]
-                    self.update_online_users(user_list)
-                    continue
-                # ...existing code...
+                
+                if isinstance(msg, dict):
+                    mtype = msg.get("type")
+                    if mtype == "online_users":
+                        user_list = msg.get("users", [])
+                        logging.info(f"Received online users list: {user_list}")
+                        self.master.after(0, lambda: self.update_online_users(user_list))
+                    
+                    elif mtype == "user_groups_list":
+                        group_list = msg.get("groups", [])
+                        logging.info(f"Received initial group list: {group_list}")
+                        self.groups = {g["gid"]: g for g in group_list}
+                        self.master.after(0, self.refresh_group_listbox)
+                    
+                    elif mtype == "private_chat":
+                        logging.info(f"Received private chat message: {msg}")
+                        from_user = msg.get("from")
+                        to_user = msg.get("to")
+                        encrypted_content = msg.get("content")
+                        time_str = msg.get("timestamp", "")
+                        if not self.session_key:
+                            continue
+                        try:
+                            content = decrypt_message(encrypted_content, self.session_key)
+                        except Exception as e:
+                            logging.error(f"解密来自 {from_user} 的私聊消息失败: {e}")
+                            content = "[消息解密失败]"
+
+                        show = f'{from_user}: {content}'
+                        is_self = (from_user == self.username)
+
+                        # 确定聊天对象
+                        chat_partner = to_user if is_self else from_user
+
+                        # 如果聊天对象不在好友列表中，则添加（处理接收新好友消息的情况）
+                        if chat_partner not in self.friends:
+                            self.friends.append(chat_partner)
+                            # 使用lambda的默认参数来捕获当前的chat_partner值
+                            self.master.after(0, lambda p=chat_partner: self.friends_listbox.insert(tk.END, p))
+                            self.private_chats[chat_partner] = []
+
+                        # 将消息存储在聊天对象的名下
+                        if chat_partner not in self.private_chats:
+                            self.private_chats[chat_partner] = []
+                        self.private_chats[chat_partner].append(((show, time_str), is_self))
+
+                        # 如果当前聊天窗口是该对象，则显示消息
+                        if self.current_friend == chat_partner:
+                            # 使用lambda的默认参数来捕获当前值
+                            self.master.after(0, lambda s=show, t=time_str, i=is_self, p=chat_partner: self.display_message_with_time(s, t, i, friend=p))
+                    
+                    elif mtype == "group_chat":
+                        logging.info(f"Received group chat message: {msg}")
+                        gid = msg.get("gid")
+                        from_user = msg.get("from")
+                        encrypted_content = msg.get("content")
+                        time_str = msg.get("timestamp", "")
+                        if not self.session_key:
+                            continue
+                        try:
+                            content = decrypt_message(encrypted_content, self.session_key)
+                        except Exception as e:
+                            logging.error(f"解密来自 {from_user} 的群聊消息失败 (群组: {gid}): {e}")
+                            content = "[消息解密失败]"
+                        
+                        show = f'{from_user}(群聊): {content}'
+                        is_self = (from_user == self.username)
+                        
+                        # 如果客户端不知道这个群组，请求信息
+                        if gid not in self.groups:
+                            self.master.after(0, lambda g=gid: self.request_group_info(g))
+
+                        # 确保该群组的消息列表存在
+                        if not hasattr(self, f'group_messages_{gid}'):
+                            setattr(self, f'group_messages_{gid}', [])
+                        
+                        # 存储消息
+                        getattr(self, f'group_messages_{gid}').append(((show, time_str), is_self))
+                        
+                        # 如果当前聊天窗口是该群组，则显示消息
+                        if self.current_group == gid:
+                            self.master.after(0, lambda s=show, t=time_str, i=is_self, g=gid: self.display_message_with_time(s, t, i, friend=g))
+
+                    elif mtype == "group_create_result":
+                        logging.info(f"Received group create result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            group_name = msg.get("group_name", "新群聊")
+                            owner = msg.get("owner") # 从消息中获取群主
+                            members = msg.get("members", [])
+                            self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                            self.master.after(0, self.refresh_group_listbox) # 刷新整个列表以保持一致性
+                            if owner == self.username: # 只有创建者会看到这个弹窗
+                                self.master.after(0, lambda gn=group_name, g=gid: messagebox.showinfo("群聊创建", f"群聊 '{gn}' 创建成功！ID: {g}"))
+                        else:
+                            error_msg = msg.get("error", "创建群聊失败")
+                            self.master.after(0, lambda: messagebox.showerror("群聊创建失败", error_msg))
+                    
+                    elif mtype == "group_info":
+                        logging.info(f"Received group info: {msg}")
+                        gid = msg.get("gid")
+                        if gid and "error" not in msg:
+                            self.groups[gid] = msg
+                            self.master.after(0, lambda: self.show_group_info(gid))
+                        else:
+                            self.master.after(0, lambda: messagebox.showerror("群组信息", msg.get("error", "获取群组信息失败")))
+
+                    elif mtype == "group_invite":
+                        logging.info(f"Received group invite: {msg}")
+                        from_user = msg.get("from")
+                        gid = msg.get("gid")
+                        self.master.after(0, lambda: self.handle_group_invite(from_user, gid))
+                    
+                    elif mtype == "group_join_result":
+                        logging.info(f"Received group join result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            group_name = msg.get("group_name", "未知群聊")
+                            owner = msg.get("owner")
+                            members = msg.get("members", [])
+                            self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                            self.master.after(0, self.refresh_group_listbox)
+                            self.master.after(0, lambda gn=group_name: messagebox.showinfo("加入群聊", f"成功加入群聊: {gn}"))
+                        else:
+                            error_msg = msg.get("error", "加入群聊失败")
+                            self.master.after(0, lambda: messagebox.showerror("加入群聊失败", error_msg))
+                    
+                    elif mtype == "group_update":
+                        logging.info(f"Received group update: {msg}")
+                        gid = msg.get("gid")
+                        group_name = msg.get("group_name")
+                        owner = msg.get("owner")
+                        members = msg.get("members")
+                        self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                        self.master.after(0, self.refresh_group_listbox)
+                    
+                    elif mtype == "group_leave_result":
+                        logging.info(f"Received group leave result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            if gid in self.groups:
+                                del self.groups[gid]
+                            if hasattr(self, f'group_messages_{gid}'):
+                                delattr(self, f'group_messages_{gid}')
+                            self.master.after(0, lambda: self.refresh_group_listbox())
+                            self.master.after(0, lambda: messagebox.showinfo("退出群聊", f"成功退出群聊: {gid}"))
+                            if self.current_group == gid:
+                                self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                        else:
+                            error_msg = msg.get("error", "退出群聊失败")
+                            self.master.after(0, lambda: messagebox.showerror("退出群聊失败", error_msg))
+                    
+                    elif mtype == "group_kick_result":
+                        logging.info(f"Received group kick result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            kicked_user = msg.get("kick")
+                            if gid in self.groups and kicked_user in self.groups[gid]["members"]:
+                                self.groups[gid]["members"].remove(kicked_user)
+                            self.master.after(0, lambda: messagebox.showinfo("踢出成员", f"已将 {kicked_user} 从群聊 {gid} 踢出"))
+                            if kicked_user == self.username: # 自己被踢出
+                                if gid in self.groups:
+                                    del self.groups[gid]
+                                if hasattr(self, f'group_messages_{gid}'):
+                                    delattr(self, f'group_messages_{gid}')
+                            self.master.after(0, lambda: self.refresh_group_listbox())
+                            self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                        else:
+                            error_msg = msg.get("error", "踢出成员失败")
+                            self.master.after(0, lambda: messagebox.showerror("踢出成员失败", error_msg))
+                    
+                    elif mtype == "group_kick_notification":
+                        logging.info(f"Received group kick notification: {msg}")
+                        gid = msg.get("gid")
+                        group_name = msg.get("group_name")
+                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"您已被从群聊 {group_name} 移除"))
+                        if gid in self.groups:
+                            del self.groups[gid]
+                        if hasattr(self, f'group_messages_{gid}'):
+                            delattr(self, f'group_messages_{gid}')
+                        self.master.after(0, lambda: self.refresh_group_listbox())
+                        self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                    
+                    elif mtype == "friend_request":
+                        logging.info(f"Received friend request: {msg}")
+                        from_user = msg.get("from")
+                        self.master.after(0, lambda: self.handle_friend_request(from_user))
+                    
+                    elif mtype == "friend_response":
+                        logging.info(f"Received friend response: {msg}")
+                        from_user = msg.get("from")
+                        accepted = msg.get("accepted")
+                        self.master.after(0, lambda: self.handle_friend_response(from_user, accepted))
+                    
+                    elif mtype == "friend_update":
+                        logging.info(f"Received friend update: {msg}")
+                        new_friend = msg.get("friend")
+                        if new_friend and new_friend not in self.friends:
+                            self.friends.append(new_friend)
+                            self.private_chats[new_friend] = []
+                            self.master.after(0, lambda f=new_friend: self.friends_listbox.insert(tk.END, f))
+                    
+                    elif mtype == "friend_request_result":
+                        logging.info(f"Received friend request result: {msg}")
+                        self.friend_request_result = msg.get("success")
+                        if not msg.get("success"):
+                            error_msg = msg.get("error", "好友申请失败")
+                            self.master.after(0, lambda: messagebox.showerror("好友申请失败", error_msg))
+                    
+                else:
+                    logging.warning(f"收到未知格式消息: {msg}")
+
+            except (ConnectionResetError, ConnectionAbortedError):
+                logging.warning("与服务器的连接已断开。")
+                if self.running:
+                    self.master.after(0, lambda: messagebox.showwarning("连接断开", "与服务器的连接已断开，请重新登录。"))
+                    self.master.after(0, self.disconnect)
+                break
             except Exception as e:
-                logging.exception("Error receiving message")
+                logging.exception(f"接收消息时发生未知异常: {e}")
+                if self.running:
+                    self.master.after(0, self.disconnect)
                 break
 
     def clear_window(self):
         """
-        清空当前Tkinter主窗口的所有控件，以便切换界面时重建布局。
+        清除窗口中的所有控件，用于切换界面。
         """
         for widget in self.master.winfo_children():
             widget.destroy()
 
+    def create_group(self):
+        # 创建群聊弹窗
+        group_window = tk.Toplevel(self.master)
+        group_window.title("创建群聊")
+        group_window.geometry("400x400")
+        tk.Label(group_window, text="群聊名称:").pack(pady=10)
+        name_entry = tk.Entry(group_window)
+        name_entry.pack(pady=5)
+        tk.Label(group_window, text="选择成员:").pack(pady=10)
+        members_listbox = tk.Listbox(group_window, selectmode=tk.MULTIPLE)
+        for f in self.friends:
+            members_listbox.insert(tk.END, f)
+        members_listbox.pack(pady=5, fill=tk.BOTH, expand=True)
+        
+        def do_create():
+            group_name = name_entry.get().strip()
+            sel = members_listbox.curselection()
+            members = [self.friends[i] for i in sel]
+            if not group_name or not members:
+                messagebox.showerror("错误", "群名和成员不能为空！")
+                return
+            req = {
+                "type": "group_create",
+                "from": self.username,
+                "group_name": group_name,
+                "members": members
+            }
+            send_msg(self.sock, req)
+            group_window.destroy()
+        
+        tk.Button(group_window, text="创建", command=do_create).pack(pady=20)
+
+    def request_group_info(self, gid):
+        """请求群组信息"""
+        logging.info(f"Requesting info for group '{gid}'.")
+        req = {"type": "group_info", "from": self.username, "gid": gid}
+        send_msg(self.sock, req)
+
+    def select_group(self, event):
+        if not self.running or self.is_loading_messages:
+            return
+        try:
+            sel = self.group_listbox.curselection()
+            if sel:
+                group_name = self.group_listbox.get(sel[0])
+                # 通过群组名称反向查找gid
+                gid = self.get_gid_by_name(group_name)
+                if gid:
+                    self.current_group = gid
+                    self.current_friend = None # 确保私聊和群聊互斥
+                    self.switch_chat_frame(gid)
+        except tk.TclError:
+            # Widget may have been destroyed during disconnect
+            logging.warning("select_group called on a destroyed widget.")
+            return
+
+    def show_group_info_on_double_click(self, event):
+        if not self.running:
+            return
+        try:
+            sel = self.group_listbox.curselection()
+            if sel:
+                group_name = self.group_listbox.get(sel[0])
+                gid = self.get_gid_by_name(group_name)
+                if gid:
+                    self.show_group_info(gid)
+        except tk.TclError:
+            logging.warning("show_group_info_on_double_click called on a destroyed widget.")
+            return
+
+    def show_group_info(self, gid):
+        info = self.groups.get(gid)
+        if not info:
+            self.request_group_info(gid) # 如果没有信息，请求服务器
+            return
+        
+        members = info.get("members", [])
+        group_info_window = tk.Toplevel(self.master)
+        group_info_window.title(f"群聊信息 - {info.get('group_name')}")
+        group_info_window.geometry("350x400")
+        
+        tk.Label(group_info_window, text=f"群名: {info.get('group_name')}").pack(pady=10)
+        tk.Label(group_info_window, text=f"群主: {info.get('owner')}").pack(pady=5)
+        tk.Label(group_info_window, text="成员列表:").pack(pady=10)
+        
+        members_list = tk.Listbox(group_info_window)
+        for m in members:
+            members_list.insert(tk.END, m)
+        members_list.pack(pady=5, fill=tk.BOTH, expand=True)
+        
+        def invite_member():
+            friend = simpledialog.askstring("邀请成员", "输入好友用户名:")
+            if friend:
+                req = {"type": "group_invite", "from": self.username, "to": friend, "gid": gid}
+                send_msg(self.sock, req)
+        tk.Button(group_info_window, text="邀请成员", command=invite_member).pack(pady=10)
+        
+        def leave_group():
+            req = {"type": "group_leave", "from": self.username, "gid": gid}
+            send_msg(self.sock, req)
+            group_info_window.destroy()
+        tk.Button(group_info_window, text="退出群聊", command=leave_group).pack(pady=10)
+        
+        # 群主可踢人
+        if self.username == info.get("owner"):
+            def kick_member():
+                sel = members_list.curselection()
+                if sel:
+                    member = members_list.get(sel[0])
+                    if member != self.username:
+                        req = {"type": "group_kick", "from": self.username, "gid": gid, "kick": member}
+                        send_msg(self.sock, req)
+                        # members_list.delete(sel[0]) # 踢人成功后由服务器广播更新
+            tk.Button(group_info_window, text="踢出成员", command=kick_member).pack(pady=10)
+
+    def handle_group_invite(self, from_user, gid):
+        result = messagebox.askyesno("群聊邀请", f"{from_user} 邀请你加入群聊，是否同意？")
+        if result:
+            req = {"type": "group_join", "from": self.username, "gid": gid}
+            send_msg(self.sock, req)
+
+    def refresh_group_listbox(self):
+        """刷新群组列表"""
+        try:
+            self.group_listbox.delete(0, tk.END)
+            for gid, info in self.groups.items():
+                self.group_listbox.insert(tk.END, info.get("group_name", gid))
+        except tk.TclError:
+            logging.warning("refresh_group_listbox called on a destroyed widget.")
+
+    def get_gid_by_name(self, group_name):
+        """通过群组名称查找GID"""
+        for gid, info in self.groups.items():
+            if info and info.get("group_name") == group_name:
+                return gid
+        return None
+
 if __name__ == '__main__':
-    logging.info("Starting Chat Client")
-    root = tk.Tk()              # 创建主窗口对象
-    app = ChatClient(root)      # 初始化聊天客户端
-    root.mainloop()             # 进入消息循环，等待用户事件
+    import sys
+    import traceback
+    try:
+        logging.info("Starting Chat Client")
+        root = tk.Tk()
+        app = ChatClient(root)
+        root.mainloop()
+    except Exception as e:
+        print("客户端启动异常:", e)
+        traceback.print_exc()
+        sys.exit(1)
