@@ -23,12 +23,45 @@ session_keys = {} # {socket: session_key}
 user_friends = {} # {username: set(friends)}
 groups_data = {} # {gid: {group_name, owner, members}}
 
-# 加载RSA密钥
-with open("private_key.pem", "rb") as f:
-    private_key = RSA.import_key(f.read())
-with open("public_key.pem", "rb") as f:
-    public_key_pem = f.read()
 
+# 检查并生成/加载RSA密钥
+def ensure_rsa_keys():
+    """
+    检查并生成RSA密钥对文件，确保密钥可用。
+    返回: (private_key, public_key_pem)
+    """
+    def is_key_valid():
+        try:
+            with open("private_key.pem", "rb") as f:
+                priv = RSA.import_key(f.read())
+            with open("public_key.pem", "rb") as f:
+                pub = RSA.import_key(f.read())
+            # 简单验证公钥和私钥匹配（加解密测试）
+            test = b"test"
+            cipher = PKCS1_OAEP.new(pub)
+            enc = cipher.encrypt(test)
+            cipher2 = PKCS1_OAEP.new(priv)
+            dec = cipher2.decrypt(enc)
+            return dec == test
+        except Exception:
+            return False
+
+    if not (os.path.exists("private_key.pem") and os.path.exists("public_key.pem")) or not is_key_valid():
+        key = RSA.generate(2048)
+        private_key = key.export_key()
+        with open('private_key.pem', 'wb') as f:
+            f.write(private_key)
+        public_key = key.publickey().export_key()
+        with open('public_key.pem', 'wb') as f:
+            f.write(public_key)
+        print("RSA密钥对 'private_key.pem' 和 'public_key.pem' 已重新生成。")
+    with open("private_key.pem", "rb") as f:
+        private_key = RSA.import_key(f.read())
+    with open("public_key.pem", "rb") as f:
+        public_key_pem = f.read()
+    return private_key, public_key_pem
+
+private_key, public_key_pem = ensure_rsa_keys()
 cipher_rsa_decrypt = PKCS1_OAEP.new(private_key)
 
 def ensure_rsa_keys():
