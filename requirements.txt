@@ -1,2 +1,2 @@
-# 用于安全密码哈希的依赖包
+pycryptodome
 argon2-cffi
