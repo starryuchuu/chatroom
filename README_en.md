@@ -97,6 +97,7 @@ python client.py
 End-to-end encryption: AES-GCM for messages, session key exchanged via RSA public key
 Password security: Argon2 hash for user passwords
 Group features: group creation, invitation, join, kick, owner management, persistent group info
+Advanced group features: group disbanding, ownership transfer, group name modification
 All messages use structured JSON protocol
 Robust error handling and logging
 Further optimized code structure and comments for better readability

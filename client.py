@@ -747,7 +747,7 @@ class ChatClient:
                         gid = msg.get("gid")
                         if gid and "error" not in msg:
                             self.groups[gid] = msg
-                            self.master.after(0, lambda: self.show_group_info(gid))
+                            self.master.after(0, lambda: self.show_group_info_after_update(gid))
                         else:
                             self.master.after(0, lambda: messagebox.showerror("群组信息", msg.get("error", "获取群组信息失败")))
 
@@ -859,6 +859,82 @@ class ChatClient:
                             error_msg = msg.get("error", "群邀请失败")
                             self.master.after(0, lambda: messagebox.showerror("群邀请失败", error_msg))
                     
+                    elif mtype == "group_disband_result":
+                        logging.info(f"Received group disband result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            if gid in self.groups:
+                                del self.groups[gid]
+                            if hasattr(self, f'group_messages_{gid}'):
+                                delattr(self, f'group_messages_{gid}')
+                            self.master.after(0, lambda: self.refresh_group_listbox())
+                            self.master.after(0, lambda: messagebox.showinfo("解散群聊", f"群聊已成功解散"))
+                            if self.current_group == gid:
+                                self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                        else:
+                            error_msg = msg.get("error", "解散群聊失败")
+                            self.master.after(0, lambda: messagebox.showerror("解散群聊失败", error_msg))
+                    
+                    elif mtype == "group_disband_notification":
+                        logging.info(f"Received group disband notification: {msg}")
+                        gid = msg.get("gid")
+                        group_name = msg.get("group_name")
+                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊 {group_name} 已被解散"))
+                        if gid in self.groups:
+                            del self.groups[gid]
+                        if hasattr(self, f'group_messages_{gid}'):
+                            delattr(self, f'group_messages_{gid}')
+                        self.master.after(0, lambda: self.refresh_group_listbox())
+                        self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                    
+                    elif mtype == "group_transfer_result":
+                        logging.info(f"Received group transfer result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            new_owner = msg.get("new_owner")
+                            if gid in self.groups:
+                                self.groups[gid]["owner"] = new_owner
+                            self.master.after(0, lambda: self.refresh_group_listbox())
+                            self.master.after(0, lambda: messagebox.showinfo("转让群主", f"群主已成功转让给 {new_owner}"))
+                        else:
+                            error_msg = msg.get("error", "转让群主失败")
+                            self.master.after(0, lambda: messagebox.showerror("转让群主失败", error_msg))
+                    
+                    elif mtype == "group_transfer_notification":
+                        logging.info(f"Received group transfer notification: {msg}")
+                        gid = msg.get("gid")
+                        old_owner = msg.get("old_owner")
+                        new_owner = msg.get("new_owner")
+                        group_name = msg.get("group_name")
+                        if gid in self.groups:
+                            self.groups[gid]["owner"] = new_owner
+                        self.master.after(0, lambda: self.refresh_group_listbox())
+                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊 {group_name} 的群主已由 {old_owner} 转让给 {new_owner}"))
+                    
+                    elif mtype == "group_rename_result":
+                        logging.info(f"Received group rename result: {msg}")
+                        if msg.get("success"):
+                            gid = msg.get("gid")
+                            new_name = msg.get("new_name")
+                            if gid in self.groups:
+                                old_name = self.groups[gid].get("group_name", gid)
+                                self.groups[gid]["group_name"] = new_name
+                            self.master.after(0, lambda: self.refresh_group_listbox())
+                            self.master.after(0, lambda: messagebox.showinfo("修改群聊名称", f"群聊名称已从 '{old_name}' 修改为 '{new_name}'"))
+                        else:
+                            error_msg = msg.get("error", "修改群聊名称失败")
+                            self.master.after(0, lambda: messagebox.showerror("修改群聊名称失败", error_msg))
+                    
+                    elif mtype == "group_rename_notification":
+                        logging.info(f"Received group rename notification: {msg}")
+                        gid = msg.get("gid")
+                        old_name = msg.get("old_name")
+                        new_name = msg.get("new_name")
+                        if gid in self.groups:
+                            self.groups[gid]["group_name"] = new_name
+                        self.master.after(0, lambda: self.refresh_group_listbox())
+                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊名称已由群主 {msg.get('owner')} 从 '{old_name}' 修改为 '{new_name}'"))
+                    
                 else:
                     logging.warning(f"收到未知格式消息: {msg}")
 
@@ -952,40 +1028,70 @@ class ChatClient:
             return
 
     def show_group_info(self, gid):
+        # 强制从服务器更新最新的群组信息
+        self.request_group_info(gid)
+
+    def show_group_info_after_update(self, gid):
         info = self.groups.get(gid)
         if not info:
-            self.request_group_info(gid) # 如果没有信息，请求服务器
+            messagebox.showerror("错误", "无法获取群组信息")
             return
-        
+
         members = info.get("members", [])
+        
+        # 检查是否已有同名窗口，避免重复打开
+        for win in self.master.winfo_children():
+            if isinstance(win, tk.Toplevel) and win.title() == f"群聊信息 - {info.get('group_name')}":
+                win.destroy()
+
         group_info_window = tk.Toplevel(self.master)
         group_info_window.title(f"群聊信息 - {info.get('group_name')}")
-        group_info_window.geometry("350x400")
         
-        tk.Label(group_info_window, text=f"群名: {info.get('group_name')}").pack(pady=10)
-        tk.Label(group_info_window, text=f"群主: {info.get('owner')}").pack(pady=5)
-        tk.Label(group_info_window, text="成员列表:").pack(pady=10)
+        # --- Top section with labels and listbox ---
+        top_frame = tk.Frame(group_info_window)
+        top_frame.pack(pady=5, padx=10, fill="both", expand=True)
         
-        members_list = tk.Listbox(group_info_window)
+        tk.Label(top_frame, text=f"群名: {info.get('group_name')}").pack()
+        tk.Label(top_frame, text=f"群主: {info.get('owner')}").pack()
+        tk.Label(top_frame, text="成员列表:").pack(pady=(10, 2))
+        
+        members_list = tk.Listbox(top_frame)
         for m in members:
             members_list.insert(tk.END, m)
-        members_list.pack(pady=5, fill=tk.BOTH, expand=True)
+        members_list.pack(fill="both", expand=True)
+
+        # --- Button section ---
+        button_container = tk.Frame(group_info_window)
+        button_container.pack(pady=5, padx=10, fill="x")
+
+        # --- Member Actions Frame ---
+        member_actions_frame = tk.Frame(button_container)
+        member_actions_frame.pack(fill="x", pady=2)
+
+        def refresh_members():
+            self.request_group_info(gid)
+            group_info_window.after(300, lambda: self.update_group_info_window(group_info_window, gid))
         
         def invite_member():
             friend = simpledialog.askstring("邀请成员", "输入好友用户名:")
             if friend:
                 req = {"type": "group_invite", "from": self.username, "to": friend, "gid": gid}
                 send_msg(self.sock, req)
-        tk.Button(group_info_window, text="邀请成员", command=invite_member).pack(pady=10)
         
         def leave_group():
             req = {"type": "group_leave", "from": self.username, "gid": gid}
             send_msg(self.sock, req)
             group_info_window.destroy()
-        tk.Button(group_info_window, text="退出群聊", command=leave_group).pack(pady=10)
+
+        tk.Button(member_actions_frame, text="刷新成员", command=refresh_members).pack(side="left", padx=2, expand=True)
+        tk.Button(member_actions_frame, text="邀请成员", command=invite_member).pack(side="left", padx=2, expand=True)
+        tk.Button(member_actions_frame, text="退出群聊", command=leave_group).pack(side="left", padx=2, expand=True)
         
-        # 群主可踢人
+        # --- Owner Actions Frame ---
         if self.username == info.get("owner"):
+            owner_actions_frame = tk.Frame(button_container)
+            owner_actions_frame.pack(fill="x", pady=2)
+
             def kick_member():
                 sel = members_list.curselection()
                 if sel:
@@ -993,8 +1099,35 @@ class ChatClient:
                     if member != self.username:
                         req = {"type": "group_kick", "from": self.username, "gid": gid, "kick": member}
                         send_msg(self.sock, req)
-                        # members_list.delete(sel[0]) # 踢人成功后由服务器广播更新
-            tk.Button(group_info_window, text="踢出成员", command=kick_member).pack(pady=10)
+            
+            def disband_group():
+                if messagebox.askyesno("解散群聊", "确定要解散群聊吗？此操作不可撤销。"):
+                    req = {"type": "group_disband", "from": self.username, "gid": gid}
+                    send_msg(self.sock, req)
+                    group_info_window.destroy()
+            
+            def transfer_ownership():
+                new_owner = simpledialog.askstring("转让群主", "请输入新群主用户名:")
+                if new_owner:
+                    req = {"type": "group_transfer", "from": self.username, "gid": gid, "new_owner": new_owner}
+                    send_msg(self.sock, req)
+            
+            def rename_group():
+                new_name = simpledialog.askstring("修改群聊名称", "请输入新的群聊名称:")
+                if new_name:
+                    req = {"type": "group_rename", "from": self.username, "gid": gid, "new_name": new_name}
+                    send_msg(self.sock, req)
+
+            tk.Button(owner_actions_frame, text="踢出成员", command=kick_member).pack(side="left", padx=2, expand=True)
+            tk.Button(owner_actions_frame, text="解散群聊", command=disband_group).pack(side="left", padx=2, expand=True)
+            tk.Button(owner_actions_frame, text="转让群主", command=transfer_ownership).pack(side="left", padx=2, expand=True)
+            tk.Button(owner_actions_frame, text="修改群聊名称", command=rename_group).pack(side="left", padx=2, expand=True)
+        
+        # 自动调整窗口大小以适应内容
+        group_info_window.update_idletasks()
+        width = group_info_window.winfo_reqwidth()
+        height = group_info_window.winfo_reqheight()
+        group_info_window.geometry(f"{width+20}x{height+10}")
 
     def handle_group_invite(self, from_user, gid):
         result = messagebox.askyesno("群聊邀请", f"{from_user} 邀请你加入群聊，是否同意？")
@@ -1017,6 +1150,26 @@ class ChatClient:
             if info and info.get("group_name") == group_name:
                 return gid
         return None
+
+    def update_group_info_window(self, window, gid):
+        """更新群组信息窗口的内容"""
+        info = self.groups.get(gid)
+        if not info or not window.winfo_exists():
+            return
+
+        # 更新标题和成员列表
+        window.title(f"群聊信息 - {info.get('group_name')}")
+        
+        listbox = None
+        for widget in window.winfo_children():
+            if isinstance(widget, tk.Listbox):
+                listbox = widget
+                break
+        
+        if listbox:
+            listbox.delete(0, tk.END)
+            for member in info.get("members", []):
+                listbox.insert(tk.END, member)
 
 if __name__ == '__main__':
     import sys
