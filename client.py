@@ -223,6 +223,18 @@ class ChatClient:
             except:
                 pass
             self.sock = None
+            
+        # 清理所有聊天相关的状态
+        self.chat_frames = {}
+        self.current_chat_frame = None
+        self.is_loading_messages = False
+        self.current_friend = None
+        self.current_group = None
+        self.friends = []
+        self.private_chats = {}
+        self.group_chat = []
+        self.groups = {}
+        
         self.build_login()
 
     def add_friend(self):
@@ -323,29 +335,49 @@ class ChatClient:
             is_self: 是否是自己发送的消息，影响显示位置
             friend: 好友或群组名称，用于确定使用哪个聊天框架
         """
+        # 检查组件是否仍然存在
+        try:
+            if not self.master.winfo_exists():
+                return
+        except:
+            return
+            
         if friend is None:
             friend = self.current_friend or self.current_group
         if friend and friend in self.chat_frames:
             chat_frame = self.chat_frames[friend]
         else:
             chat_frame = self.chat_container
-        bubble_frame = tk.Frame(chat_frame, bg="#f5f5f5")
-        if is_self:
-            bubble = tk.Label(bubble_frame, text=msg, bg="#aee1f9", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="e")
-            bubble.pack(side=tk.RIGHT, padx=8, pady=2)
-        else:
-            bubble = tk.Label(bubble_frame, text=msg, bg="#ffffff", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="w", relief="solid", bd=1)
-            bubble.pack(side=tk.LEFT, padx=8, pady=2)
-        
-        if time_str:
-            time_label = tk.Label(bubble_frame, text=time_str, bg="#f5f5f5", fg="#888888", font=("微软雅黑", 8))
-            time_label.pack(side=tk.BOTTOM, anchor="e" if is_self else "w", padx=8)
-        
-        bubble_frame.pack(fill=tk.X, anchor="e" if is_self else "w")
-        
-        # 强制更新UI并滚动到底部
-        if not self.is_loading_messages:
-            self.master.after_idle(self.scroll_to_bottom)
+            
+        # 检查聊天框架是否存在
+        try:
+            if not chat_frame.winfo_exists():
+                return
+        except:
+            return
+            
+        try:
+            bubble_frame = tk.Frame(chat_frame, bg="#f5f5f5")
+            if is_self:
+                bubble = tk.Label(bubble_frame, text=msg, bg="#aee1f9", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="e")
+                bubble.pack(side=tk.RIGHT, padx=8, pady=2)
+            else:
+                bubble = tk.Label(bubble_frame, text=msg, bg="#ffffff", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="w", relief="solid", bd=1)
+                bubble.pack(side=tk.LEFT, padx=8, pady=2)
+            
+            if time_str:
+                time_label = tk.Label(bubble_frame, text=time_str, bg="#f5f5f5", fg="#888888", font=("微软雅黑", 8))
+                time_label.pack(side=tk.BOTTOM, anchor="e" if is_self else "w", padx=8)
+            
+            bubble_frame.pack(fill=tk.X, anchor="e" if is_self else "w")
+            
+            # 强制更新UI并滚动到底部
+            if not self.is_loading_messages:
+                self.master.after_idle(self.scroll_to_bottom)
+        except tk.TclError:
+            # Widget可能已被销毁，忽略错误
+            logging.warning("尝试在已销毁的widget上显示消息")
+            pass
 
     def scroll_to_bottom(self):
         """滚动到聊天区域底部"""
@@ -658,6 +690,13 @@ class ChatClient:
                         self.groups = {g["gid"]: g for g in group_list}
                         self.master.after(0, self.refresh_group_listbox)
                     
+                    elif mtype == "friends_list":
+                        friends_list = msg.get("friends", [])
+                        logging.info(f"Received friends list: {friends_list}")
+                        self.friends = friends_list
+                        # 更新好友列表框
+                        self.master.after(0, self.update_friends_listbox)
+                    
                     elif mtype == "private_chat":
                         logging.info(f"Received private chat message: {msg}")
                         from_user = msg.get("from")
@@ -694,6 +733,9 @@ class ChatClient:
                         if self.current_friend == chat_partner:
                             # 使用lambda的默认参数来捕获当前值
                             self.master.after(0, lambda s=show, t=time_str, i=is_self, p=chat_partner: self.display_message_with_time(s, t, i, friend=p))
+                        # 如果没有当前聊天对象但消息来自好友，则预加载消息到该好友的消息列表中
+                        elif chat_partner in self.friends and chat_partner not in self.private_chats:
+                            self.private_chats[chat_partner] = [((show, time_str), is_self)]
                     
                     elif mtype == "group_chat":
                         logging.info(f"Received group chat message: {msg}")
@@ -1050,11 +1092,11 @@ class ChatClient:
         # --- Top section with labels and listbox ---
         top_frame = tk.Frame(group_info_window)
         top_frame.pack(pady=5, padx=10, fill="both", expand=True)
-        
         tk.Label(top_frame, text=f"群名: {info.get('group_name')}").pack()
         tk.Label(top_frame, text=f"群主: {info.get('owner')}").pack()
         tk.Label(top_frame, text="成员列表:").pack(pady=(10, 2))
         
+
         members_list = tk.Listbox(top_frame)
         for m in members:
             members_list.insert(tk.END, m)
@@ -1170,6 +1212,17 @@ class ChatClient:
             listbox.delete(0, tk.END)
             for member in info.get("members", []):
                 listbox.insert(tk.END, member)
+
+                
+    def update_friends_listbox(self):
+        """更新好友列表框"""
+        try:
+            self.friends_listbox.delete(0, tk.END)
+            for friend in self.friends:
+                self.friends_listbox.insert(tk.END, friend)
+        except tk.TclError:
+            logging.warning("update_friends_listbox called on a destroyed widget.")
+
 
 if __name__ == '__main__':
     import sys

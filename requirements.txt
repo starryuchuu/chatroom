@@ -1,2 +1,2 @@
-pycryptodome
-argon2-cffi
+pycryptodome>=3.20.0
+argon2-cffi>=23.1.0

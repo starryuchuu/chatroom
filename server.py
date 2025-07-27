@@ -396,53 +396,60 @@ def send_history(client_sock, username):
     """
     session_key = session_keys.get(client_sock)
     if not session_key:
+        logging.warning(f"No session key found for user '{username}' when sending history.")
         return
 
-    conn = sqlite3.connect("chat.db")
-    cursor = conn.cursor()
-    
-    # 发送群聊历史 - 只发送用户所在群组的
-    cursor.execute("SELECT gid, members FROM groups")
-    all_groups = cursor.fetchall()
-    user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
-    
-    if user_gids:
-        # 使用参数化查询来避免SQL注入
-        placeholders = ','.join('?' for _ in user_gids)
-        query = f"SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({placeholders}) ORDER BY id ASC"
-        cursor.execute(query, user_gids)
+    try:
+        conn = sqlite3.connect("chat.db")
+        cursor = conn.cursor()
+        
+        # 发送群聊历史 - 只发送用户所在群组的
+        cursor.execute("SELECT gid, members FROM groups")
+        all_groups = cursor.fetchall()
+        user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
+        
+        if user_gids:
+            # 使用参数化查询来避免SQL注入
+            placeholders = ','.join('?' for _ in user_gids)
+            query = f"SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({placeholders}) ORDER BY id ASC"
+            cursor.execute(query, user_gids)
+            rows = cursor.fetchall()
+            for row in rows:
+                from_user, gid, message, timestamp = row
+                encrypted_msg = encrypt_message(message, session_key)
+                hist_msg = {
+                    "type": "group_chat",
+                    "from": from_user,
+                    "gid": gid,
+                    "content": encrypted_msg,
+                    "timestamp": timestamp
+                }
+                send_msg(client_sock, hist_msg)
+        
+        # 发送私聊历史
+        cursor.execute("""
+            SELECT from_user, to_user, message, timestamp FROM messages 
+            WHERE chat_type='private' AND (from_user=? OR to_user=?) 
+            ORDER BY id ASC
+        """, (username, username))
         rows = cursor.fetchall()
         for row in rows:
-            from_user, gid, message, timestamp = row
+            from_user, to_user, message, timestamp = row
             encrypted_msg = encrypt_message(message, session_key)
             hist_msg = {
-                "type": "group_chat",
+                "type": "private_chat", # 使用private_chat类型，客户端可以统一处理
                 "from": from_user,
-                "gid": gid,
+                "to": to_user,
                 "content": encrypted_msg,
                 "timestamp": timestamp
             }
             send_msg(client_sock, hist_msg)
-    
-    # 发送私聊历史
-    cursor.execute("""
-        SELECT from_user, to_user, message, timestamp FROM messages 
-        WHERE chat_type='private' AND (from_user=? OR to_user=?) 
-        ORDER BY id ASC
-    """, (username, username))
-    rows = cursor.fetchall()
-    for row in rows:
-        from_user, to_user, message, timestamp = row
-        encrypted_msg = encrypt_message(message, session_key)
-        hist_msg = {
-            "type": "private_chat", # 使用private_chat类型，客户端可以统一处理
-            "from": from_user,
-            "to": to_user,
-            "content": encrypted_msg,
-            "timestamp": timestamp
-        }
-        send_msg(client_sock, hist_msg)
-    conn.close()
+        conn.close()
+        logging.info(f"Successfully sent history to user '{username}'.")
+    except Exception as e:
+        logging.error(f"Error sending history to user '{username}': {e}")
+        if conn:
+            conn.close()
 
 # 检查用户是否存在
 def user_exists(username):
@@ -625,6 +632,10 @@ def handle_client(client_sock, addr):
                 user_friends[username] = load_friends(username)
                 send_msg(client_sock, {"type": "login_result", "success": True})
                 logging.info(f"User {username} logged in from {addr}")
+                
+                # 发送好友列表
+                friends_list = list(user_friends[username])
+                send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
                 
                 # 发送用户所属的群组列表
                 send_user_groups(client_sock, username)
@@ -890,8 +901,13 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group invite from '{inviter}' failed: User '{to_user}' does not exist.")
                         continue
 
-                    # 检查是否是好友关系
-                    if to_user not in user_friends.get(inviter, set()):
+                    # 检查是否是好友关系（直接查询数据库而不是依赖内存中的好友列表）
+                    conn = sqlite3.connect("chat.db")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (inviter, to_user))
+                    count = cursor.fetchone()[0]
+                    conn.close()
+                    if count == 0:
                         send_msg(client_sock, {"type": "group_invite_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
                         logging.warning(f"Group invite from '{inviter}' to '{to_user}' blocked: not friends.")
                         continue
