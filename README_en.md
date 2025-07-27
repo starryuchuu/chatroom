@@ -32,6 +32,14 @@ This project is a secure encrypted chat room system implemented in both Python a
   - Group member management
   - User-friendly error handling
 
+- 🖼️ **Interface Showcase**
+  - Login Interface
+    ![Login Interface](images/login%20in.PNG)
+  - Main Page
+    ![Main Page](images/main%20page.png)
+  - Chat Interface
+    ![Chat Interface](images/chat.PNG)
+
 - 🛠 **Technical Stack**
   - Python 3.x (Client)
   - Tkinter (GUI interface)
