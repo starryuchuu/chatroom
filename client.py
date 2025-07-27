@@ -1092,11 +1092,11 @@ class ChatClient:
         # --- Top section with labels and listbox ---
         top_frame = tk.Frame(group_info_window)
         top_frame.pack(pady=5, padx=10, fill="both", expand=True)
-        
         tk.Label(top_frame, text=f"群名: {info.get('group_name')}").pack()
         tk.Label(top_frame, text=f"群主: {info.get('owner')}").pack()
         tk.Label(top_frame, text="成员列表:").pack(pady=(10, 2))
         
+
         members_list = tk.Listbox(top_frame)
         for m in members:
             members_list.insert(tk.END, m)
@@ -1212,6 +1212,7 @@ class ChatClient:
             listbox.delete(0, tk.END)
             for member in info.get("members", []):
                 listbox.insert(tk.END, member)
+
                 
     def update_friends_listbox(self):
         """更新好友列表框"""
@@ -1221,6 +1222,7 @@ class ChatClient:
                 self.friends_listbox.insert(tk.END, friend)
         except tk.TclError:
             logging.warning("update_friends_listbox called on a destroyed widget.")
+
 
 if __name__ == '__main__':
     import sys
