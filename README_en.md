@@ -109,8 +109,11 @@ chatroom/
 │   ├── README.md                # Go server documentation
 │   ├── start.bat                # Windows startup script
 │   ├── chatroom-server.exe      # Compiled executable file
-│   └── chat.db                  # SQLite database file
 ```
+
+## Database Information
+
+The database file (`chat.db`) will be automatically created when the Go server is run for the first time.
 
 ## Database Structure
 

@@ -84,8 +84,11 @@ chatroom/
 │   ├── README.md                # Go服务端说明文件
 │   ├── start.bat                # Windows启动脚本
 │   ├── chatroom-server.exe      # 编译后的可执行文件
-│   └── chat.db                  # SQLite数据库文件
 ```
+
+## 数据库说明
+
+数据库文件 (`chat.db`) 会在 Go 服务端首次运行时自动创建。
 
 ## 运行说明
 
