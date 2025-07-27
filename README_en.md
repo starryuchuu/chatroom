@@ -78,13 +78,19 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ```
 chatroom/
-├── server.py         # Python server code (group chat/session key/group management/database persistence)
-├── client.py         # Python client code (group chat/session key/group management/GUI)
-├── requirements.txt  # Python dependency list
-├── README.md         # Chinese documentation
-├── README_en.md      # English README
-├── LICENSE           # GNU GPL v3 License
-├── go-server/        # Go language implementation of the server
+├── client.py                    # Python client code (group chat/session key/group management/GUI)
+├── GROUP_FEATURES_GUIDE.md      # Group features guide
+├── LICENSE                      # GNU GPL v3 License
+├── README.md                    # Chinese documentation
+├── README_en.md                 # English README
+├── requirements.txt             # Python dependency list
+├── server.py                    # Python server code (group chat/session key/group management/database persistence)
+├── go-server/                   # Go language implementation of the server
+│   ├── chatroom-server.exe      # Compiled executable file
+│   ├── go.mod                   # Go module definition
+│   ├── go.sum                   # Go module checksums
+│   ├── README.md                # Go server documentation
+│   ├── start.bat                # Windows startup script
 │   ├── cmd/
 │   │   └── server/
 │   │       └── main.go          # Server main program entry point
@@ -93,30 +99,28 @@ chatroom/
 │   │   │   └── crypto.go        # Encryption related functions
 │   │   ├── database/
 │   │   │   ├── database.go      # Database initialization
-│   │   │   ├── user_queries.go  # User-related database operations
-│   │   │   ├── message_queries.go # Message-related database operations
 │   │   │   ├── friend_queries.go # Friend-related database operations
-│   │   │   └── group_queries.go # Group-related database operations
+│   │   │   ├── group_queries.go # Group-related database operations
+│   │   │   ├── message_queries.go # Message-related database operations
+│   │   │   └── user_queries.go  # User-related database operations
 │   │   ├── handlers/
 │   │   │   ├── auth_handler.go  # Authentication related processing
 │   │   │   └── chat_handler.go  # Chat related processing
 │   │   ├── models/
-│   │   │   ├── user.go          # User model
+│   │   │   ├── group.go         # Group model
 │   │   │   ├── message.go       # Message model
-│   │   │   └── group.go         # Group model
+│   │   │   └── user.go          # User model
 │   │   ├── protocol/
 │   │   │   └── protocol.go      # Communication protocol
 │   │   ├── server/
-│   │   │   ├── server.go        # Server core logic
-│   │   │   ├── client_manager.go # Client management interface
-│   │   │   └── client_manager_impl.go # Client management implementation
+│   │   │   ├── client_manager_impl.go # Client management implementation
+│   │   │   └── server.go        # Server core logic
 │   │   └── types/
 │   │       └── types.go         # Type definitions
-│   ├── go.mod                   # Go module definition
-│   ├── go.sum                   # Go module checksums
-│   ├── README.md                # Go server documentation
-│   ├── start.bat                # Windows startup script
-│   ├── chatroom-server.exe      # Compiled executable file
+├── images/                      # Interface screenshots
+│   ├── chat.PNG                 # Chat interface
+│   ├── login in.PNG             # Login interface
+│   └── main page.png            # Main page
 ```
 
 ## Database Information

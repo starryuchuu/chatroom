@@ -25,6 +25,11 @@
 
 ```
 go-server/
+├── chatroom-server.exe      # 编译后的可执行文件
+├── go.mod                   # Go模块定义
+├── go.sum                   # Go模块校验和
+├── README.md                # 本说明文件
+├── start.bat                # Windows启动脚本
 ├── cmd/
 │   └── server/
 │       └── main.go          # 服务端主程序入口
@@ -33,30 +38,24 @@ go-server/
 │   │   └── crypto.go        # 加密相关功能
 │   ├── database/
 │   │   ├── database.go      # 数据库初始化
-│   │   ├── user_queries.go  # 用户相关数据库操作
-│   │   ├── message_queries.go # 消息相关数据库操作
 │   │   ├── friend_queries.go # 好友相关数据库操作
-│   │   └── group_queries.go # 群组相关数据库操作
+│   │   ├── group_queries.go # 群组相关数据库操作
+│   │   ├── message_queries.go # 消息相关数据库操作
+│   │   └── user_queries.go  # 用户相关数据库操作
 │   ├── handlers/
 │   │   ├── auth_handler.go  # 认证相关处理
 │   │   └── chat_handler.go  # 聊天相关处理
 │   ├── models/
-│   │   ├── user.go          # 用户模型
+│   │   ├── group.go         # 群组模型
 │   │   ├── message.go       # 消息模型
-│   │   └── group.go         # 群组模型
+│   │   └── user.go          # 用户模型
 │   ├── protocol/
 │   │   └── protocol.go      # 通信协议
 │   ├── server/
-│   │   ├── server.go        # 服务端核心逻辑
 │   │   ├── client_manager_impl.go # 客户端管理实现
-│   │   └── client_manager.go # 客户端管理接口
+│   │   └── server.go        # 服务端核心逻辑
 │   └── types/
 │       └── types.go         # 类型定义
-├── go.mod                   # Go模块定义
-├── go.sum                   # Go模块校验和
-├── README.md                # 本说明文件
-├── start.bat                # Windows启动脚本
-└── chatroom-server.exe      # 编译后的可执行文件
 ```
 
 ## 编译和运行

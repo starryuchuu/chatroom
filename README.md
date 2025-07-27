@@ -53,13 +53,19 @@
 
 ```
 chatroom/
-├── server.py         # Python服务端代码（支持群聊/密钥交换/群组管理/数据库持久化）
-├── client.py         # Python客户端代码（支持群聊/密钥交换/群组管理/GUI）
-├── requirements.txt  # Python依赖说明
-├── README.md         # 中文说明
-├── README_en.md      # English README
-├── LICENSE           # GNU GPL v3许可证
-├── go-server/        # Go语言实现的服务端
+├── client.py                    # Python客户端代码（支持群聊/密钥交换/群组管理/GUI）
+├── GROUP_FEATURES_GUIDE.md      # 群组功能说明
+├── LICENSE                      # GNU GPL v3许可证
+├── README.md                    # 中文说明
+├── README_en.md                 # English README
+├── requirements.txt             # Python依赖说明
+├── server.py                    # Python服务端代码（支持群聊/密钥交换/群组管理/数据库持久化）
+├── go-server/                   # Go语言实现的服务端
+│   ├── chatroom-server.exe      # 编译后的可执行文件
+│   ├── go.mod                   # Go模块定义
+│   ├── go.sum                   # Go模块校验和
+│   ├── README.md                # Go服务端说明文件
+│   ├── start.bat                # Windows启动脚本
 │   ├── cmd/
 │   │   └── server/
 │   │       └── main.go          # 服务端主程序入口
@@ -68,30 +74,28 @@ chatroom/
 │   │   │   └── crypto.go        # 加密相关功能
 │   │   ├── database/
 │   │   │   ├── database.go      # 数据库初始化
-│   │   │   ├── user_queries.go  # 用户相关数据库操作
-│   │   │   ├── message_queries.go # 消息相关数据库操作
 │   │   │   ├── friend_queries.go # 好友相关数据库操作
-│   │   │   └── group_queries.go # 群组相关数据库操作
+│   │   │   ├── group_queries.go # 群组相关数据库操作
+│   │   │   ├── message_queries.go # 消息相关数据库操作
+│   │   │   └── user_queries.go  # 用户相关数据库操作
 │   │   ├── handlers/
 │   │   │   ├── auth_handler.go  # 认证相关处理
 │   │   │   └── chat_handler.go  # 聊天相关处理
 │   │   ├── models/
-│   │   │   ├── user.go          # 用户模型
+│   │   │   ├── group.go         # 群组模型
 │   │   │   ├── message.go       # 消息模型
-│   │   │   └── group.go         # 群组模型
+│   │   │   └── user.go          # 用户模型
 │   │   ├── protocol/
 │   │   │   └── protocol.go      # 通信协议
 │   │   ├── server/
-│   │   │   ├── server.go        # 服务端核心逻辑
-│   │   │   ├── client_manager.go # 客户端管理接口
-│   │   │   └── client_manager_impl.go # 客户端管理实现
+│   │   │   ├── client_manager_impl.go # 客户端管理实现
+│   │   │   └── server.go        # 服务端核心逻辑
 │   │   └── types/
 │   │       └── types.go         # 类型定义
-│   ├── go.mod                   # Go模块定义
-│   ├── go.sum                   # Go模块校验和
-│   ├── README.md                # Go服务端说明文件
-│   ├── start.bat                # Windows启动脚本
-│   ├── chatroom-server.exe      # 编译后的可执行文件
+├── images/                      # 界面截图
+│   ├── chat.PNG                 # 聊天界面
+│   ├── login in.PNG             # 登录界面
+│   └── main page.png            # 主界面
 ```
 
 ## 数据库说明
