@@ -396,53 +396,60 @@ def send_history(client_sock, username):
     """
     session_key = session_keys.get(client_sock)
     if not session_key:
+        logging.warning(f"No session key found for user '{username}' when sending history.")
         return
 
-    conn = sqlite3.connect("chat.db")
-    cursor = conn.cursor()
-    
-    # 发送群聊历史 - 只发送用户所在群组的
-    cursor.execute("SELECT gid, members FROM groups")
-    all_groups = cursor.fetchall()
-    user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
-    
-    if user_gids:
-        # 使用参数化查询来避免SQL注入
-        placeholders = ','.join('?' for _ in user_gids)
-        query = f"SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({placeholders}) ORDER BY id ASC"
-        cursor.execute(query, user_gids)
+    try:
+        conn = sqlite3.connect("chat.db")
+        cursor = conn.cursor()
+        
+        # 发送群聊历史 - 只发送用户所在群组的
+        cursor.execute("SELECT gid, members FROM groups")
+        all_groups = cursor.fetchall()
+        user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
+        
+        if user_gids:
+            # 使用参数化查询来避免SQL注入
+            placeholders = ','.join('?' for _ in user_gids)
+            query = f"SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({placeholders}) ORDER BY id ASC"
+            cursor.execute(query, user_gids)
+            rows = cursor.fetchall()
+            for row in rows:
+                from_user, gid, message, timestamp = row
+                encrypted_msg = encrypt_message(message, session_key)
+                hist_msg = {
+                    "type": "group_chat",
+                    "from": from_user,
+                    "gid": gid,
+                    "content": encrypted_msg,
+                    "timestamp": timestamp
+                }
+                send_msg(client_sock, hist_msg)
+        
+        # 发送私聊历史
+        cursor.execute("""
+            SELECT from_user, to_user, message, timestamp FROM messages 
+            WHERE chat_type='private' AND (from_user=? OR to_user=?) 
+            ORDER BY id ASC
+        """, (username, username))
         rows = cursor.fetchall()
         for row in rows:
-            from_user, gid, message, timestamp = row
+            from_user, to_user, message, timestamp = row
             encrypted_msg = encrypt_message(message, session_key)
             hist_msg = {
-                "type": "group_chat",
+                "type": "private_chat", # 使用private_chat类型，客户端可以统一处理
                 "from": from_user,
-                "gid": gid,
+                "to": to_user,
                 "content": encrypted_msg,
                 "timestamp": timestamp
             }
             send_msg(client_sock, hist_msg)
-    
-    # 发送私聊历史
-    cursor.execute("""
-        SELECT from_user, to_user, message, timestamp FROM messages 
-        WHERE chat_type='private' AND (from_user=? OR to_user=?) 
-        ORDER BY id ASC
-    """, (username, username))
-    rows = cursor.fetchall()
-    for row in rows:
-        from_user, to_user, message, timestamp = row
-        encrypted_msg = encrypt_message(message, session_key)
-        hist_msg = {
-            "type": "private_chat", # 使用private_chat类型，客户端可以统一处理
-            "from": from_user,
-            "to": to_user,
-            "content": encrypted_msg,
-            "timestamp": timestamp
-        }
-        send_msg(client_sock, hist_msg)
-    conn.close()
+        conn.close()
+        logging.info(f"Successfully sent history to user '{username}'.")
+    except Exception as e:
+        logging.error(f"Error sending history to user '{username}': {e}")
+        if conn:
+            conn.close()
 
 # 检查用户是否存在
 def user_exists(username):
@@ -536,6 +543,34 @@ def delete_group_db(gid):
     finally:
         conn.close()
 
+def update_group_name_db(gid, new_name):
+    conn = sqlite3.connect("chat.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE groups SET group_name=? WHERE gid=?", (new_name, gid))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"更新群组名称失败: {e}")
+        return False
+    finally:
+        conn.close()
+
+def transfer_group_ownership_db(gid, new_owner):
+    conn = sqlite3.connect("chat.db")
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE groups SET owner=? WHERE gid=?", (new_owner, gid))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"转让群组所有权失败: {e}")
+        return False
+    finally:
+        conn.close()
+
 # 处理客户端连接
 def handle_client(client_sock, addr):
     logging.info(f"Client connected from {addr}")
@@ -597,6 +632,10 @@ def handle_client(client_sock, addr):
                 user_friends[username] = load_friends(username)
                 send_msg(client_sock, {"type": "login_result", "success": True})
                 logging.info(f"User {username} logged in from {addr}")
+                
+                # 发送好友列表
+                friends_list = list(user_friends[username])
+                send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
                 
                 # 发送用户所属的群组列表
                 send_user_groups(client_sock, username)
@@ -862,8 +901,13 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group invite from '{inviter}' failed: User '{to_user}' does not exist.")
                         continue
 
-                    # 检查是否是好友关系
-                    if to_user not in user_friends.get(inviter, set()):
+                    # 检查是否是好友关系（直接查询数据库而不是依赖内存中的好友列表）
+                    conn = sqlite3.connect("chat.db")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (inviter, to_user))
+                    count = cursor.fetchone()[0]
+                    conn.close()
+                    if count == 0:
                         send_msg(client_sock, {"type": "group_invite_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
                         logging.warning(f"Group invite from '{inviter}' to '{to_user}' blocked: not friends.")
                         continue
@@ -908,20 +952,13 @@ def handle_client(client_sock, addr):
                         }
                         send_msg(client_sock, payload)
                         logging.info(f"User '{user_to_join}' successfully joined group '{gid}'.")
-                        # 通知所有群成员有新成员加入
+                        
+                        # 向所有成员广播群组更新信息
+                        update_payload = {"type": "group_update", "gid": gid, "group_name": group["group_name"], "owner": group["owner"], "members": group["members"]}
                         for member in group["members"]:
                             sock = get_sock_by_username(member)
                             if sock:
-                                member_session_key = session_keys.get(sock)
-                                if member_session_key:
-                                    join_notification = {
-                                        "type": "group_chat",
-                                        "from": "系统消息",
-                                        "gid": gid,
-                                        "content": encrypt_message(f"{user_to_join} 加入了群聊。", member_session_key),
-                                        "timestamp": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                    }
-                                    send_msg(sock, join_notification)
+                                send_msg(sock, update_payload)
                     else:
                         send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "加入失败"})
                         logging.error(f"Failed to update group members in DB for group '{gid}' after join attempt by '{user_to_join}'.")
@@ -1030,6 +1067,148 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group_info request failed: gid '{gid}' not found.")
                 except Exception as e:
                     logging.error(f"Error processing group_info from {current_username}: {e}")
+            
+            elif mtype == "group_disband":
+                try:
+                    gid = msg.get("gid")
+                    requester = current_username
+                    logging.info(f"Processing group disband request for gid '{gid}' from '{requester}'.")
+                    
+                    group = get_group_db(gid)
+                    if not group:
+                        send_msg(client_sock, {"type": "group_disband_result", "success": False, "error": "群组不存在"})
+                        logging.warning(f"Group disband by '{requester}' failed: Group '{gid}' does not exist.")
+                        continue
+                    if requester != group["owner"]:
+                        send_msg(client_sock, {"type": "group_disband_result", "success": False, "error": "只有群主才能解散群聊"})
+                        logging.warning(f"Group disband by '{requester}' blocked: Not the owner of group '{gid}'.")
+                        continue
+
+                    if delete_group_db(gid):
+                        # 从内存中删除群组数据
+                        if gid in groups_data:
+                            del groups_data[gid]
+                        
+                        # 通知所有成员群组已解散
+                        disband_notification = {
+                            "type": "group_disband_notification",
+                            "gid": gid,
+                            "group_name": group["group_name"]
+                        }
+                        for member in group["members"]:
+                            sock = get_sock_by_username(member)
+                            if sock:
+                                send_msg(sock, disband_notification)
+                        
+                        send_msg(client_sock, {"type": "group_disband_result", "success": True, "gid": gid})
+                        logging.info(f"Group '{gid}' successfully disbanded by '{requester}'.")
+                    else:
+                        send_msg(client_sock, {"type": "group_disband_result", "success": False, "error": "解散群聊失败"})
+                        logging.error(f"Failed to disband group '{gid}' by '{requester}'.")
+                except Exception as e:
+                    logging.error(f"Error processing group_disband from {current_username}: {e}")
+
+            elif mtype == "group_transfer":
+                try:
+                    gid = msg.get("gid")
+                    new_owner = msg.get("new_owner")
+                    requester = current_username
+                    logging.info(f"Processing group transfer request for gid '{gid}' from '{requester}' to '{new_owner}'.")
+                    
+                    group = get_group_db(gid)
+                    if not group:
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "群组不存在"})
+                        logging.warning(f"Group transfer by '{requester}' failed: Group '{gid}' does not exist.")
+                        continue
+                    if requester != group["owner"]:
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "只有群主才能转让群聊"})
+                        logging.warning(f"Group transfer by '{requester}' blocked: Not the owner of group '{gid}'.")
+                        continue
+                    if new_owner not in group["members"]:
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "新群主必须是群成员"})
+                        logging.warning(f"Group transfer by '{requester}' failed: New owner '{new_owner}' not in group '{gid}'.")
+                        continue
+                    if new_owner == requester:
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "不能转让给自己"})
+                        logging.warning(f"Group transfer by '{requester}' failed: Cannot transfer to self.")
+                        continue
+
+                    if transfer_group_ownership_db(gid, new_owner):
+                        # 更新内存中的群组数据
+                        group["owner"] = new_owner
+                        if gid in groups_data:
+                            groups_data[gid] = group
+                        
+                        # 通知所有成员群主已变更
+                        transfer_notification = {
+                            "type": "group_transfer_notification",
+                            "gid": gid,
+                            "old_owner": requester,
+                            "new_owner": new_owner,
+                            "group_name": group["group_name"]
+                        }
+                        for member in group["members"]:
+                            sock = get_sock_by_username(member)
+                            if sock:
+                                send_msg(sock, transfer_notification)
+                        
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": True, "gid": gid, "new_owner": new_owner})
+                        logging.info(f"Group '{gid}' ownership successfully transferred from '{requester}' to '{new_owner}'.")
+                    else:
+                        send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "转让群主失败"})
+                        logging.error(f"Failed to transfer group '{gid}' ownership from '{requester}' to '{new_owner}'.")
+                except Exception as e:
+                    logging.error(f"Error processing group_transfer from {current_username}: {e}")
+
+            elif mtype == "group_rename":
+                try:
+                    gid = msg.get("gid")
+                    new_name = msg.get("new_name")
+                    requester = current_username
+                    logging.info(f"Processing group rename request for gid '{gid}' from '{requester}' to '{new_name}'.")
+                    
+                    group = get_group_db(gid)
+                    if not group:
+                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "群组不存在"})
+                        logging.warning(f"Group rename by '{requester}' failed: Group '{gid}' does not exist.")
+                        continue
+                    if requester != group["owner"]:
+                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "只有群主才能修改群聊名称"})
+                        logging.warning(f"Group rename by '{requester}' blocked: Not the owner of group '{gid}'.")
+                        continue
+                    if not new_name or new_name.strip() == "":
+                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "群聊名称不能为空"})
+                        logging.warning(f"Group rename by '{requester}' failed: New name is empty.")
+                        continue
+
+                    if update_group_name_db(gid, new_name):
+                        # 保存旧名称用于通知
+                        old_name = group["group_name"]
+                        # 更新内存中的群组数据
+                        group["group_name"] = new_name
+                        if gid in groups_data:
+                            groups_data[gid] = group
+                        
+                        # 通知所有成员群组名称已变更
+                        rename_notification = {
+                            "type": "group_rename_notification",
+                            "gid": gid,
+                            "old_name": old_name,
+                            "new_name": new_name,
+                            "owner": requester
+                        }
+                        for member in group["members"]:
+                            sock = get_sock_by_username(member)
+                            if sock:
+                                send_msg(sock, rename_notification)
+                        
+                        send_msg(client_sock, {"type": "group_rename_result", "success": True, "gid": gid, "new_name": new_name})
+                        logging.info(f"Group '{gid}' successfully renamed from '{old_name}' to '{new_name}' by '{requester}'.")
+                    else:
+                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "修改群聊名称失败"})
+                        logging.error(f"Failed to rename group '{gid}' to '{new_name}' by '{requester}'.")
+                except Exception as e:
+                    logging.error(f"Error processing group_rename from {current_username}: {e}")
             
             else:
                 logging.warning(f"Unknown message type received: {mtype} from {current_username}")
