@@ -178,7 +178,8 @@ python client.py
 
 ## Notes
 
-- The default server port is `12345`
+- The python server default port is `12345`
+- The go server default port is `12346`
 - The database file will be automatically created on first run
 - All messages are AES-GCM encrypted for security
 - Session key is exchanged via RSA public key encryption
