@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"fmt"
 	"net"
 )
 
@@ -43,6 +44,12 @@ func RecvMsg(conn net.Conn) (map[string]interface{}, error) {
 	msgLen := binary.BigEndian.Uint32(header)
 
 	data := make([]byte, msgLen)
+
+	// 限制最大消息长度为 10MB，防止内存耗尽攻击
+	const maxMessageLen = 10 * 1024 * 1024
+	if msgLen > maxMessageLen {
+		return nil, fmt.Errorf("message too large: %d bytes (max: %d)", msgLen, maxMessageLen)
+	}
 	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, err
 	}

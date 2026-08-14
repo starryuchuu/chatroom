@@ -16,13 +16,19 @@ import hashlib
 # 配置日志记录，设置日志级别为INFO，格式为时间-级别-消息
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+# 用于保护 friend_request_result 的锁
+friend_request_lock = threading.Lock()
 # 服务器地址
 SERVER_HOST = '127.0.0.1'
 # 服务器端口
 SERVER_PORT = 12345
 # 服务器公钥指纹（用于防止中间人攻击）
 # 首次运行时注释掉下面的 EXPECTED_SERVER_KEY_FINGERPRINT，运行后从日志中获取实际指纹并填入
+# 安全提示：生产环境中必须设置此值以防止中间人攻击
 EXPECTED_SERVER_KEY_FINGERPRINT = None  # 示例：'a1b2c3d4...' 填入实际的 SHA-256 指纹
+# TODO: 首次连接后从日志获取服务器公钥指纹并设置 above，然后取消注释下一行进行验证
+# EXPECTED_SERVER_KEY_FINGERPRINT = '<从日志中获取的实际指纹>'
 
 # 接收指定字节数的数据
 def recvall(sock, n):
@@ -256,7 +262,8 @@ class ChatClient:
             messagebox.showerror("错误", f"{friend} 已经是你的好友")
             return
         
-        self.friend_request_result = None
+        with friend_request_lock:
+            self.friend_request_result = None
         req = {
             "type": "friend_request",
             "from": self.username,
@@ -276,7 +283,9 @@ class ChatClient:
         参数:
             friend: 好友用户名
         """
-        if self.friend_request_result is None:
+        with friend_request_lock:
+            result = self.friend_request_result
+        if result is None:
             messagebox.showinfo("提示", "好友申请发送成功")
 
     def handle_friend_request(self, from_user):
@@ -910,7 +919,8 @@ class ChatClient:
                     
                     elif mtype == "friend_request_result":
                         logging.info(f"Received friend request result: {msg}")
-                        self.friend_request_result = msg.get("success")
+                        with friend_request_lock:
+                            self.friend_request_result = msg.get("success")
                         if not msg.get("success"):
                             error_msg = msg.get("error", "好友申请失败")
                             self.master.after(0, lambda: messagebox.showerror("好友申请失败", error_msg))
