@@ -14,6 +14,8 @@ import (
 // HandleClientMessages 处理认证成功后的客户端消息循环
 func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, clientManager types.ClientManager) {
 	for {
+		// 重置读取超时
+		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		msg, err := protocol.RecvMsg(conn)
 		if err != nil {
 			log.Printf("从用户 %s 接收消息失败: %v", username, err)
