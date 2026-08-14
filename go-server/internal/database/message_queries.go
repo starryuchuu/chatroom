@@ -48,6 +48,7 @@ func GetChatHistory(username string) ([]models.Message, error) {
 			}
 		}
 
+		// 使用参数化查询，避免 SQL 注入 - 修复字符串拼接问题
 		query := `
 			SELECT from_user, gid, message, timestamp, chat_type, to_user
 			FROM messages
