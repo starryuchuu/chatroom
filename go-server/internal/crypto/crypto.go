@@ -57,7 +57,7 @@ func EnsureRSAKeys() (*rsa.PrivateKey, []byte) {
 
 // generateRSAKeys 生成并保存RSA密钥对
 func generateRSAKeys(privPath, pubPath string) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privKey, err := rsa.GenerateKey(rand.Reader, 3072) // 使用 3072 位 RSA 密钥长度，提供更强的安全性
 	if err != nil {
 		log.Fatalf("无法生成RSA密钥: %v", err)
 	}

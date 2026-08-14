@@ -1,1 +1,33 @@
-Nothing should be ignored since the changes only include Go source files (.go) which are not build artifacts, dependencies, or temporary files.
+```
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
+*.out
+
+# Dependencies
+venv/
+.venv/
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Go build artifacts
+go-server/cmd/server/*.exe
+go-server/cmd/server/*.out
+go-server/pkg/
+go-server/bin/
+```

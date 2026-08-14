@@ -11,6 +11,7 @@ import struct
 import logging
 import json
 import time
+import hashlib
 
 # 配置日志记录，设置日志级别为INFO，格式为时间-级别-消息
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,6 +20,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 SERVER_HOST = '127.0.0.1'
 # 服务器端口
 SERVER_PORT = 12345
+# 服务器公钥指纹（用于防止中间人攻击）
+# 首次运行时注释掉下面的 EXPECTED_SERVER_KEY_FINGERPRINT，运行后从日志中获取实际指纹并填入
+EXPECTED_SERVER_KEY_FINGERPRINT = None  # 示例：'a1b2c3d4...' 填入实际的 SHA-256 指纹
 
 # 接收指定字节数的数据
 def recvall(sock, n):
@@ -471,6 +475,22 @@ class ChatClient:
                 return
             
             public_key = RSA.import_key(public_key_data["key"])
+            
+            # 验证服务器公钥指纹（防止中间人攻击）
+            public_key_bytes = public_key.export_key(format='DER')
+            key_fingerprint = hashlib.sha256(public_key_bytes).hexdigest()
+            logging.info(f"Server public key fingerprint: {key_fingerprint}")
+            
+            if EXPECTED_SERVER_KEY_FINGERPRINT is not None:
+                if key_fingerprint != EXPECTED_SERVER_KEY_FINGERPRINT:
+                    messagebox.showerror("安全警告", 
+                        f"服务器公钥指纹不匹配！\n\n预期：{EXPECTED_SERVER_KEY_FINGERPRINT}\n实际：{key_fingerprint}\n\n可能遭受中间人攻击，连接已终止。")
+                    self.sock.close()
+                    self.sock = None
+                    return
+                else:
+                    logging.info("Server public key fingerprint verified successfully.")
+            
             cipher_rsa_encrypt = PKCS1_OAEP.new(public_key)
 
             # 2. 生成并发送会话密钥
