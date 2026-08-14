@@ -1,192 +1,253 @@
-# 简易加密聊天室 / Encrypted Chat Room
+# 🔐 加密聊天室 / Encrypted Chat Room
 
-[English README](./README_en.md)
+[English Version](./README_en.md) | [群组功能指南](./GROUP_FEATURES_GUIDE.md)
 
-## 项目简介
+![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
+![Python](https://img.shields.io/badge/python-3.x-green.svg)
+![Go](https://img.shields.io/badge/go-1.24+-blue.svg)
 
-本项目是一个基于 Python 和 Go 的安全加密聊天室，采用现代加密技术（RSA+AES-GCM）实现端到端加密通信。系统支持多用户注册、登录、群聊、私聊、好友管理和群组管理等功能，并使用 SQLite 数据库实现消息持久化存储。所有敏感信息（如密码）都经过安全的 Argon2 算法加密存储，保证用户数据安全。
+---
 
-## 主要特性
+## 📖 项目简介
 
-- 🔒 **安全性**
-  - 端到端加密通信，使用 RSA 进行密钥交换
-  - AES-GCM 模式加密所有消息内容
-  - Argon2 算法加密存储用户密码
-  - 安全的会话密钥管理机制
+本项目是一个**安全加密的即时通讯聊天室系统**，采用现代密码学技术实现端到端加密通信。系统提供完整的社交功能，包括私聊、群聊、好友管理等，同时确保所有通信内容和用户数据的安全性。
 
-- 💬 **社交功能**
-  - 支持私聊和群聊
-  - 好友添加与管理
-  - 群组创建与管理
-  - 在线状态实时更新
+### ✨ 核心优势
 
-- 💾 **数据管理**
-  - SQLite 数据库持久化存储
-  - 聊天历史记录查询
-  - 用户信息管理
-  - 群组信息维护
+- **🔒 端到端加密**：RSA 密钥交换 + AES-GCM 消息加密
+- **🛡️ 密码安全**：Argon2 哈希算法存储用户密码
+- **💬 丰富功能**：支持私聊、群聊、好友管理、群组管理
+- **💾 数据持久化**：SQLite 数据库存储聊天记录和用户信息
+- **🚀 双服务端**：Python 和 Go 两种实现，满足不同需求
 
-- 🎨 **用户体验**
-  - 简洁直观的图形界面
-  - 实时消息提醒
-  - 群组成员管理
-  - 良好的错误提示
+---
 
-- 🖼️ **界面展示**
-  - 登录界面
-    ![登录界面](images/login%20in.PNG)
-  - 主界面
-    ![主界面](images/main%20page.png)
-  - 聊天界面
-    ![聊天界面](images/chat.PNG)
+## 🖼️ 界面预览
 
-- 🛠 **技术依赖**
-  - Python 3.x (客户端)
-  - Tkinter (GUI界面)
-  - pycryptodome (加密功能)
-  - argon2-cffi (密码哈希)
-  - Go 1.24+ (服务端)
-  - SQLite3 (数据存储)
-  - 其他内置模块 (socket, threading, datetime, logging等)
+| 登录界面 | 主界面 | 聊天界面 |
+|---------|--------|---------|
+| ![登录界面](images/login%20in.PNG) | ![主界面](images/main%20page.png) | ![聊天界面](images/chat.PNG) |
 
-## 目录结构
+---
 
-```
-chatroom/
-├── client.py                    # Python客户端代码（支持群聊/密钥交换/群组管理/GUI）
-├── GROUP_FEATURES_GUIDE.md      # 群组功能说明
-├── LICENSE                      # GNU GPL v3许可证
-├── README.md                    # 中文说明
-├── README_en.md                 # English README
-├── requirements.txt             # Python依赖说明
-├── server.py                    # Python服务端代码（支持群聊/密钥交换/群组管理/数据库持久化）
-├── go-server/                   # Go语言实现的服务端
-│   ├── chatroom-server.exe      # 编译后的可执行文件
-│   ├── go.mod                   # Go模块定义
-│   ├── go.sum                   # Go模块校验和
-│   ├── README.md                # Go服务端说明文件
-│   ├── start.bat                # Windows启动脚本
-│   ├── cmd/
-│   │   └── server/
-│   │       └── main.go          # 服务端主程序入口
-│   ├── internal/
-│   │   ├── crypto/
-│   │   │   └── crypto.go        # 加密相关功能
-│   │   ├── database/
-│   │   │   ├── database.go      # 数据库初始化
-│   │   │   ├── friend_queries.go # 好友相关数据库操作
-│   │   │   ├── group_queries.go # 群组相关数据库操作
-│   │   │   ├── message_queries.go # 消息相关数据库操作
-│   │   │   └── user_queries.go  # 用户相关数据库操作
-│   │   ├── handlers/
-│   │   │   ├── auth_handler.go  # 认证相关处理
-│   │   │   └── chat_handler.go  # 聊天相关处理
-│   │   ├── models/
-│   │   │   ├── group.go         # 群组模型
-│   │   │   ├── message.go       # 消息模型
-│   │   │   └── user.go          # 用户模型
-│   │   ├── protocol/
-│   │   │   └── protocol.go      # 通信协议
-│   │   ├── server/
-│   │   │   ├── client_manager_impl.go # 客户端管理实现
-│   │   │   └── server.go        # 服务端核心逻辑
-│   │   └── types/
-│   │       └── types.go         # 类型定义
-├── images/                      # 界面截图
-│   ├── chat.PNG                 # 聊天界面
-│   ├── login in.PNG             # 登录界面
-│   └── main page.png            # 主界面
+## 🚀 快速开始
+
+### 环境要求
+
+- **Python 客户端**: Python 3.x
+- **Python 服务端**: Python 3.x
+- **Go 服务端**: Go 1.24+
+- **操作系统**: Windows / Linux / macOS
+
+### 安装依赖
+
+```bash
+pip install -r requirements.txt
 ```
 
-## 数据库说明
+### 启动服务端
 
-数据库文件 (`chat.db`) 会在 Go 服务端首次运行时自动创建。
-
-## 运行说明
-
-### Python服务端
+#### 方式一：Python 服务端（端口 12345）
 
 ```bash
 python server.py
 ```
 
-服务器首次启动时会自动生成RSA密钥对（private_key.pem 和 public_key.pem）。
+> 首次启动时会自动生成 RSA 密钥对（`private_key.pem` 和 `public_key.pem`）
 
-### Go服务端
+#### 方式二：Go 服务端（端口 12346）
 
-Windows系统可以使用start.bat脚本启动：
-
+**Windows:**
 ```bash
 cd go-server
 start.bat
 ```
 
-或者直接运行可执行文件：
-
+**Linux/macOS:**
 ```bash
 cd go-server
-./chatroom-server.exe
+./chatroom-server
 ```
 
-### 客户端
+### 启动客户端
 
 ```bash
 python client.py
 ```
 
-## 数据库结构
+---
 
-系统使用SQLite数据库存储用户、消息、好友和群组信息，包含以下表：
+## 📋 功能特性
 
-1. `users` 表：存储用户信息
-   - id: 用户ID
-   - username: 用户名（唯一）
-   - password: 密码（Argon2哈希）
+### 🔒 安全特性
 
-2. `messages` 表：存储聊天消息
-   - id: 消息ID
-   - chat_type: 聊天类型（private/group）
-   - from_user: 发送者
-   - to_user: 接收者（私聊时使用）
-   - gid: 群组ID（群聊时使用）
-   - message: 消息内容
-   - timestamp: 时间戳
+| 功能 | 说明 |
+|------|------|
+| RSA 密钥交换 | 安全的会话密钥协商机制 |
+| AES-GCM 加密 | 所有消息内容加密传输 |
+| Argon2 哈希 | 用户密码安全存储 |
+| 会话密钥管理 | 动态密钥更新机制 |
 
-3. `friends` 表：存储好友关系
-   - user: 用户
-   - friend: 好友
+### 💬 社交功能
 
-4. `groups` 表：存储群组信息
-   - gid: 群组ID
-   - group_name: 群组名称
-   - owner: 群主
-   - members: 群组成员（JSON格式）
-   - created_at: 创建时间
+- ✅ **私聊通信**：一对一加密聊天
+- ✅ **群聊功能**：支持多人在线群聊
+- ✅ **好友管理**：添加、删除好友，查看好友列表
+- ✅ **群组管理**：创建群组、邀请成员、踢出成员
+- ✅ **高级管理**：解散群组、转让群主、修改群名
+- ✅ **在线状态**：实时显示用户在线状态
 
-## 注意事项
+### 💾 数据管理
 
-- python服务端默认监听端口 `12345`
-- go服务端默认监听端口`12346` 
-- 数据库文件会在首次运行时自动创建
-- 所有消息都经过AES-GCM加密
-- 用户密码使用Argon2哈希算法存储
-- 好友关系是双向的
-- 群主不能直接退出群聊，需要先解散群聊或转让群主
+- 聊天历史记录持久化存储
+- 用户信息和群组信息管理
+- 好友关系维护（双向关系）
+- SQLite 数据库高效存储
 
-## 常见问题
+---
 
-- 端口被占用：请检查端口或更换
-- 连接失败：请确认服务端已启动，网络正常
-- 数据库异常：请确保有写权限，或检查 sqlite3 安装
-- 群聊相关问题：请确保群组成员正确，群主不可直接退出群聊
+## 📁 项目结构
 
-## 新增/改进功能
-- 端到端加密：消息采用 AES-GCM 加密，密钥通过 RSA 公钥加密交换
-- 密码安全：用户密码采用 Argon2 哈希算法存储
-- 群组功能：支持群聊创建、邀请、加入、踢人、群主管理，群组信息持久化
-- 群组高级功能：支持群主解散群聊、转让群主、修改群聊名称
-- 聊天协议全面升级，所有消息均为结构化 JSON 格式
-- 完善的错误处理与日志输出
-- 代码结构和注释进一步优化，提升可读性
-- 双语支持（中文/英文）
-- 双服务端实现（Python/Go）
+```
+chatroom/
+├── client.py                 # Python 客户端（GUI/加密/群聊）
+├── server.py                 # Python 服务端（数据库/加密/群聊）
+├── requirements.txt          # Python 依赖包
+├── go-server/                # Go 服务端实现
+│   ├── cmd/server/main.go    # 服务端入口
+│   ├── internal/             # 内部模块
+│   │   ├── crypto/           # 加密模块
+│   │   ├── database/         # 数据库操作
+│   │   ├── handlers/         # 请求处理器
+│   │   ├── models/           # 数据模型
+│   │   ├── protocol/         # 通信协议
+│   │   ├── server/           # 服务端核心
+│   │   └── types/            # 类型定义
+│   └── start.bat             # Windows 启动脚本
+├── images/                   # 界面截图
+├── tests/                    # 测试文件
+├── README.md                 # 中文文档
+├── README_en.md              # 英文文档
+└── GROUP_FEATURES_GUIDE.md   # 群组功能详解
+```
+
+---
+
+## 🗄️ 数据库结构
+
+系统使用 SQLite 数据库 (`chat.db`)，首次运行时自动创建。
+
+### 数据表说明
+
+#### 1. users（用户表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER | 用户 ID（主键） |
+| username | TEXT | 用户名（唯一） |
+| password | TEXT | 密码（Argon2 哈希） |
+
+#### 2. messages（消息表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER | 消息 ID（主键） |
+| chat_type | TEXT | 聊天类型（private/group） |
+| from_user | TEXT | 发送者 |
+| to_user | TEXT | 接收者（私聊） |
+| gid | INTEGER | 群组 ID（群聊） |
+| message | TEXT | 加密消息内容 |
+| timestamp | DATETIME | 时间戳 |
+
+#### 3. friends（好友表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| user | TEXT | 用户 |
+| friend | TEXT | 好友 |
+
+#### 4. groups（群组表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| gid | INTEGER | 群组 ID（主键） |
+| group_name | TEXT | 群组名称 |
+| owner | TEXT | 群主 |
+| members | TEXT | 成员列表（JSON） |
+| created_at | DATETIME | 创建时间 |
+
+---
+
+## ⚙️ 配置说明
+
+### 默认端口
+
+| 服务端 | 端口 |
+|--------|------|
+| Python 服务端 | 12345 |
+| Go 服务端 | 12346 |
+
+### 重要规则
+
+- 🔐 所有消息均经过 AES-GCM 加密
+- 🔑 用户密码使用 Argon2 哈希存储
+- 👥 好友关系为双向绑定
+- 👑 群主不能直接退出群聊，需先解散或转让
+- 💾 数据库文件在首次运行时自动创建
+
+---
+
+## ❓ 常见问题
+
+### 连接问题
+
+**Q: 端口被占用怎么办？**  
+A: 检查是否有其他程序占用端口，或修改服务端端口配置。
+
+**Q: 连接失败？**  
+A: 确认服务端已启动，检查防火墙设置和网络连接。
+
+### 数据库问题
+
+**Q: 数据库异常？**  
+A: 确保应用有数据库文件的读写权限，检查 SQLite3 是否正确安装。
+
+### 群聊问题
+
+**Q: 无法退出群聊？**  
+A: 群主需要先解散群聊或将群主身份转让给其他成员。
+
+**Q: 群聊消息发送失败？**  
+A: 检查群组成员列表是否正确，确认网络连接正常。
+
+---
+
+## 🆕 版本特性
+
+### 最新功能
+
+- ✅ 端到端加密通信（AES-GCM + RSA）
+- ✅ Argon2 密码哈希存储
+- ✅ 完整群组功能（创建/邀请/踢人/解散/转让）
+- ✅ 结构化 JSON 通信协议
+- ✅ 完善的错误处理和日志系统
+- ✅ 双语支持（中文/英文）
+- ✅ Python 和 Go 双服务端实现
+
+---
+
+## 📄 许可证
+
+本项目采用 [GNU GPL v3](./LICENSE) 开源许可证。
+
+---
+
+## 🤝 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+---
+
+## 📧 联系方式
+
+如有问题或建议，请通过 Issue 反馈。
