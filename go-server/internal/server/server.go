@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"log"
 	"net"
+	"time"
 )
 
 var privateKey *rsa.PrivateKey
@@ -43,6 +44,14 @@ func Start(address string) {
 
 // handleConnection 处理单个客户端连接
 func handleConnection(conn net.Conn) {
+	// 设置连接超时和 KeepAlive
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(3 * time.Minute)
+		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	}
+
 	var currentUsername string // 用于在连接关闭时移除客户端
 	defer func() {
 		if currentUsername != "" {
