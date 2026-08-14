@@ -1,24 +1,5 @@
-```
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+server.py appears to be a source file, and there are no build artifacts, dependencies, or temporary files in the changes. According to rule 6, when the change list contains only source or config files and no build artifacts, dependencies, or temp files, the output should be empty.
 
-# Dependencies
-go-server/vendor/
-go-server/bin/
+```python
 
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
 ```

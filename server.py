@@ -23,6 +23,13 @@ session_keys = {} # {socket: session_key}
 user_friends = {} # {username: set(friends)}
 groups_data = {} # {gid: {group_name, owner, members}}
 
+# 线程锁，用于保护共享数据
+clients_lock = threading.Lock()
+usernames_lock = threading.Lock()
+session_keys_lock = threading.Lock()
+user_friends_lock = threading.Lock()
+groups_data_lock = threading.Lock()
+
 
 # 检查并生成/加载RSA密钥
 def ensure_rsa_keys():
@@ -388,6 +395,7 @@ def send_history(client_sock, username):
         
         if user_gids:
             # 使用参数化查询来避免 SQL 注入 - 修复 f-string 拼接问题
+            placeholders = ','.join('?' * len(user_gids))
             query = "SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({}) ORDER BY id ASC".format(placeholders)
             cursor.execute(query, user_gids)
             rows = cursor.fetchall()
@@ -564,7 +572,8 @@ def handle_client(client_sock, addr):
         
         encrypted_session_key = base64.b64decode(encrypted_session_key_data["key"])
         session_key = cipher_rsa_decrypt.decrypt(encrypted_session_key)
-        session_keys[client_sock] = session_key
+        with session_keys_lock:
+            session_keys[client_sock] = session_key
         logging.info(f"Session key established with {addr}")
 
         auth_data = recv_msg(client_sock)
@@ -604,14 +613,17 @@ def handle_client(client_sock, addr):
                 return
 
             if validate_user(username, password):
-                usernames[client_sock] = username
+                with usernames_lock:
+                    usernames[client_sock] = username
                 current_username = username # 记录当前连接的用户名
-                user_friends[username] = load_friends(username)
+                with user_friends_lock:
+                    user_friends[username] = load_friends(username)
                 send_msg(client_sock, {"type": "login_result", "success": True})
                 logging.info(f"User {username} logged in from {addr}")
                 
                 # 发送好友列表
-                friends_list = list(user_friends[username])
+                with user_friends_lock:
+                    friends_list = list(user_friends[username])
                 send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
                 
                 # 发送用户所属的群组列表
@@ -770,7 +782,8 @@ def handle_client(client_sock, addr):
 
                     gid = create_group_db(owner, group_name, members)
                     if gid:
-                        groups_data[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                        with groups_data_lock:
+                            groups_data[gid] = {"group_name": group_name, "owner": owner, "members": members}
                         # 创建一个包含所有必要信息的消息负载
                         payload = {
                             "type": "group_create_result", 
@@ -918,7 +931,8 @@ def handle_client(client_sock, addr):
                     
                     group["members"].append(user_to_join)
                     if update_group_members_db(gid, group["members"]):
-                        groups_data[gid] = group # 更新内存中的群组数据
+                        with groups_data_lock:
+                            groups_data[gid] = group # 更新内存中的群组数据
                         payload = {
                             "type": "group_join_result",
                             "success": True,
@@ -965,7 +979,8 @@ def handle_client(client_sock, addr):
 
                     group["members"].remove(user_to_leave)
                     if update_group_members_db(gid, group["members"]):
-                        groups_data[gid] = group # 更新内存中的群组数据
+                        with groups_data_lock:
+                            groups_data[gid] = group # 更新内存中的群组数据
                         send_msg(client_sock, {"type": "group_leave_result", "success": True, "gid": gid})
                         logging.info(f"User '{user_to_leave}' successfully left group '{gid}'.")
                         
@@ -1008,7 +1023,8 @@ def handle_client(client_sock, addr):
 
                     group["members"].remove(kick_user)
                     if update_group_members_db(gid, group["members"]):
-                        groups_data[gid] = group # 更新内存中的群组数据
+                        with groups_data_lock:
+                            groups_data[gid] = group # 更新内存中的群组数据
                         
                         # 通知被踢者
                         kicked_sock = get_sock_by_username(kick_user)
@@ -1063,8 +1079,9 @@ def handle_client(client_sock, addr):
 
                     if delete_group_db(gid):
                         # 从内存中删除群组数据
-                        if gid in groups_data:
-                            del groups_data[gid]
+                        with groups_data_lock:
+                            if gid in groups_data:
+                                del groups_data[gid]
                         
                         # 通知所有成员群组已解散
                         disband_notification = {
@@ -1195,13 +1212,16 @@ def handle_client(client_sock, addr):
     except Exception as e:
         logging.exception(f"Exception in handle_client for {addr} (User: {current_username})")
     finally:
-        if client_sock in clients:
-            clients.remove(client_sock)
-        if client_sock in session_keys:
-            del session_keys[client_sock]
-        if current_username and client_sock in usernames and usernames[client_sock] == current_username:
-            del usernames[client_sock]
-            logging.info(f"User {current_username} disconnected.")
+        with clients_lock:
+            if client_sock in clients:
+                clients.remove(client_sock)
+        with session_keys_lock:
+            if client_sock in session_keys:
+                del session_keys[client_sock]
+        with usernames_lock:
+            if current_username and client_sock in usernames and usernames[client_sock] == current_username:
+                del usernames[client_sock]
+                logging.info(f"User {current_username} disconnected.")
         broadcast_online_users()
         client_sock.close()
 
@@ -1240,7 +1260,8 @@ def main():
     while True:
         try:
             client_sock, addr = server.accept()
-            clients.append(client_sock)
+            with clients_lock:
+                clients.append(client_sock)
             logging.info(f"Accepted connection from {addr}")
             threading.Thread(target=handle_client, args=(client_sock, addr), daemon=True).start()
         except Exception as e:
