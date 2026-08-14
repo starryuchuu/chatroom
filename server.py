@@ -12,6 +12,19 @@ import struct
 import logging
 import json
 import uuid # 用于生成群组ID
+import stat
+
+# 安全配置常量
+RSA_KEY_SIZE = 3072  # 使用更强的 RSA 密钥长度
+SERVER_BIND_HOST = '127.0.0.1'  # 仅监听本地回环地址，防止外部访问
+SERVER_PORT = 12345
+SESSION_TIMEOUT_MINUTES = 30  # 会话过期时间（分钟）
+RATE_LIMIT_MAX_ATTEMPTS = 5  # 最大尝试次数
+RATE_LIMIT_WINDOW_SECONDS = 60  # 速率限制时间窗口（秒）
+LOG_SENSITIVE_DATA = False  # 是否记录敏感数据
+PRIVATE_KEY_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
+DB_FILE_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
+
 
 # 配置日志记录，设置日志级别为INFO，格式为时间-级别-消息
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,8 +33,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 clients = []
 usernames = {} # {socket: username}
 session_keys = {} # {socket: session_key}
+session_timestamps = {} # {socket: login_timestamp} 用于会话过期检查
 user_friends = {} # {username: set(friends)}
 groups_data = {} # {gid: {group_name, owner, members}}
+
+# 速率限制跟踪：{ip_address: [(timestamp, attempt_count)]}
+rate_limit_tracker = {}
+rate_limit_lock = threading.Lock()
 
 # 线程锁，用于保护共享数据
 clients_lock = threading.Lock()
@@ -54,10 +72,12 @@ def ensure_rsa_keys():
             return False
 
     if not (os.path.exists("private_key.pem") and os.path.exists("public_key.pem")) or not is_key_valid():
-        key = RSA.generate(2048)
+        key = RSA.generate(RSA_KEY_SIZE)
         private_key = key.export_key()
         with open('private_key.pem', 'wb') as f:
             f.write(private_key)
+        # 设置私钥文件权限为仅所有者可读写 (600)
+        os.chmod('private_key.pem', PRIVATE_KEY_PERMISSIONS)
         public_key = key.publickey().export_key()
         with open('public_key.pem', 'wb') as f:
             f.write(public_key)
@@ -67,6 +87,62 @@ def ensure_rsa_keys():
     with open("public_key.pem", "rb") as f:
         public_key_pem = f.read()
     return private_key, public_key_pem
+
+# 速率限制检查函数
+def check_rate_limit(ip_address):
+    """
+    检查 IP 地址是否超出速率限制。
+    返回：True 如果允许请求，False 如果应该拒绝
+    """
+    current_time = datetime.datetime.now().timestamp()
+    with rate_limit_lock:
+        if ip_address not in rate_limit_tracker:
+            rate_limit_tracker[ip_address] = [(current_time, 1)]
+            return True
+        
+        # 清理过期记录
+        recent_attempts = [(t, c) for t, c in rate_limit_tracker[ip_address] 
+                          if current_time - t < RATE_LIMIT_WINDOW_SECONDS]
+        
+        # 计算总尝试次数
+        total_attempts = sum(c for _, c in recent_attempts)
+        
+        if total_attempts >= RATE_LIMIT_MAX_ATTEMPTS:
+            return False
+        
+        # 添加当前尝试
+        recent_attempts.append((current_time, 1))
+        rate_limit_tracker[ip_address] = recent_attempts
+        return True
+
+# 会话过期检查函数
+def is_session_expired(client_sock):
+    """
+    检查会话是否已过期。
+    返回：True 如果会话已过期，False 如果仍然有效
+    """
+    if client_sock not in session_timestamps:
+        return True
+    
+    current_time = datetime.datetime.now().timestamp()
+    session_start = session_timestamps[client_sock]
+    
+    return (current_time - session_start) > (SESSION_TIMEOUT_MINUTES * 60)
+
+# 安全日志函数 - 避免记录敏感信息
+def log_message(level, message, sensitive_data=None):
+    """
+    安全地记录日志，可选择性地过滤敏感数据。
+    """
+    if LOG_SENSITIVE_DATA and sensitive_data:
+        logging.log(level, f"{message}: {sensitive_data}")
+    else:
+        # 移除或脱敏敏感信息
+        safe_message = message
+        if sensitive_data:
+            safe_message += ": [REDACTED]"
+        logging.log(level, safe_message)
+
 
 private_key, public_key_pem = ensure_rsa_keys()
 cipher_rsa_decrypt = PKCS1_OAEP.new(private_key)
@@ -214,6 +290,9 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    # 设置数据库文件权限为仅所有者可读写 (600)
+    if os.path.exists("chat.db"):
+        os.chmod("chat.db", DB_FILE_PERMISSIONS)
 
 # 加载用户的好友列表
 def load_friends(username):
@@ -559,6 +638,15 @@ def transfer_group_ownership_db(gid, new_owner):
 # 处理客户端连接
 def handle_client(client_sock, addr):
     logging.info(f"Client connected from {addr}")
+    
+    # 速率限制检查
+    ip_address = addr[0]
+    if not check_rate_limit(ip_address):
+        logging.warning(f"Rate limit exceeded for IP {ip_address}")
+        send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
+        client_sock.close()
+        return
+    
     current_username = None
     try:
         # 1. 发送公钥
@@ -619,6 +707,8 @@ def handle_client(client_sock, addr):
                 with user_friends_lock:
                     user_friends[username] = load_friends(username)
                 send_msg(client_sock, {"type": "login_result", "success": True})
+                # 记录会话时间戳用于过期检查
+                session_timestamps[client_sock] = datetime.datetime.now().timestamp()
                 logging.info(f"User {username} logged in from {addr}")
                 
                 # 发送好友列表
@@ -641,6 +731,12 @@ def handle_client(client_sock, addr):
             return
 
         while True:
+            # 检查会话是否过期
+            if is_session_expired(client_sock):
+                logging.warning(f"Session expired for user {current_username}")
+                send_msg(client_sock, {"type": "error", "message": "会话已过期，请重新登录"})
+                break
+            
             msg = recv_msg(client_sock)
             if msg is None:
                 logging.info(f"Connection lost from {addr} (User: {current_username})")
@@ -1254,7 +1350,7 @@ def main():
     
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # 允许端口重用
-    server.bind(('0.0.0.0', 12345))
+    server.bind((SERVER_BIND_HOST, SERVER_PORT))
     server.listen(5)
     logging.info("Server started, waiting for connections...")
     while True:
