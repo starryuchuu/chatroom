@@ -1,26 +1,4 @@
-```
-# Dependencies
-go.sum
-
-# Build artifacts
-bin/
-dist/
-build/
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Editors
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+```yaml
+# Configuration file for GitHub Actions workflow
+!.github/workflows/build-executables.yml
 ```
