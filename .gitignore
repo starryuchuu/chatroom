@@ -17,6 +17,8 @@ venv/
 node_modules/
 .mypy_cache/
 .pytest_cache/
+dist/
+build/
 target/
 .gradle/
 
@@ -29,7 +31,7 @@ target/
 # Environment
 .env
 .env.local
-*.env.*
+.env.*
 
 # Editors
 .vscode/
