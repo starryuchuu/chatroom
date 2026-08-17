@@ -1,15 +1,25 @@
 name: Build Executables
 
-on:
+"on":
   push:
     branches: [ main, master, test ]
   pull_request:
     branches: [ main, master, test ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # ==================== Python ====================
   build-python-windows:
+    name: Build Python (Windows)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +27,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -24,28 +35,30 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      - name: Build Python Server EXE
-        run: |
-          pyinstaller --onefile --name server server.py
+      - name: Build server (EXE)
+        run: pyinstaller --onefile --clean --name server server.py
 
-      - name: Build Python Client EXE
-        run: |
-          pyinstaller --onefile --windowed --name client client.py
+      - name: Build client (EXE)
+        run: pyinstaller --onefile --windowed --clean --name client client.py
 
-      - name: Upload Python Server Artifact
+      - name: Upload server artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-server-windows
           path: dist/server.exe
+          if-no-files-found: error
 
-      - name: Upload Python Client Artifact
+      - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-client-windows
           path: dist/client.exe
+          if-no-files-found: error
 
   build-python-linux:
+    name: Build Python (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +66,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -60,107 +74,107 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
-      - name: Build Python Server EXE
-        run: |
-          pyinstaller --onefile --name server server.py
+      - name: Build server
+        run: pyinstaller --onefile --clean --name server server.py
 
-      - name: Build Python Client EXE
-        run: |
-          pyinstaller --onefile --name client client.py
+      - name: Build client
+        run: pyinstaller --onefile --clean --name client client.py
 
-      - name: Upload Python Server Artifact
+      - name: Upload server artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-server-linux
           path: dist/server
+          if-no-files-found: error
 
-      - name: Upload Python Client Artifact
+      - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
           name: python-client-linux
           path: dist/client
+          if-no-files-found: error
 
+  # ==================== Go ====================
   build-go-windows:
+    name: Build Go Server (Windows)
     runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          # go.mod 要求 go 1.23.0 + toolchain go1.24.5，必须使用 1.24.5 及以上版本
+          go-version: '1.24.5'
+          cache: true
 
-      - name: Build Go Server EXE
-        run: |
-          cd go-server
-          go build -o server.exe ./cmd/server/main.go
+      - name: Run Go tests
+        working-directory: go-server
+        run: go test ./...
 
-      - name: Upload Go Server Artifact
+      - name: Build server (EXE)
+        working-directory: go-server
+        run: go build -o server.exe ./cmd/server/main.go
+
+      - name: Upload server artifact
         uses: actions/upload-artifact@v4
         with:
           name: go-server-windows
           path: go-server/server.exe
-
-  build-go-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-
-      - name: Build Go Server
-        run: |
-          cd go-server
-          go build -o server ./cmd/server/main.go
-
-      - name: Upload Go Server Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-server-linux
-          path: go-server/server
+          if-no-files-found: error
 
   build-go-cross-platform:
+    name: Build Go Server (Cross-platform)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          # go.mod 要求 go 1.23.0 + toolchain go1.24.5，必须使用 1.24.5 及以上版本
+          go-version: '1.24.5'
+          cache: true
 
-      - name: Build Go Server for Windows
-        run: |
-          cd go-server
-          GOOS=windows GOARCH=amd64 go build -o server-windows-amd64.exe ./cmd/server/main.go
+      - name: Build for Windows (amd64)
+        working-directory: go-server
+        run: GOOS=windows GOARCH=amd64 go build -o server-windows-amd64.exe ./cmd/server/main.go
 
-      - name: Build Go Server for Linux
-        run: |
-          cd go-server
-          GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./cmd/server/main.go
+      - name: Build for Linux (amd64)
+        working-directory: go-server
+        run: GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./cmd/server/main.go
 
-      - name: Build Go Server for macOS
-        run: |
-          cd go-server
-          GOOS=darwin GOARCH=amd64 go build -o server-darwin-amd64 ./cmd/server/main.go
+      - name: Build for macOS (amd64)
+        working-directory: go-server
+        run: GOOS=darwin GOARCH=amd64 go build -o server-darwin-amd64 ./cmd/server/main.go
 
-      - name: Upload Go Server Windows Artifact
+      - name: Build for Windows (arm64)
+        working-directory: go-server
+        run: GOOS=windows GOARCH=arm64 go build -o server-windows-arm64.exe ./cmd/server/main.go
+
+      - name: Build for Linux (arm64)
+        working-directory: go-server
+        run: GOOS=linux GOARCH=arm64 go build -o server-linux-arm64 ./cmd/server/main.go
+
+      - name: Build for macOS (arm64)
+        working-directory: go-server
+        run: GOOS=darwin GOARCH=arm64 go build -o server-darwin-arm64 ./cmd/server/main.go
+
+      - name: Upload cross-platform artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: go-server-windows-amd64
-          path: go-server/server-windows-amd64.exe
-
-      - name: Upload Go Server Linux Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-server-linux-amd64
-          path: go-server/server-linux-amd64
-
-      - name: Upload Go Server macOS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-server-darwin-amd64
-          path: go-server/server-darwin-amd64
+          name: go-server-cross-platform
+          path: |
+            go-server/server-windows-amd64.exe
+            go-server/server-linux-amd64
+            go-server/server-darwin-amd64
+            go-server/server-windows-arm64.exe
+            go-server/server-linux-arm64
+            go-server/server-darwin-arm64
+          if-no-files-found: error

@@ -280,7 +280,7 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 项目通过 GitHub Actions（`.github/workflows/build-executables.yml`）自动构建跨平台可执行文件：
 
 - **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
-- **Go 服务端**：Windows / Linux / macOS 三平台交叉编译
+- **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
 - 触发条件：推送到 `main` / `master` / `test` 分支，或 Pull Request
 - 构建产物通过 GitHub Actions Artifacts 下载
 
