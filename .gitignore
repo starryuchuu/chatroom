@@ -1,4 +1,24 @@
-```yaml
-# Configuration file for GitHub Actions workflow
-!.github/workflows/build-executables.yml
-```
+# ---- Python 缓存与 PyInstaller 构建产物 ----
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.spec
+
+# ---- 运行时生成的文件 ----
+chat.db
+chat.db-journal
+private_key.pem
+public_key.pem
+
+# ---- 可执行文件与 Go 构建产物 ----
+*.exe
+go-server/server-linux-*
+go-server/server-darwin-*
+
+# ---- 日志 ----
+*.log
+
+# ---- 操作系统文件 ----
+.DS_Store
+Thumbs.db
