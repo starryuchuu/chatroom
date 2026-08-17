@@ -41,6 +41,7 @@ go-server/
 │   │   ├── friend_queries.go # 好友相关数据库操作
 │   │   ├── group_queries.go # 群组相关数据库操作
 │   │   ├── message_queries.go # 消息相关数据库操作
+│   │   ├── password_test.go # Argon2 密码哈希单元测试
 │   │   └── user_queries.go  # 用户相关数据库操作
 │   ├── handlers/
 │   │   ├── auth_handler.go  # 认证相关处理
@@ -81,7 +82,7 @@ start.bat
 ./chatroom-server.exe
 ```
 
-服务端默认监听端口 `12346`。
+服务端默认仅监听本机回环地址 `127.0.0.1:12346`（可在 `cmd/server/main.go` 中修改）。
 
 ## 依赖
 
@@ -129,4 +130,17 @@ start.bat
 
 ## 测试
 
-需要更改客户端连接服务端的端口为“12346”，之后使用Python客户端 (`client.py`) 连接到Go服务端进行测试。
+### Go 单元测试
+
+```bash
+cd go-server
+go test ./...
+```
+
+包含 Argon2 密码哈希兼容性测试（旧格式裸哈希迁移、无效哈希拒绝）。
+
+### 使用 Python 客户端联调
+
+将 `client.py` 中的 `SERVER_PORT` 改为 `12346`，之后使用 Python 客户端 (`client.py`) 连接到 Go 服务端进行测试。
+
+> 注意：Go 服务端仅监听 `127.0.0.1`，请确保客户端与服务端在同一主机上运行。

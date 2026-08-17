@@ -1,10 +1,11 @@
 # 🔐 加密聊天室 / Encrypted Chat Room
 
-[English Version](./README_en.md) | [群组功能指南](./GROUP_FEATURES_GUIDE.md)
+[English Version](./README_en.md) | [群组功能指南](./GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](./go-server/README.md)
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
-![Python](https://img.shields.io/badge/python-3.x-green.svg)
+![Python](https://img.shields.io/badge/python-3.11+-green.svg)
 ![Go](https://img.shields.io/badge/go-1.24+-blue.svg)
+![CI](https://img.shields.io/badge/CI-GitHub%20Actions-orange.svg)
 
 ---
 
@@ -14,8 +15,9 @@
 
 ### ✨ 核心优势
 
-- **🔒 端到端加密**：RSA 密钥交换 + AES-GCM 消息加密
-- **🛡️ 密码安全**：Argon2 哈希算法存储用户密码
+- **🔒 端到端加密**：RSA-3072 密钥交换 + AES-GCM 消息加密
+- **🛡️ 密码安全**：Argon2id + 随机盐哈希算法存储用户密码
+- **🔐 防中间人攻击**：服务端公钥指纹（SHA-256）强制校验
 - **💬 丰富功能**：支持私聊、群聊、好友管理、群组管理
 - **💾 数据持久化**：SQLite 数据库存储聊天记录和用户信息
 - **🚀 双服务端**：Python 和 Go 两种实现，满足不同需求
@@ -34,9 +36,8 @@
 
 ### 环境要求
 
-- **Python 客户端**: Python 3.x
-- **Python 服务端**: Python 3.x
-- **Go 服务端**: Go 1.24+
+- **Python 客户端 / 服务端**: Python 3.11+
+- **Go 服务端**: Go 1.24+（`go.mod` 指定 toolchain `go1.24.5`）
 - **操作系统**: Windows / Linux / macOS
 
 ### 安装依赖
@@ -53,7 +54,8 @@ pip install -r requirements.txt
 python server.py
 ```
 
-> 首次启动时会自动生成 RSA 密钥对（`private_key.pem` 和 `public_key.pem`）
+> - 首次启动时会自动生成 RSA-3072 密钥对（`private_key.pem` 和 `public_key.pem`）
+> - 默认仅监听 `127.0.0.1`（本机回环），如需对外提供服务，请修改 `server.py` 中的 `SERVER_BIND_HOST`
 
 #### 方式二：Go 服务端（端口 12346）
 
@@ -63,17 +65,35 @@ cd go-server
 start.bat
 ```
 
-**Linux/macOS:**
+> 也可直接运行预编译的可执行文件 `go-server/chatroom-server.exe`。
+
+**Linux/macOS:**（需先编译）
 ```bash
 cd go-server
+go build -o chatroom-server ./cmd/server/main.go
 ./chatroom-server
 ```
+
+> Go 服务端默认仅监听 `127.0.0.1:12346`。
 
 ### 启动客户端
 
 ```bash
 python client.py
 ```
+
+### 客户端连接配置
+
+客户端默认连接本机 Python 服务端（`127.0.0.1:12345`），按需修改 `client.py` 顶部常量：
+
+| 场景 | 修改项 |
+|------|--------|
+| 连接 Go 服务端 | `SERVER_PORT = 12346` |
+| 连接远程服务器 | `SERVER_HOST` 改为目标 IP 或域名 |
+| 连接非本机服务器（生产环境） | 设置 `EXPECTED_SERVER_KEY_FINGERPRINT` 为服务器公钥指纹 |
+
+> ⚠️ 连接非本机服务器时**必须**设置 `EXPECTED_SERVER_KEY_FINGERPRINT`，否则客户端会拒绝连接（防止中间人攻击）。
+> 首次连接本机服务器后，可从服务端日志中获取实际指纹并填入。
 
 ---
 
@@ -83,10 +103,12 @@ python client.py
 
 | 功能 | 说明 |
 |------|------|
-| RSA 密钥交换 | 安全的会话密钥协商机制 |
+| RSA-3072 密钥交换 | 安全的会话密钥协商机制 |
 | AES-GCM 加密 | 所有消息内容加密传输 |
-| Argon2 哈希 | 用户密码安全存储 |
+| Argon2id 哈希 | 密码哈希 + 随机盐安全存储 |
 | 会话密钥管理 | 动态密钥更新机制 |
+| 公钥指纹校验 | 防止中间人攻击（MITM） |
+| 加密登录 | 登录密码通过 AES-GCM 加密传输 |
 
 ### 💬 社交功能
 
@@ -110,26 +132,66 @@ python client.py
 
 ```
 chatroom/
-├── client.py                 # Python 客户端（GUI/加密/群聊）
-├── server.py                 # Python 服务端（数据库/加密/群聊）
-├── requirements.txt          # Python 依赖包
-├── go-server/                # Go 服务端实现
-│   ├── cmd/server/main.go    # 服务端入口
-│   ├── internal/             # 内部模块
-│   │   ├── crypto/           # 加密模块
-│   │   ├── database/         # 数据库操作
-│   │   ├── handlers/         # 请求处理器
-│   │   ├── models/           # 数据模型
-│   │   ├── protocol/         # 通信协议
-│   │   ├── server/           # 服务端核心
-│   │   └── types/            # 类型定义
-│   └── start.bat             # Windows 启动脚本
-├── images/                   # 界面截图
-├── tests/                    # 测试文件
-├── README.md                 # 中文文档
-├── README_en.md              # 英文文档
-└── GROUP_FEATURES_GUIDE.md   # 群组功能详解
+├── client.py                          # Python 客户端（GUI/加密/群聊）
+├── server.py                          # Python 服务端（数据库/加密/群聊）
+├── requirements.txt                   # Python 依赖包
+├── go-server/                         # Go 服务端实现
+│   ├── README.md                      # Go 服务端文档
+│   ├── go.mod / go.sum                # Go 模块定义与校验和
+│   ├── chatroom-server.exe            # 预编译 Windows 可执行文件
+│   ├── start.bat                      # Windows 启动脚本
+│   ├── cmd/server/main.go             # 服务端入口
+│   └── internal/
+│       ├── crypto/                    # 加密模块
+│       ├── database/                  # 数据库操作（含 Argon2 密码哈希）
+│       ├── handlers/                  # 请求处理器（认证/聊天）
+│       ├── models/                    # 数据模型
+│       ├── protocol/                  # 通信协议
+│       ├── server/                    # 服务端核心
+│       └── types/                     # 类型定义
+├── images/                            # 界面截图
+├── tests/                             # 测试与漏洞验证脚本
+│   ├── test_python_fixes.py           # Python 安全修复单元测试
+│   ├── verify_recv_msg_len.py         # 消息长度限制漏洞验证脚本
+│   ├── e2e_verify.py                  # 端到端漏洞验证脚本（mock 加密依赖）
+│   ├── protocol_test.go               # Go 协议消息长度限制测试
+│   └── mocks/                         # 测试用 mock（Crypto / argon2）
+├── .github/workflows/                 # GitHub Actions 构建工作流
+│   └── build-executables.yml          # 跨平台自动构建
+├── README.md                          # 中文文档
+├── README_en.md                       # 英文文档
+└── GROUP_FEATURES_GUIDE.md            # 群组功能详解
 ```
+
+---
+
+## 🧪 测试
+
+### Python 测试
+
+```bash
+# 安全修复单元测试（客户端指纹 / 好友请求锁）
+python tests/test_python_fixes.py
+
+# 消息长度限制漏洞验证脚本（无需外部依赖）
+python tests/verify_recv_msg_len.py
+
+# 端到端漏洞验证（使用 tests/mocks 中的 mock 加密依赖，自动启动真实 server.py）
+python tests/e2e_verify.py
+```
+
+> `tests/mocks/` 提供了 `Crypto` 与 `argon2` 的轻量 mock，使安全验证脚本在未安装
+> 加密依赖的环境中也能运行。功能测试请先执行 `pip install -r requirements.txt`。
+
+### Go 测试
+
+```bash
+cd go-server
+go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈希测试）
+```
+
+> `tests/protocol_test.go` 为独立包测试（消息长度限制 / 头部解析 / 并发处理），
+> 在 `tests/` 目录下初始化临时 Go module 后即可运行。
 
 ---
 
@@ -182,18 +244,45 @@ chatroom/
 
 ### 默认端口
 
-| 服务端 | 端口 |
-|--------|------|
-| Python 服务端 | 12345 |
-| Go 服务端 | 12346 |
+| 服务端 | 监听地址 | 端口 |
+|--------|----------|------|
+| Python 服务端 | 127.0.0.1 | 12345 |
+| Go 服务端 | 127.0.0.1 | 12346 |
+
+> 两个服务端默认**仅监听本机回环地址**（`127.0.0.1`），防止外部访问。
+
+### 安全参数
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| RSA 密钥长度 | 3072 位 | 服务端密钥对 |
+| 单条消息上限 | 1 MB | 超过上限直接断开连接 |
+| 认证阶段超时 | 30 秒 | 未完成认证的连接将被关闭 |
+| 会话空闲超时 | 30 分钟 | 登录后空闲连接自动断开 |
+| 登录速率限制 | 5 次 / 60 秒 | 防止暴力破解 |
+| 用户名长度 | 2 ~ 20 字符 | 服务端强制校验 |
+| 密码长度 | 6 ~ 64 字符 | 服务端强制校验 |
+| 会话密钥 | AES-GCM 动态生成 | 每次登录重新协商 |
 
 ### 重要规则
 
 - 🔐 所有消息均经过 AES-GCM 加密
-- 🔑 用户密码使用 Argon2 哈希存储
+- 🔑 用户密码使用 Argon2id + 随机盐哈希存储
 - 👥 好友关系为双向绑定
 - 👑 群主不能直接退出群聊，需先解散或转让
-- 💾 数据库文件在首次运行时自动创建
+- 💾 数据库文件（`chat.db`）在首次运行时自动创建
+- 🗝️ 私钥文件与数据库文件权限默认设为 0600（仅所有者可读写）
+
+---
+
+## 🚀 CI / CD
+
+项目通过 GitHub Actions（`.github/workflows/build-executables.yml`）自动构建跨平台可执行文件：
+
+- **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
+- **Go 服务端**：Windows / Linux / macOS 三平台交叉编译
+- 触发条件：推送到 `main` / `master` / `test` 分支，或 Pull Request
+- 构建产物通过 GitHub Actions Artifacts 下载
 
 ---
 
@@ -202,10 +291,17 @@ chatroom/
 ### 连接问题
 
 **Q: 端口被占用怎么办？**  
-A: 检查是否有其他程序占用端口，或修改服务端端口配置。
+A: 检查是否有其他程序占用端口，或修改服务端端口配置（`server.py` / `main.go` 中的端口常量）。
 
 **Q: 连接失败？**  
-A: 确认服务端已启动，检查防火墙设置和网络连接。
+A: 确认服务端已启动，检查防火墙设置和网络连接。同时确认客户端端口与服务端一致（Python 服务端 `12345`，Go 服务端 `12346`）。
+
+**Q: 客户端提示"未配置服务器公钥指纹"并拒绝连接？**  
+A: 连接非本机服务器时必须设置 `EXPECTED_SERVER_KEY_FINGERPRINT`。先连接本机服务器，从服务端日志中获取
+`Server public key fingerprint: xxx` 的实际指纹，再填入 `client.py` 顶部常量。
+
+**Q: 如何连接 Go 服务端？**  
+A: 启动 Go 服务端后，将 `client.py` 中的 `SERVER_PORT` 改为 `12346`，重新启动客户端即可。
 
 ### 数据库问题
 
@@ -265,13 +361,16 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 最新功能
 
-- ✅ 端到端加密通信（AES-GCM + RSA）
-- ✅ Argon2 密码哈希存储
-- ✅ 完整群组功能（创建/邀请/踢人/解散/转让）
+- ✅ 端到端加密通信（AES-GCM + RSA-3072）
+- ✅ 服务端公钥指纹校验（防中间人攻击）
+- ✅ Argon2id 密码哈希存储（随机盐）
+- ✅ 完整群组功能（创建/邀请/踢人/解散/转让/重命名）
 - ✅ 结构化 JSON 通信协议
 - ✅ 完善的错误处理和日志系统
+- ✅ 安全加固（速率限制、消息长度上限、连接超时）
 - ✅ 双语支持（中文/英文）
 - ✅ Python 和 Go 双服务端实现
+- ✅ GitHub Actions 跨平台自动构建
 
 ---
 

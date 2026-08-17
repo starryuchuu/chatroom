@@ -1,6 +1,6 @@
 # Encrypted Chat Room
 
-[中文文档](./README.md)
+[中文文档](./README.md) | [Go Server Documentation](./go-server/README.md)
 
 ## Project Overview
 
@@ -9,10 +9,12 @@ This project is a secure encrypted chat room system implemented in both Python a
 ## Key Features
 
 - 🔒 **Security**
-  - End-to-end encrypted communication using RSA for key exchange
+  - End-to-end encrypted communication using RSA-3072 for key exchange
   - AES-GCM mode encryption for all messages
-  - Argon2 algorithm for password hashing
+  - Argon2id password hashing with random salt
   - Secure session key management
+  - Server public key fingerprint verification (anti-MITM)
+  - Encrypted login (credentials transmitted via AES-GCM)
 
 - 💬 **Social Features**
   - Support for private and group chat
@@ -41,11 +43,11 @@ This project is a secure encrypted chat room system implemented in both Python a
     ![Chat Interface](images/chat.PNG)
 
 - 🛠 **Technical Stack**
-  - Python 3.x (Client)
+  - Python 3.11+ (Client/Server)
   - Tkinter (GUI interface)
   - pycryptodome (Encryption features)
   - argon2-cffi (Password hashing)
-  - Go 1.24+ (Server)
+  - Go 1.24+ (Server, toolchain `go1.24.5`)
   - SQLite3 (Data storage)
   - Built-in modules (socket, threading, datetime, logging, etc.)
 
@@ -59,7 +61,7 @@ This project is a secure encrypted chat room system implemented in both Python a
 ## Environment Requirements
 
 ### Python Client/Server
-- Python 3.12 or higher
+- Python 3.11 or higher
 - Required modules:
   - socket, threading, datetime, sqlite3, hashlib, logging (built-in)
   - struct, json (built-in)
@@ -78,49 +80,61 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ```
 chatroom/
-├── client.py                    # Python client code (group chat/session key/group management/GUI)
-├── GROUP_FEATURES_GUIDE.md      # Group features guide
-├── LICENSE                      # GNU GPL v3 License
-├── README.md                    # Chinese documentation
-├── README_en.md                 # English README
-├── requirements.txt             # Python dependency list
-├── server.py                    # Python server code (group chat/session key/group management/database persistence)
-├── go-server/                   # Go language implementation of the server
-│   ├── chatroom-server.exe      # Compiled executable file
-│   ├── go.mod                   # Go module definition
-│   ├── go.sum                   # Go module checksums
-│   ├── README.md                # Go server documentation
-│   ├── start.bat                # Windows startup script
-│   ├── cmd/
-│   │   └── server/
-│   │       └── main.go          # Server main program entry point
-│   ├── internal/
-│   │   ├── crypto/
-│   │   │   └── crypto.go        # Encryption related functions
-│   │   ├── database/
-│   │   │   ├── database.go      # Database initialization
-│   │   │   ├── friend_queries.go # Friend-related database operations
-│   │   │   ├── group_queries.go # Group-related database operations
-│   │   │   ├── message_queries.go # Message-related database operations
-│   │   │   └── user_queries.go  # User-related database operations
-│   │   ├── handlers/
-│   │   │   ├── auth_handler.go  # Authentication related processing
-│   │   │   └── chat_handler.go  # Chat related processing
-│   │   ├── models/
-│   │   │   ├── group.go         # Group model
-│   │   │   ├── message.go       # Message model
-│   │   │   └── user.go          # User model
-│   │   ├── protocol/
-│   │   │   └── protocol.go      # Communication protocol
-│   │   ├── server/
-│   │   │   ├── client_manager_impl.go # Client management implementation
-│   │   │   └── server.go        # Server core logic
-│   │   └── types/
-│   │       └── types.go         # Type definitions
-├── images/                      # Interface screenshots
-│   ├── chat.PNG                 # Chat interface
-│   ├── login in.PNG             # Login interface
-│   └── main page.png            # Main page
+├── client.py                          # Python client code (group chat/session key/group management/GUI)
+├── server.py                          # Python server code (group chat/session key/group management/database persistence)
+├── requirements.txt                   # Python dependency list
+├── go-server/                         # Go language implementation of the server
+│   ├── README.md                      # Go server documentation
+│   ├── go.mod / go.sum                # Go module definition and checksums
+│   ├── chatroom-server.exe            # Precompiled Windows executable
+│   ├── start.bat                      # Windows startup script
+│   ├── cmd/server/main.go             # Server main program entry point
+│   └── internal/
+│       ├── crypto/                    # Encryption module
+│       ├── database/                  # Database operations (incl. Argon2id hashing)
+│       ├── handlers/                  # Request handlers (auth/chat)
+│       ├── models/                    # Data models
+│       ├── protocol/                  # Communication protocol
+│       ├── server/                    # Server core logic
+│       └── types/                     # Type definitions
+├── images/                            # Interface screenshots
+├── tests/                             # Tests and vulnerability verification scripts
+│   ├── test_python_fixes.py           # Python security fix unit tests
+│   ├── verify_recv_msg_len.py         # Message length limit verification script
+│   ├── e2e_verify.py                  # End-to-end verification (mocked crypto deps)
+│   ├── protocol_test.go               # Go protocol message length limit tests
+│   └── mocks/                         # Test mocks (Crypto / argon2)
+├── .github/workflows/                 # GitHub Actions workflows
+│   └── build-executables.yml          # Cross-platform auto build
+├── README.md                          # Chinese documentation
+├── README_en.md                       # English README
+├── GROUP_FEATURES_GUIDE.md            # Group features guide
+└── LICENSE                            # GNU GPL v3 License
+```
+
+## Testing
+
+### Python Tests
+
+```bash
+# Security fix unit tests (client fingerprint / friend request lock)
+python tests/test_python_fixes.py
+
+# Message length limit vulnerability verification (no external deps required)
+python tests/verify_recv_msg_len.py
+
+# End-to-end verification (uses mock crypto deps in tests/mocks, starts real server.py)
+python tests/e2e_verify.py
+```
+
+> `tests/mocks/` provides lightweight mocks for `Crypto` and `argon2`, allowing the
+> security verification scripts to run without installing the crypto dependencies.
+
+### Go Tests
+
+```bash
+cd go-server
+go test ./...          # Run all Go server tests (incl. Argon2 password hashing)
 ```
 
 ## Database Information
@@ -182,38 +196,66 @@ cd go-server
 ./chatroom-server.exe
 ```
 
+**Linux/macOS:** (build first)
+
+```bash
+cd go-server
+go build -o chatroom-server ./cmd/server/main.go
+./chatroom-server
+```
+
+Both servers only listen on `127.0.0.1` by default for security.
+
 ### Client
 
 ```bash
 python client.py
 ```
 
+The client connects to `127.0.0.1:12345` (Python server) by default. Modify the constants at the top of `client.py`:
+
+| Scenario | Change |
+|----------|--------|
+| Connect to Go server | `SERVER_PORT = 12346` |
+| Connect to a remote server | Set `SERVER_HOST` to the target IP or domain |
+| Connect to a non-local server (production) | Set `EXPECTED_SERVER_KEY_FINGERPRINT` to the server's public key fingerprint |
+
+> ⚠️ When connecting to a non-local server, you **must** set
+> `EXPECTED_SERVER_KEY_FINGERPRINT`, otherwise the client will refuse the connection
+> (anti-MITM). Obtain the fingerprint from the server log after your first local connection.
+
 ## Notes
 
-- The python server default port is `12345`
-- The go server default port is `12346`
-- The database file will be automatically created on first run
+- The Python server default port is `12345` (listens on `127.0.0.1`)
+- The Go server default port is `12346` (listens on `127.0.0.1`)
+- The database file (`chat.db`) will be automatically created on first run
 - All messages are AES-GCM encrypted for security
-- Session key is exchanged via RSA public key encryption
-- User passwords are stored using Argon2 hash algorithm
+- Session key is exchanged via RSA-3072 public key encryption
+- Login credentials are transmitted encrypted (`encrypted_login` protocol)
+- User passwords are stored using Argon2id + random salt hash algorithm
 - Friend relationships are bidirectional
 - Group owners cannot directly leave the group chat and must disband the group or transfer ownership first
+- Security limits: max message 1 MB, auth timeout 30s, session timeout 30min, rate limit 5/60s
 - Log information is output to the terminal for debugging
 
 ## Common Issues
 
-- Port occupied: Check if the port is in use or change it
-- Connection failure: Ensure the server is running and the network is operational
+- Port occupied: Check if the port is in use or change the port constant (`server.py` / `main.go`)
+- Connection failure: Ensure the server is running and the network is operational, and that client port matches the server (Python `12345`, Go `12346`)
+- "Server public key fingerprint not configured" refusal: set `EXPECTED_SERVER_KEY_FINGERPRINT` when connecting to a non-local server
 - Database errors: Verify write permissions or check sqlite3 installation
 - Group chat issues: Ensure group members are correct, owner cannot leave group directly
 
 ## Highlights
-- End-to-end encryption: AES-GCM for messages, session key exchanged via RSA public key
-- Password security: Argon2 hash for user passwords
+- End-to-end encryption: AES-GCM for messages, session key exchanged via RSA-3072 public key
+- Password security: Argon2id + random salt hash for user passwords
+- Anti-MITM: server public key fingerprint verification
+- Encrypted login: credentials transmitted via AES-GCM
+- Security hardening: rate limiting, message length limit, connection timeouts
 - Group features: group creation, invitation, join, kick, owner management, persistent group info
 - Advanced group features: group disbanding, ownership transfer, group name modification
 - All messages use structured JSON protocol
 - Robust error handling and logging
-- Further optimized code structure and comments for better readability
 - Bilingual support (Chinese/English)
 - Dual server implementation (Python/Go)
+- GitHub Actions cross-platform automated builds
