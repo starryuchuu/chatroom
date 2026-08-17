@@ -1,0 +1,166 @@
+name: Build Executables
+
+on:
+  push:
+    branches: [ main, master, test ]
+  pull_request:
+    branches: [ main, master, test ]
+  workflow_dispatch:
+
+jobs:
+  build-python-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Python Server EXE
+        run: |
+          pyinstaller --onefile --name server server.py
+
+      - name: Build Python Client EXE
+        run: |
+          pyinstaller --onefile --windowed --name client client.py
+
+      - name: Upload Python Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-server-windows
+          path: dist/server.exe
+
+      - name: Upload Python Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-client-windows
+          path: dist/client.exe
+
+  build-python-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build Python Server EXE
+        run: |
+          pyinstaller --onefile --name server server.py
+
+      - name: Build Python Client EXE
+        run: |
+          pyinstaller --onefile --name client client.py
+
+      - name: Upload Python Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-server-linux
+          path: dist/server
+
+      - name: Upload Python Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-client-linux
+          path: dist/client
+
+  build-go-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go Server EXE
+        run: |
+          cd go-server
+          go build -o server.exe ./cmd/server/main.go
+
+      - name: Upload Go Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-windows
+          path: go-server/server.exe
+
+  build-go-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go Server
+        run: |
+          cd go-server
+          go build -o server ./cmd/server/main.go
+
+      - name: Upload Go Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-linux
+          path: go-server/server
+
+  build-go-cross-platform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Go Server for Windows
+        run: |
+          cd go-server
+          GOOS=windows GOARCH=amd64 go build -o server-windows-amd64.exe ./cmd/server/main.go
+
+      - name: Build Go Server for Linux
+        run: |
+          cd go-server
+          GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./cmd/server/main.go
+
+      - name: Build Go Server for macOS
+        run: |
+          cd go-server
+          GOOS=darwin GOARCH=amd64 go build -o server-darwin-amd64 ./cmd/server/main.go
+
+      - name: Upload Go Server Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-windows-amd64
+          path: go-server/server-windows-amd64.exe
+
+      - name: Upload Go Server Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-linux-amd64
+          path: go-server/server-linux-amd64
+
+      - name: Upload Go Server macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-darwin-amd64
+          path: go-server/server-darwin-amd64
