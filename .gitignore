@@ -11,6 +11,9 @@ chat.db-journal
 private_key.pem
 public_key.pem
 
+# ---- 测试临时目录 ----
+.verify_online_tmp/
+
 # ---- 可执行文件与 Go 构建产物 ----
 *.exe
 go-server/server-linux-*

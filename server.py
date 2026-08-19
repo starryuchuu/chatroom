@@ -800,8 +800,6 @@ def handle_client(client_sock, addr):
                 return
 
             if validate_user(username, password):
-                with usernames_lock:
-                    usernames[client_sock] = username
                 current_username = username # 记录当前连接的用户名
                 with user_friends_lock:
                     user_friends[username] = load_friends(username)
@@ -810,6 +808,13 @@ def handle_client(client_sock, addr):
                 client_sock.settimeout(SESSION_TIMEOUT_MINUTES * 60)
                 # 记录会话时间戳用于过期检查
                 session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+                # 必须先发送 login_result，再将连接标记为"在线用户"：
+                # 否则并发登录/断开时，其他线程的 online_users 广播可能抢先到达该连接，
+                # 客户端会把 online_users 误当作登录响应而导致登录失败。
+                # 同时要紧接着就加入 usernames（在后续任何初始化推送之前），
+                # 以尽快生效重复登录拦截，避免同账号二次登录漏判。
+                with usernames_lock:
+                    usernames[client_sock] = username
                 logging.info(f"User {username} logged in from {addr}")
                 
                 # 发送好友列表
@@ -1520,9 +1525,13 @@ def broadcast_online_users():
     """
     广播在线用户列表给所有客户端。
     """
-    user_list = list(usernames.values())
+    # 在锁内做快照：避免并发登录/断开时读到半修改状态的 usernames，
+    # 同时避免在持有锁的情况下向慢速客户端发送消息导致阻塞。
+    with usernames_lock:
+        socks = list(usernames.keys())
+        user_list = list(usernames.values())
     message = {"type": "online_users", "users": user_list}
-    for sock in list(usernames.keys()):
+    for sock in socks:
         try:
             send_msg(sock, message)
         except Exception as e:
