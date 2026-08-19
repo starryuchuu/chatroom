@@ -133,6 +133,7 @@ class ChatClient:
         self.current_chat_frame = None  # 当前显示的聊天框架
         self.is_loading_messages = False  # 标记是否正在加载消息
         self.running = True  # 控制接收线程
+        self.server_port = int(SERVER_PORT)  # 连接端口（可在登录界面修改）
         self.build_login()
 
     def build_login(self):
@@ -152,6 +153,10 @@ class ChatClient:
         tk.Label(login_frame, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
         self.password_entry.pack(ipady=6)
+        tk.Label(login_frame, text="端口:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
+        self.port_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
+        self.port_entry.insert(0, str(self.server_port))
+        self.port_entry.pack(ipady=6)
         login_btn = tk.Button(login_frame, text="登录", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", activebackground="#5596e6", activeforeground="#fff", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.login)
         login_btn.pack(pady=(20, 10))
         register_btn = tk.Button(login_frame, text="注册", font=("微软雅黑", 12), bg="#f0f0f0", fg="#3a7bd5", activebackground="#dcdcdc", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.register)
@@ -457,6 +462,15 @@ class ChatClient:
         if not username or not password:
             messagebox.showerror("错误", "用户名和密码不能为空！")
             return
+        # 读取并校验端口
+        try:
+            port = int(self.port_entry.get().strip())
+            if not (1 <= port <= 65535):
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("错误", "端口必须是 1-65535 之间的整数！")
+            return
+        self.server_port = port
         self.username = username
         logging.info(f"Login attempt for user: {username}")
         self.connect_server(username, password)
@@ -471,7 +485,7 @@ class ChatClient:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)  # 设置连接超时
-            self.sock.connect((SERVER_HOST, SERVER_PORT))
+            self.sock.connect((SERVER_HOST, self.server_port))
             self.sock.settimeout(None)  # 连接后取消超时
 
             # 密钥交换
@@ -539,7 +553,7 @@ class ChatClient:
                 "data": encrypted_login
             }
             send_msg(self.sock, login_data)
-            logging.info(f"Connected to server {SERVER_HOST}:{SERVER_PORT}")
+            logging.info(f"Connected to server {SERVER_HOST}:{self.server_port}")
             
             auth_response = recv_msg(self.sock)
             if isinstance(auth_response, dict) and auth_response.get("type") == "login_result":
@@ -631,13 +645,22 @@ class ChatClient:
             if not username or not password:
                 messagebox.showerror("错误", "用户名和密码不能为空！")
                 return
+            # 读取并校验端口（与登录逻辑保持一致，确保注册时端口选择生效）
+            try:
+                port = int(self.port_entry.get().strip())
+                if not (1 <= port <= 65535):
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("错误", "端口必须是 1-65535 之间的整数！")
+                return
+            self.server_port = port
             
             temp_sock = None
             try:
                 # 1. 连接服务器并完成密钥交换
                 temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 temp_sock.settimeout(10)
-                temp_sock.connect((SERVER_HOST, SERVER_PORT))
+                temp_sock.connect((SERVER_HOST, self.server_port))
                 temp_sock.settimeout(None)
 
                 public_key_data = recv_msg(temp_sock)
