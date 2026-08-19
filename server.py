@@ -500,6 +500,7 @@ def send_history(client_sock, username):
         logging.warning(f"No session key found for user '{username}' when sending history.")
         return
 
+    conn = None
     try:
         conn = sqlite3.connect("chat.db")
         cursor = conn.cursor()
@@ -587,6 +588,39 @@ def get_sock_by_username(username):
         if uname == username:
             return sock
     return None
+
+# 用户上线时补发针对该用户的待处理好友请求（修复：离线请求"上线后可见"现在真正可见）
+def send_pending_friend_requests(client_sock, username):
+    """
+    用户登录成功后，将此前离线期间收到的好友请求补发给该用户。
+    参数:
+        client_sock: 新登录用户的套接字
+        username: 新登录用户名
+    """
+    with pending_friend_requests_lock:
+        pending = [(sender, target) for (sender, target) in pending_friend_requests if target == username]
+    for sender, _ in pending:
+        send_msg(client_sock, {"type": "friend_request", "from": sender})
+        logging.info(f"Delivered pending friend request from '{sender}' to '{username}' on login.")
+
+# 用户上线时补发针对该用户的待处理群邀请（修复：离线邀请"上线后可申请加入"现在真正可见）
+def send_pending_group_invites(client_sock, username):
+    """
+    用户登录成功后，将此前离线期间收到的群邀请补发给该用户。
+    参数:
+        client_sock: 新登录用户的套接字
+        username: 新登录用户名
+    """
+    with group_pending_joins_lock:
+        pending = []
+        for gid, joins in group_pending_joins.items():
+            if username in joins:
+                pending.append((gid, joins[username]))
+    for gid, inviter in pending:
+        group = get_group_db(gid)
+        if group:
+            send_msg(client_sock, {"type": "group_invite", "from": inviter, "gid": gid, "group_name": group["group_name"]})
+            logging.info(f"Delivered pending group invite from '{inviter}' to '{username}' for group '{gid}' on login.")
 
 # 群组相关辅助函数
 def create_group_db(owner, group_name, members):
@@ -787,6 +821,9 @@ def handle_client(client_sock, addr):
                 send_user_groups(client_sock, username)
                 
                 send_history(client_sock, username)
+                # 补发离线期间收到的好友请求与群邀请（对方离线时积压的请求）
+                send_pending_friend_requests(client_sock, username)
+                send_pending_group_invites(client_sock, username)
                 broadcast_online_users()
             else:
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "用户名或密码错误"})
@@ -798,16 +835,20 @@ def handle_client(client_sock, addr):
             return
 
         while True:
-            # 检查会话是否过期
+            # 检查会话是否过期（时间戳在每次收到消息时刷新，属滑动过期：活跃会话不会被强制踢出）
             if is_session_expired(client_sock):
                 logging.warning(f"Session expired for user {current_username}")
                 send_msg(client_sock, {"type": "error", "message": "会话已过期，请重新登录"})
+                # 短暂等待，确保客户端能读到"会话已过期"消息后再关闭连接
+                time.sleep(0.5)
                 break
             
             msg = recv_msg(client_sock)
             if msg is None:
                 logging.info(f"Connection lost from {addr} (User: {current_username})")
                 break
+            # 收到消息视为活跃，刷新会话时间戳（滑动过期）
+            session_timestamps[client_sock] = datetime.datetime.now().timestamp()
             if not isinstance(msg, dict):
                 logging.warning(f"Received non-dict message from {current_username}: {msg}")
                 continue
@@ -882,14 +923,15 @@ def handle_client(client_sock, addr):
                         logging.info(f"Friend response from '{responder}' sent to '{from_user}'.")
                     
                     if accepted:
-                        # 确保两个用户的好友列表都更新
-                        if responder not in user_friends:
-                            user_friends[responder] = set()
-                        user_friends[responder].add(from_user)
-                        
-                        if from_user not in user_friends:
-                            user_friends[from_user] = set()
-                        user_friends[from_user].add(responder)
+                        # 确保两个用户的好友列表都更新（持锁修改，防止并发竞争）
+                        with user_friends_lock:
+                            if responder not in user_friends:
+                                user_friends[responder] = set()
+                            user_friends[responder].add(from_user)
+                            
+                            if from_user not in user_friends:
+                                user_friends[from_user] = set()
+                            user_friends[from_user].add(responder)
                         
                         save_friend_relationship(responder, from_user)
                         logging.info(f"Friend relationship between '{responder}' and '{from_user}' saved.")
@@ -913,8 +955,10 @@ def handle_client(client_sock, addr):
                         logging.warning(f"User '{current_username}' tried to send a private message to themselves.")
                         continue
                     
-                    # 检查是否是好友关系
-                    if to_user not in user_friends.get(current_username, set()):
+                    # 检查是否是好友关系（持锁读取，与 friend_response 的写入保持一致）
+                    with user_friends_lock:
+                        is_friend = to_user in user_friends.get(current_username, set())
+                    if not is_friend:
                         send_msg(client_sock, {"type": "private_chat_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
                         logging.warning(f"Private chat from '{current_username}' to '{to_user}' blocked: not friends.")
                         continue
@@ -969,12 +1013,34 @@ def handle_client(client_sock, addr):
                     members = msg.get("members", [])
                     logging.info(f"Processing group_create request from '{owner}' for group '{group_name}' with members {members}.")
                     
-                    if not group_name or not owner or not members:
+                    if not group_name or not isinstance(group_name, str) or not owner or not members:
                         send_msg(client_sock, {"type": "group_create_result", "success": False, "error": "参数错误"})
                         logging.warning(f"Group create failed for '{owner}': invalid parameters.")
                         continue
                     
-                    # 确保群主也在成员列表中
+                    # 成员类型校验：必须是非空字符串列表，防止畸形数据
+                    if not isinstance(members, list) or not all(isinstance(m, str) and m for m in members):
+                        send_msg(client_sock, {"type": "group_create_result", "success": False, "error": "成员格式错误"})
+                        logging.warning(f"Group create failed for '{owner}': invalid member list.")
+                        continue
+
+                    # 校验成员：必须与群主是好友关系（同时隐含成员必须真实存在），防止把任意用户拉入群
+                    conn = sqlite3.connect("chat.db")
+                    cursor = conn.cursor()
+                    invalid_members = []
+                    for m in members:
+                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (owner, m))
+                        if cursor.fetchone()[0] == 0:
+                            invalid_members.append(m)
+                    conn.close()
+                    if invalid_members:
+                        send_msg(client_sock, {"type": "group_create_result", "success": False,
+                                               "error": f"成员 {', '.join(invalid_members)} 不是您的好友，无法加入群聊"})
+                        logging.warning(f"Group create failed for '{owner}': non-friend members {invalid_members}.")
+                        continue
+
+                    # 去重并确保群主也在成员列表中
+                    members = list(dict.fromkeys(members))
                     if owner not in members:
                         members.append(owner)
 
@@ -1101,10 +1167,11 @@ def handle_client(client_sock, addr):
                         continue
 
                     # 记录待加入请求（仅收到过邀请的用户才能 join，防止越权加入）
+                    # 值改为 dict {username: inviter}，以便离线邀请补发时能告知邀请者
                     with group_pending_joins_lock:
                         if gid not in group_pending_joins:
-                            group_pending_joins[gid] = set()
-                        group_pending_joins[gid].add(to_user)
+                            group_pending_joins[gid] = {}
+                        group_pending_joins[gid][to_user] = inviter
 
                     to_sock = get_sock_by_username(to_user)
                     if to_sock:
@@ -1134,11 +1201,11 @@ def handle_client(client_sock, addr):
                         continue
                     # 防越权：仅收到过邀请的用户可加入群组
                     with group_pending_joins_lock:
-                        if gid not in group_pending_joins or user_to_join not in group_pending_joins.get(gid, set()):
+                        if gid not in group_pending_joins or user_to_join not in group_pending_joins.get(gid, {}):
                             send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "您未被邀请加入该群组"})
                             logging.warning(f"Group join by '{user_to_join}' blocked for group '{gid}': no pending invite.")
                             continue
-                        group_pending_joins[gid].discard(user_to_join)
+                        group_pending_joins[gid].pop(user_to_join, None)
                     
                     group["members"].append(user_to_join)
                     if update_group_members_db(gid, group["members"]):
@@ -1298,6 +1365,9 @@ def handle_client(client_sock, addr):
                         with groups_data_lock:
                             if gid in groups_data:
                                 del groups_data[gid]
+                        # 清理该群的待加入记录，防止内存泄漏
+                        with group_pending_joins_lock:
+                            group_pending_joins.pop(gid, None)
                         
                         # 通知所有成员群组已解散
                         disband_notification = {
@@ -1344,10 +1414,11 @@ def handle_client(client_sock, addr):
                         continue
 
                     if transfer_group_ownership_db(gid, new_owner):
-                        # 更新内存中的群组数据
+                        # 更新内存中的群组数据（持锁）
                         group["owner"] = new_owner
-                        if gid in groups_data:
-                            groups_data[gid] = group
+                        with groups_data_lock:
+                            if gid in groups_data:
+                                groups_data[gid] = group
                         
                         # 通知所有成员群主已变更
                         transfer_notification = {
@@ -1394,10 +1465,11 @@ def handle_client(client_sock, addr):
                     if update_group_name_db(gid, new_name):
                         # 保存旧名称用于通知
                         old_name = group["group_name"]
-                        # 更新内存中的群组数据
+                        # 更新内存中的群组数据（持锁）
                         group["group_name"] = new_name
-                        if gid in groups_data:
-                            groups_data[gid] = group
+                        with groups_data_lock:
+                            if gid in groups_data:
+                                groups_data[gid] = group
                         
                         # 通知所有成员群组名称已变更
                         rename_notification = {

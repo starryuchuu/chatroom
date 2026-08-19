@@ -30,6 +30,9 @@ EXPECTED_SERVER_KEY_FINGERPRINT = None  # 示例：'a1b2c3d4...' 填入实际的
 # TODO: 首次连接后从日志获取服务器公钥指纹并设置 above，然后取消注释下一行进行验证
 # EXPECTED_SERVER_KEY_FINGERPRINT = '<从日志中获取的实际指纹>'
 
+# 单条消息最大长度（字节），防止恶意服务器声明超大长度导致客户端阻塞/内存耗尽
+MAX_RECV_MSG_LEN = 1 * 1024 * 1024
+
 # 接收指定字节数的数据
 def recvall(sock, n):
     """
@@ -76,6 +79,9 @@ def recv_msg(sock):
     if not header:
         return None
     msg_len = struct.unpack('!I', header)[0]
+    if msg_len > MAX_RECV_MSG_LEN:
+        logging.warning(f"收到超大消息长度 {msg_len} 字节（上限 {MAX_RECV_MSG_LEN}），视为异常连接")
+        return None
     data = recvall(sock, msg_len)
     if not data:
         return None
@@ -114,6 +120,40 @@ def decrypt_message(encrypted_message, key):
     tag = data[-16:]
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+
+# 校验服务器公钥（指纹验证 + 回环限制），登录与注册流程共用，防止中间人攻击
+def check_server_public_key(public_key_data):
+    """
+    校验服务器下发的公钥消息。
+    参数:
+        public_key_data: recv_msg 收到的公钥消息
+    返回:
+        (public_key, None) 校验通过；或 (None, 错误消息) 校验失败
+    """
+    if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
+        return None, "未能从服务器获取公钥"
+
+    public_key = RSA.import_key(public_key_data["key"])
+
+    # 验证服务器公钥指纹（防止中间人攻击）
+    public_key_bytes = public_key.export_key(format='DER')
+    key_fingerprint = hashlib.sha256(public_key_bytes).hexdigest()
+    logging.info(f"Server public key fingerprint: {key_fingerprint}")
+
+    if EXPECTED_SERVER_KEY_FINGERPRINT is None:
+        # 未配置指纹时：仅允许本机回环连接，连接非本机服务器则拒绝（防止中间人攻击）
+        if SERVER_HOST not in ('127.0.0.1', 'localhost', '::1'):
+            return None, ("未配置服务器公钥指纹（EXPECTED_SERVER_KEY_FINGERPRINT），\n"
+                          "连接非本机服务器时无法防止中间人攻击，连接已终止。\n\n"
+                          "请在 client.py 中设置 EXPECTED_SERVER_KEY_FINGERPRINT 为服务器公钥指纹。")
+        logging.warning("警告: EXPECTED_SERVER_KEY_FINGERPRINT 未设置，仅本机回环连接放行（无法防中间人攻击）。")
+    else:
+        if key_fingerprint != EXPECTED_SERVER_KEY_FINGERPRINT:
+            return None, (f"服务器公钥指纹不匹配！\n\n预期：{EXPECTED_SERVER_KEY_FINGERPRINT}\n"
+                          f"实际：{key_fingerprint}\n\n可能遭受中间人攻击，连接已终止。")
+        logging.info("Server public key fingerprint verified successfully.")
+
+    return public_key, None
 
 # 聊天客户端类
 class ChatClient:
@@ -256,7 +296,7 @@ class ChatClient:
         """
         添加好友功能，弹出输入框让用户输入好友用户名，并发送好友请求。
         """
-        friend = simpledialog.askstring("添加好友", "请输入好友用户名：")
+        friend = (simpledialog.askstring("添加好友", "请输入好友用户名：") or "").strip()
         if not friend:
             messagebox.showerror("错误", "请输入好友用户名！")
             return
@@ -272,12 +312,12 @@ class ChatClient:
         req = {
             "type": "friend_request",
             "from": self.username,
-            "to": friend.strip()
+            "to": friend
         }
         try:
-            logging.info(f"Sending friend request to '{friend.strip()}'.")
+            logging.info(f"Sending friend request to '{friend}'.")
             send_msg(self.sock, req)
-            threading.Timer(0.5, self.maybe_show_friend_request_success, args=(friend.strip(),)).start()
+            threading.Timer(0.5, self.maybe_show_friend_request_success, args=(friend,)).start()
         except Exception as e:
             logging.error(f"发送好友请求失败: {e}")
             messagebox.showerror("发送失败", "好友申请发送失败")
@@ -423,6 +463,16 @@ class ChatClient:
             logging.warning("select_friend called on a destroyed widget.")
             return
 
+    def clear_chat_selection(self):
+        """清空当前选中的聊天对象（退出群聊/被踢/群解散等场景），回到无选中状态"""
+        try:
+            self.current_friend = None
+            self.current_group = None
+            self.clear_chat_bubbles()
+            self.master.after_idle(self.scroll_to_bottom)
+        except tk.TclError:
+            logging.warning("clear_chat_selection called on a destroyed widget.")
+
 
     def switch_chat_frame(self, chat_id):
         """切换聊天框架"""
@@ -489,42 +539,14 @@ class ChatClient:
             self.sock.settimeout(None)  # 连接后取消超时
 
             # 密钥交换
-            # 1. 接收公钥
+            # 1. 接收并校验公钥（指纹验证 + 回环限制，防止中间人攻击）
             public_key_data = recv_msg(self.sock)
-            if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
-                messagebox.showerror("连接失败", "未能从服务器获取公钥")
+            public_key, key_err = check_server_public_key(public_key_data)
+            if key_err:
+                messagebox.showerror("安全警告", key_err)
                 self.sock.close()
                 self.sock = None
                 return
-            
-            public_key = RSA.import_key(public_key_data["key"])
-            
-            # 验证服务器公钥指纹（防止中间人攻击）
-            public_key_bytes = public_key.export_key(format='DER')
-            key_fingerprint = hashlib.sha256(public_key_bytes).hexdigest()
-            logging.info(f"Server public key fingerprint: {key_fingerprint}")
-
-            if EXPECTED_SERVER_KEY_FINGERPRINT is None:
-                # 未配置指纹时：仅允许本机回环连接，连接非本机服务器则拒绝（防止中间人攻击）
-                if SERVER_HOST not in ('127.0.0.1', 'localhost', '::1'):
-                    messagebox.showerror("安全警告",
-                        "未配置服务器公钥指纹（EXPECTED_SERVER_KEY_FINGERPRINT），\n"
-                        "连接非本机服务器时无法防止中间人攻击，连接已终止。\n\n"
-                        "请在 client.py 中设置 EXPECTED_SERVER_KEY_FINGERPRINT 为服务器公钥指纹。")
-                    self.sock.close()
-                    self.sock = None
-                    return
-                logging.warning("警告: EXPECTED_SERVER_KEY_FINGERPRINT 未设置，仅本机回环连接放行（无法防中间人攻击）。")
-
-            if EXPECTED_SERVER_KEY_FINGERPRINT is not None:
-                if key_fingerprint != EXPECTED_SERVER_KEY_FINGERPRINT:
-                    messagebox.showerror("安全警告", 
-                        f"服务器公钥指纹不匹配！\n\n预期：{EXPECTED_SERVER_KEY_FINGERPRINT}\n实际：{key_fingerprint}\n\n可能遭受中间人攻击，连接已终止。")
-                    self.sock.close()
-                    self.sock = None
-                    return
-                else:
-                    logging.info("Server public key fingerprint verified successfully.")
             
             cipher_rsa_encrypt = PKCS1_OAEP.new(public_key)
 
@@ -664,12 +686,12 @@ class ChatClient:
                 temp_sock.settimeout(None)
 
                 public_key_data = recv_msg(temp_sock)
-                if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
-                    messagebox.showerror("注册失败", "未能从服务器获取公钥")
+                public_key, key_err = check_server_public_key(public_key_data)
+                if key_err:
+                    messagebox.showerror("注册失败", key_err)
                     temp_sock.close()
                     return
                 
-                public_key = RSA.import_key(public_key_data["key"])
                 cipher_rsa_encrypt = PKCS1_OAEP.new(public_key)
                 
                 session_key = get_random_bytes(16)
@@ -755,7 +777,7 @@ class ChatClient:
                     if mtype == "online_users":
                         user_list = msg.get("users", [])
                         logging.info(f"Received online users list: {user_list}")
-                        self.master.after(0, lambda: self.update_online_users(user_list))
+                        self.master.after(0, lambda ul=user_list: self.update_online_users(ul))
                     
                     elif mtype == "user_groups_list":
                         group_list = msg.get("groups", [])
@@ -806,9 +828,6 @@ class ChatClient:
                         if self.current_friend == chat_partner:
                             # 使用lambda的默认参数来捕获当前值
                             self.master.after(0, lambda s=show, t=time_str, i=is_self, p=chat_partner: self.display_message_with_time(s, t, i, friend=p))
-                        # 如果没有当前聊天对象但消息来自好友，则预加载消息到该好友的消息列表中
-                        elif chat_partner in self.friends and chat_partner not in self.private_chats:
-                            self.private_chats[chat_partner] = [((show, time_str), is_self)]
                     
                     elif mtype == "group_chat":
                         logging.info(f"Received group chat message: {msg}")
@@ -855,22 +874,23 @@ class ChatClient:
                                 self.master.after(0, lambda gn=group_name, g=gid: messagebox.showinfo("群聊创建", f"群聊 '{gn}' 创建成功！ID: {g}"))
                         else:
                             error_msg = msg.get("error", "创建群聊失败")
-                            self.master.after(0, lambda: messagebox.showerror("群聊创建失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("群聊创建失败", em))
                     
                     elif mtype == "group_info":
                         logging.info(f"Received group info: {msg}")
                         gid = msg.get("gid")
                         if gid and "error" not in msg:
                             self.groups[gid] = msg
-                            self.master.after(0, lambda: self.show_group_info_after_update(gid))
+                            self.master.after(0, lambda g=gid: self.show_group_info_after_update(g))
                         else:
-                            self.master.after(0, lambda: messagebox.showerror("群组信息", msg.get("error", "获取群组信息失败")))
+                            err = msg.get("error", "获取群组信息失败")
+                            self.master.after(0, lambda em=err: messagebox.showerror("群组信息", em))
 
                     elif mtype == "group_invite":
                         logging.info(f"Received group invite: {msg}")
                         from_user = msg.get("from")
                         gid = msg.get("gid")
-                        self.master.after(0, lambda: self.handle_group_invite(from_user, gid))
+                        self.master.after(0, lambda fu=from_user, g=gid: self.handle_group_invite(fu, g))
                     
                     elif mtype == "group_join_result":
                         logging.info(f"Received group join result: {msg}")
@@ -884,7 +904,7 @@ class ChatClient:
                             self.master.after(0, lambda gn=group_name: messagebox.showinfo("加入群聊", f"成功加入群聊: {gn}"))
                         else:
                             error_msg = msg.get("error", "加入群聊失败")
-                            self.master.after(0, lambda: messagebox.showerror("加入群聊失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("加入群聊失败", em))
                     
                     elif mtype == "group_update":
                         logging.info(f"Received group update: {msg}")
@@ -904,12 +924,12 @@ class ChatClient:
                             if hasattr(self, f'group_messages_{gid}'):
                                 delattr(self, f'group_messages_{gid}')
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: messagebox.showinfo("退出群聊", f"成功退出群聊: {gid}"))
+                            self.master.after(0, lambda g=gid: messagebox.showinfo("退出群聊", f"成功退出群聊: {g}"))
                             if self.current_group == gid:
-                                self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                                self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                         else:
                             error_msg = msg.get("error", "退出群聊失败")
-                            self.master.after(0, lambda: messagebox.showerror("退出群聊失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("退出群聊失败", em))
                     
                     elif mtype == "group_kick_result":
                         logging.info(f"Received group kick result: {msg}")
@@ -918,40 +938,40 @@ class ChatClient:
                             kicked_user = msg.get("kick")
                             if gid in self.groups and kicked_user in self.groups[gid]["members"]:
                                 self.groups[gid]["members"].remove(kicked_user)
-                            self.master.after(0, lambda: messagebox.showinfo("踢出成员", f"已将 {kicked_user} 从群聊 {gid} 踢出"))
+                            self.master.after(0, lambda k=kicked_user, g=gid: messagebox.showinfo("踢出成员", f"已将 {k} 从群聊 {g} 踢出"))
                             if kicked_user == self.username: # 自己被踢出
                                 if gid in self.groups:
                                     del self.groups[gid]
                                 if hasattr(self, f'group_messages_{gid}'):
                                     delattr(self, f'group_messages_{gid}')
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                            self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                         else:
                             error_msg = msg.get("error", "踢出成员失败")
-                            self.master.after(0, lambda: messagebox.showerror("踢出成员失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("踢出成员失败", em))
                     
                     elif mtype == "group_kick_notification":
                         logging.info(f"Received group kick notification: {msg}")
                         gid = msg.get("gid")
                         group_name = msg.get("group_name")
-                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"您已被从群聊 {group_name} 移除"))
+                        self.master.after(0, lambda gn=group_name: messagebox.showinfo("群聊通知", f"您已被从群聊 {gn} 移除"))
                         if gid in self.groups:
                             del self.groups[gid]
                         if hasattr(self, f'group_messages_{gid}'):
                             delattr(self, f'group_messages_{gid}')
                         self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                        self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                     
                     elif mtype == "friend_request":
                         logging.info(f"Received friend request: {msg}")
                         from_user = msg.get("from")
-                        self.master.after(0, lambda: self.handle_friend_request(from_user))
+                        self.master.after(0, lambda fu=from_user: self.handle_friend_request(fu))
                     
                     elif mtype == "friend_response":
                         logging.info(f"Received friend response: {msg}")
                         from_user = msg.get("from")
                         accepted = msg.get("accepted")
-                        self.master.after(0, lambda: self.handle_friend_response(from_user, accepted))
+                        self.master.after(0, lambda fu=from_user, ac=accepted: self.handle_friend_response(fu, ac))
                     
                     elif mtype == "friend_update":
                         logging.info(f"Received friend update: {msg}")
@@ -967,13 +987,13 @@ class ChatClient:
                             self.friend_request_result = msg.get("success")
                         if not msg.get("success"):
                             error_msg = msg.get("error", "好友申请失败")
-                            self.master.after(0, lambda: messagebox.showerror("好友申请失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("好友申请失败", em))
                     
                     elif mtype == "group_invite_result":
                         logging.info(f"Received group invite result: {msg}")
                         if not msg.get("success"):
                             error_msg = msg.get("error", "群邀请失败")
-                            self.master.after(0, lambda: messagebox.showerror("群邀请失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("群邀请失败", em))
                     
                     elif mtype == "group_disband_result":
                         logging.info(f"Received group disband result: {msg}")
@@ -984,24 +1004,24 @@ class ChatClient:
                             if hasattr(self, f'group_messages_{gid}'):
                                 delattr(self, f'group_messages_{gid}')
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: messagebox.showinfo("解散群聊", f"群聊已成功解散"))
+                            self.master.after(0, lambda: messagebox.showinfo("解散群聊", "群聊已成功解散"))
                             if self.current_group == gid:
-                                self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                                self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                         else:
                             error_msg = msg.get("error", "解散群聊失败")
-                            self.master.after(0, lambda: messagebox.showerror("解散群聊失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("解散群聊失败", em))
                     
                     elif mtype == "group_disband_notification":
                         logging.info(f"Received group disband notification: {msg}")
                         gid = msg.get("gid")
                         group_name = msg.get("group_name")
-                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊 {group_name} 已被解散"))
+                        self.master.after(0, lambda gn=group_name: messagebox.showinfo("群聊通知", f"群聊 {gn} 已被解散"))
                         if gid in self.groups:
                             del self.groups[gid]
                         if hasattr(self, f'group_messages_{gid}'):
                             delattr(self, f'group_messages_{gid}')
                         self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda: self.select_friend(None)) # 切换到全体群组
+                        self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                     
                     elif mtype == "group_transfer_result":
                         logging.info(f"Received group transfer result: {msg}")
@@ -1011,10 +1031,10 @@ class ChatClient:
                             if gid in self.groups:
                                 self.groups[gid]["owner"] = new_owner
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: messagebox.showinfo("转让群主", f"群主已成功转让给 {new_owner}"))
+                            self.master.after(0, lambda no=new_owner: messagebox.showinfo("转让群主", f"群主已成功转让给 {no}"))
                         else:
                             error_msg = msg.get("error", "转让群主失败")
-                            self.master.after(0, lambda: messagebox.showerror("转让群主失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("转让群主失败", em))
                     
                     elif mtype == "group_transfer_notification":
                         logging.info(f"Received group transfer notification: {msg}")
@@ -1025,21 +1045,22 @@ class ChatClient:
                         if gid in self.groups:
                             self.groups[gid]["owner"] = new_owner
                         self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊 {group_name} 的群主已由 {old_owner} 转让给 {new_owner}"))
+                        self.master.after(0, lambda gn=group_name, oo=old_owner, no=new_owner: messagebox.showinfo("群聊通知", f"群聊 {gn} 的群主已由 {oo} 转让给 {no}"))
                     
                     elif mtype == "group_rename_result":
                         logging.info(f"Received group rename result: {msg}")
                         if msg.get("success"):
                             gid = msg.get("gid")
                             new_name = msg.get("new_name")
+                            # 群组不在本地时 old_name 无法得知，回退为 gid，避免未绑定变量
+                            old_name = self.groups[gid].get("group_name", gid) if gid in self.groups else gid
                             if gid in self.groups:
-                                old_name = self.groups[gid].get("group_name", gid)
                                 self.groups[gid]["group_name"] = new_name
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: messagebox.showinfo("修改群聊名称", f"群聊名称已从 '{old_name}' 修改为 '{new_name}'"))
+                            self.master.after(0, lambda on=old_name, nn=new_name: messagebox.showinfo("修改群聊名称", f"群聊名称已从 '{on}' 修改为 '{nn}'"))
                         else:
                             error_msg = msg.get("error", "修改群聊名称失败")
-                            self.master.after(0, lambda: messagebox.showerror("修改群聊名称失败", error_msg))
+                            self.master.after(0, lambda em=error_msg: messagebox.showerror("修改群聊名称失败", em))
                     
                     elif mtype == "group_rename_notification":
                         logging.info(f"Received group rename notification: {msg}")
@@ -1049,10 +1070,33 @@ class ChatClient:
                         if gid in self.groups:
                             self.groups[gid]["group_name"] = new_name
                         self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda: messagebox.showinfo("群聊通知", f"群聊名称已由群主 {msg.get('owner')} 从 '{old_name}' 修改为 '{new_name}'"))
+                        self.master.after(0, lambda on=old_name, nn=new_name: messagebox.showinfo("群聊通知", f"群聊名称已由群主 {msg.get('owner')} 从 '{on}' 修改为 '{nn}'"))
                     
-                else:
-                    logging.warning(f"收到未知格式消息: {msg}")
+                    elif mtype == "error":
+                        # 服务器主动通知的错误（如会话过期、速率限制等），提示后返回登录界面
+                        err = msg.get("message", "服务器错误")
+                        logging.warning(f"服务器错误: {err}")
+                        self.master.after(0, lambda e=err: messagebox.showerror("服务器通知", e))
+                        self.master.after(0, self.disconnect)
+                        break
+
+                    elif mtype == "private_chat_result":
+                        if not msg.get("success"):
+                            err = msg.get("error", "私聊消息发送失败")
+                            self.master.after(0, lambda e=err: messagebox.showerror("私聊失败", e))
+
+                    elif mtype == "group_chat_result":
+                        if not msg.get("success"):
+                            err = msg.get("error", "群聊消息发送失败")
+                            self.master.after(0, lambda e=err: messagebox.showerror("群聊失败", e))
+
+                    elif mtype == "friend_response_result":
+                        if not msg.get("success"):
+                            err = msg.get("error", "好友响应失败")
+                            self.master.after(0, lambda e=err: messagebox.showerror("好友响应失败", e))
+                    
+                    else:
+                        logging.warning(f"收到未知格式消息: {msg}")
 
             except (ConnectionResetError, ConnectionAbortedError):
                 logging.warning("与服务器的连接已断开。")
