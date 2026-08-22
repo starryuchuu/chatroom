@@ -1,5 +1,6 @@
 import socket
 import threading
+import time
 import datetime
 import sqlite3
 import hashlib
@@ -21,6 +22,7 @@ SERVER_PORT = 12345
 SESSION_TIMEOUT_MINUTES = 30  # 会话过期时间（分钟）
 RATE_LIMIT_MAX_ATTEMPTS = 5  # 最大尝试次数
 RATE_LIMIT_WINDOW_SECONDS = 60  # 速率限制时间窗口（秒）
+PENDING_REQUEST_TIMEOUT_SECONDS = 24 * 3600  # 好友请求过期时间，防止对方不响应时请求者永远无法再次申请
 LOG_SENSITIVE_DATA = False  # 是否记录敏感数据
 PRIVATE_KEY_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
 DB_FILE_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
@@ -49,8 +51,9 @@ groups_data = {} # {gid: {group_name, owner, members}}
 rate_limit_tracker = {}
 rate_limit_lock = threading.Lock()
 
-# 待处理的好友请求：{(requester, target)}，仅真实收到请求者可响应，防止伪造好友关系
-pending_friend_requests = set()
+# 待处理的好友请求：{(requester, target): 创建时间戳}，仅真实收到请求者可响应，防止伪造好友关系。
+# 带过期时间，避免目标用户永远不响应时请求者无法再次申请、集合无限增长。
+pending_friend_requests = {}
 pending_friend_requests_lock = threading.Lock()
 # 待加入群组的用户：{gid: set(username)}，仅收到过邀请的用户可加入，防止越权加入群组
 group_pending_joins = {}
@@ -62,6 +65,8 @@ usernames_lock = threading.Lock()
 session_keys_lock = threading.Lock()
 user_friends_lock = threading.Lock()
 groups_data_lock = threading.Lock()
+# 群成员读-改-写串行化锁：并发 join/leave/kick 同一群组时防止互相覆盖
+group_ops_lock = threading.Lock()
 
 
 # 检查并生成/加载RSA密钥
@@ -103,11 +108,12 @@ def ensure_rsa_keys():
         public_key_pem = f.read()
     return private_key, public_key_pem
 
-# 速率限制检查函数
-def check_rate_limit(ip_address):
+# 速率限制检查函数（只统计"认证失败"次数，连接数与成功登录不计入，
+# 否则同一 IP/NAT 后的多个用户正常使用也会被误封）
+def is_rate_limited(ip_address):
     """
-    检查 IP 地址是否超出速率限制。
-    返回：True 如果允许请求，False 如果应该拒绝
+    检查 IP 地址的失败尝试是否超出速率限制。
+    返回：True 如果应该拒绝，False 如果允许
     """
     current_time = datetime.datetime.now().timestamp()
     with rate_limit_lock:
@@ -118,24 +124,29 @@ def check_rate_limit(ip_address):
             for ip in stale_ips:
                 del rate_limit_tracker[ip]
 
-        if ip_address not in rate_limit_tracker:
-            rate_limit_tracker[ip_address] = [(current_time, 1)]
-            return True
-        
-        # 清理过期记录
-        recent_attempts = [(t, c) for t, c in rate_limit_tracker[ip_address] 
-                          if current_time - t < RATE_LIMIT_WINDOW_SECONDS]
-        
-        # 计算总尝试次数
-        total_attempts = sum(c for _, c in recent_attempts)
-        
-        if total_attempts >= RATE_LIMIT_MAX_ATTEMPTS:
+        records = rate_limit_tracker.get(ip_address)
+        if not records:
             return False
-        
-        # 添加当前尝试
-        recent_attempts.append((current_time, 1))
-        rate_limit_tracker[ip_address] = recent_attempts
-        return True
+        recent = [t for t in records if current_time - t < RATE_LIMIT_WINDOW_SECONDS]
+        rate_limit_tracker[ip_address] = recent
+        return len(recent) >= RATE_LIMIT_MAX_ATTEMPTS
+
+def record_auth_failure(ip_address):
+    """
+    记录一次认证失败（登录/注册失败）。
+    """
+    current_time = datetime.datetime.now().timestamp()
+    with rate_limit_lock:
+        records = rate_limit_tracker.get(ip_address, [])
+        records.append(current_time)
+        rate_limit_tracker[ip_address] = records
+
+def clear_rate_limit(ip_address):
+    """
+    认证成功后清除该 IP 的失败记录。
+    """
+    with rate_limit_lock:
+        rate_limit_tracker.pop(ip_address, None)
 
 # 会话过期检查函数
 def is_session_expired(client_sock):
@@ -195,11 +206,26 @@ def recvall(sock, n):
             return None
     return data
 
+# 每个连接一把发送锁：多线程并发向同一 socket sendall 时，
+# 长度头与消息体可能交错导致协议流失步，必须串行化整个发送
+send_locks = {}
+send_locks_guard = threading.Lock()
+
+def get_send_lock(sock):
+    with send_locks_guard:
+        if sock not in send_locks:
+            send_locks[sock] = threading.Lock()
+        return send_locks[sock]
+
+def remove_send_lock(sock):
+    with send_locks_guard:
+        send_locks.pop(sock, None)
+
 # 发送消息，包含消息长度头部
 def send_msg(sock, msg):
     """
     向套接字发送消息，消息前附加长度头部。
-    参数:
+    参数：
         sock: 套接字对象
         msg: 要发送的消息字符串或字典
     """
@@ -209,7 +235,9 @@ def send_msg(sock, msg):
         else:
             data = str(msg).encode('utf-8')
         header = struct.pack('!I', len(data))
-        sock.sendall(header + data)
+        lock = get_send_lock(sock)
+        with lock:
+            sock.sendall(header + data)
     except Exception as e:
         logging.error(f"send_msg error: {e}")
 
@@ -231,7 +259,7 @@ def recv_msg(sock):
             logging.warning(f"Message too large: {msg_len} bytes (max: {MAX_MESSAGE_LEN}), closing connection")
             return None
         data = recvall(sock, msg_len)
-        if not data:
+        if data is None:
             return None
         try:
             return json.loads(data.decode('utf-8'))
@@ -584,22 +612,28 @@ def get_sock_by_username(username):
     返回:
         对应的套接字对象，如果不存在则返回None
     """
-    for sock, uname in usernames.items():
-        if uname == username:
-            return sock
+    with usernames_lock:
+        for sock, uname in usernames.items():
+            if uname == username:
+                return sock
     return None
 
 # 用户上线时补发针对该用户的待处理好友请求（修复：离线请求"上线后可见"现在真正可见）
 def send_pending_friend_requests(client_sock, username):
     """
     用户登录成功后，将此前离线期间收到的好友请求补发给该用户。
-    参数:
+    参数：
         client_sock: 新登录用户的套接字
         username: 新登录用户名
     """
+    now = time.time()
     with pending_friend_requests_lock:
-        pending = [(sender, target) for (sender, target) in pending_friend_requests if target == username]
-    for sender, _ in pending:
+        # 顺便清理已过期的请求
+        expired = [k for k, ts in pending_friend_requests.items() if now - ts > PENDING_REQUEST_TIMEOUT_SECONDS]
+        for k in expired:
+            del pending_friend_requests[k]
+        pending = [sender for (sender, target) in pending_friend_requests if target == username]
+    for sender in pending:
         send_msg(client_sock, {"type": "friend_request", "from": sender})
         logging.info(f"Delivered pending friend request from '{sender}' to '{username}' on login.")
 
@@ -716,9 +750,9 @@ def transfer_group_ownership_db(gid, new_owner):
 def handle_client(client_sock, addr):
     logging.info(f"Client connected from {addr}")
     
-    # 速率限制检查
+    # 速率限制检查（仅统计认证失败次数，见 is_rate_limited）
     ip_address = addr[0]
-    if not check_rate_limit(ip_address):
+    if is_rate_limited(ip_address):
         logging.warning(f"Rate limit exceeded for IP {ip_address}")
         send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
         client_sock.close()
@@ -740,12 +774,18 @@ def handle_client(client_sock, addr):
         
         encrypted_session_key = base64.b64decode(encrypted_session_key_data["key"])
         session_key = cipher_rsa_decrypt.decrypt(encrypted_session_key)
+        # 会话密钥必须是合法的 AES 密钥长度，防止畸形密钥导致后续解密行为混乱
+        if len(session_key) not in (16, 24, 32):
+            send_msg(client_sock, {"type": "error", "message": "无效的会话密钥"})
+            logging.error(f"Invalid session key length ({len(session_key)}) from {addr}")
+            return
         with session_keys_lock:
             session_keys[client_sock] = session_key
         logging.info(f"Session key established with {addr}")
 
         auth_data = recv_msg(client_sock)
         if not isinstance(auth_data, dict):
+            record_auth_failure(ip_address)
             send_msg(client_sock, {"type": "login_result", "success": False, "error": "协议错误"})
             logging.error(f"Protocol error during authentication from {addr}")
             return
@@ -761,13 +801,16 @@ def handle_client(client_sock, addr):
 
                 reg_ok, reg_err = register_user(username, password)
                 if reg_ok:
+                    clear_rate_limit(ip_address)
                     send_msg(client_sock, {"type": "register_result", "success": True})
                     logging.info(f"User {username} registered successfully from {addr}")
                 else:
+                    record_auth_failure(ip_address)
                     send_msg(client_sock, {"type": "register_result", "success": False, "error": reg_err})
                     logging.warning(f"Registration failed for {username} from {addr}: {reg_err}")
             except Exception as e:
                 logging.error(f"Error processing encrypted_register from {addr}: {e}")
+                record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "register_result", "success": False, "error": "注册处理失败"})
             return
 
@@ -785,56 +828,59 @@ def handle_client(client_sock, addr):
                     password = auth_data.get("password")
             except Exception as e:
                 logging.error(f"Error processing login data from {addr}: {e}")
+                record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "登录数据处理失败"})
                 return
 
             if not isinstance(username, str) or not isinstance(password, str) or not username or not password:
+                record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "用户名或密码错误"})
                 logging.warning(f"Login failed from {addr}: invalid username/password format")
                 return
 
-            # 检查是否已登录
-            if username in usernames.values():
-                send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
-                logging.warning(f"Login failed for {username} from {addr}: 用户已登录")
-                return
-
-            if validate_user(username, password):
-                current_username = username # 记录当前连接的用户名
-                with user_friends_lock:
-                    user_friends[username] = load_friends(username)
-                send_msg(client_sock, {"type": "login_result", "success": True})
-                # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
-                client_sock.settimeout(SESSION_TIMEOUT_MINUTES * 60)
-                # 记录会话时间戳用于过期检查
-                session_timestamps[client_sock] = datetime.datetime.now().timestamp()
-                # 必须先发送 login_result，再将连接标记为"在线用户"：
-                # 否则并发登录/断开时，其他线程的 online_users 广播可能抢先到达该连接，
-                # 客户端会把 online_users 误当作登录响应而导致登录失败。
-                # 同时要紧接着就加入 usernames（在后续任何初始化推送之前），
-                # 以尽快生效重复登录拦截，避免同账号二次登录漏判。
-                with usernames_lock:
-                    usernames[client_sock] = username
-                logging.info(f"User {username} logged in from {addr}")
-                
-                # 发送好友列表
-                with user_friends_lock:
-                    friends_list = list(user_friends[username])
-                send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
-                
-                # 发送用户所属的群组列表
-                send_user_groups(client_sock, username)
-                
-                send_history(client_sock, username)
-                # 补发离线期间收到的好友请求与群邀请（对方离线时积压的请求）
-                send_pending_friend_requests(client_sock, username)
-                send_pending_group_invites(client_sock, username)
-                broadcast_online_users()
-            else:
+            if not validate_user(username, password):
+                record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "用户名或密码错误"})
                 logging.error(f"Login failed for {username} from {addr}: 用户名或密码错误")
                 return
+
+            # 检查是否已登录与登记在线必须在同一临界区内完成，消除 TOCTOU 竞态：
+            # 两个线程同时用同一账号登录时只有一个能通过检查。
+            # 同时必须先发送 login_result 再登记在线，否则并发登录/断开时，
+            # 其他线程的 online_users 广播可能抢先到达该连接，
+            # 客户端会把 online_users 误当作登录响应而导致登录失败。
+            with usernames_lock:
+                if username in usernames.values():
+                    send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
+                    logging.warning(f"Login failed for {username} from {addr}: 用户已登录")
+                    return
+                current_username = username # 记录当前连接的用户名
+                send_msg(client_sock, {"type": "login_result", "success": True})
+                usernames[client_sock] = username
+            clear_rate_limit(ip_address)
+            with user_friends_lock:
+                user_friends[username] = load_friends(username)
+            # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
+            client_sock.settimeout(SESSION_TIMEOUT_MINUTES * 60)
+            # 记录会话时间戳用于过期检查
+            session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+            logging.info(f"User {username} logged in from {addr}")
+
+            # 发送好友列表
+            with user_friends_lock:
+                friends_list = list(user_friends[username])
+            send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
+
+            # 发送用户所属的群组列表
+            send_user_groups(client_sock, username)
+
+            send_history(client_sock, username)
+            # 补发离线期间收到的好友请求与群邀请（对方离线时积压的请求）
+            send_pending_friend_requests(client_sock, username)
+            send_pending_group_invites(client_sock, username)
+            broadcast_online_users()
         else:
+            record_auth_failure(ip_address)
             send_msg(client_sock, {"type": "login_result", "success": False, "error": "协议错误"})
             logging.error(f"Protocol error during authentication from {addr}")
             return
@@ -878,20 +924,25 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Friend request from '{sender}' failed: User '{to_user}' does not exist.")
                         continue
                     # 检查是否已是好友
-                    conn = sqlite3.connect("chat.db")
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (sender, to_user))
-                    already_friends = cursor.fetchone()[0] > 0
-                    conn.close()
+                    conn = None
+                    try:
+                        conn = sqlite3.connect("chat.db")
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (sender, to_user))
+                        already_friends = cursor.fetchone()[0] > 0
+                    finally:
+                        if conn:
+                            conn.close()
                     if already_friends:
                         send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": f"您和 {to_user} 已是好友"})
                         continue
-                    # 记录待处理请求，用于 friend_response 校验
+                    # 记录待处理请求，用于 friend_response 校验（带过期时间）
                     with pending_friend_requests_lock:
-                        if (sender, to_user) in pending_friend_requests:
+                        ts = pending_friend_requests.get((sender, to_user))
+                        if ts is not None and time.time() - ts <= PENDING_REQUEST_TIMEOUT_SECONDS:
                             send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": "已发送过好友申请，请等待对方处理"})
                             continue
-                        pending_friend_requests.add((sender, to_user))
+                        pending_friend_requests[(sender, to_user)] = time.time()
                     to_sock = get_sock_by_username(to_user)
                     if to_sock and sender:
                         send_msg(to_sock, {"type": "friend_request", "from": sender})
@@ -916,11 +967,12 @@ def handle_client(client_sock, addr):
                         continue
                     # 防伪校验：仅当对方确实向本用户发送过好友请求时才允许响应
                     with pending_friend_requests_lock:
-                        if (from_user, responder) not in pending_friend_requests:
+                        ts = pending_friend_requests.get((from_user, responder))
+                        if ts is None or time.time() - ts > PENDING_REQUEST_TIMEOUT_SECONDS:
                             send_msg(client_sock, {"type": "friend_response_result", "success": False, "error": "没有来自该用户的好友请求，无法响应"})
                             logging.warning(f"Friend response from '{responder}' to '{from_user}' blocked: no pending request.")
                             continue
-                        pending_friend_requests.discard((from_user, responder))
+                        del pending_friend_requests[(from_user, responder)]
 
                     from_sock = get_sock_by_username(from_user)
                     if from_sock:
@@ -954,7 +1006,8 @@ def handle_client(client_sock, addr):
                 try:
                     to_user = msg.get("to")
                     encrypted_content = msg.get("content")
-                    now = msg.get("timestamp") or datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
+                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
                     if to_user == current_username: # 不能给自己发私聊
                         logging.warning(f"User '{current_username}' tried to send a private message to themselves.")
@@ -1030,14 +1083,18 @@ def handle_client(client_sock, addr):
                         continue
 
                     # 校验成员：必须与群主是好友关系（同时隐含成员必须真实存在），防止把任意用户拉入群
-                    conn = sqlite3.connect("chat.db")
-                    cursor = conn.cursor()
-                    invalid_members = []
-                    for m in members:
-                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (owner, m))
-                        if cursor.fetchone()[0] == 0:
-                            invalid_members.append(m)
-                    conn.close()
+                    conn = None
+                    try:
+                        conn = sqlite3.connect("chat.db")
+                        cursor = conn.cursor()
+                        invalid_members = []
+                        for m in members:
+                            cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (owner, m))
+                            if cursor.fetchone()[0] == 0:
+                                invalid_members.append(m)
+                    finally:
+                        if conn:
+                            conn.close()
                     if invalid_members:
                         send_msg(client_sock, {"type": "group_create_result", "success": False,
                                                "error": f"成员 {', '.join(invalid_members)} 不是您的好友，无法加入群聊"})
@@ -1080,7 +1137,8 @@ def handle_client(client_sock, addr):
                 try:
                     gid = msg.get("gid")
                     encrypted_content = msg.get("content")
-                    now = msg.get("timestamp") or datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
+                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     from_user = current_username
                     
                     if gid == "all":
@@ -1161,11 +1219,15 @@ def handle_client(client_sock, addr):
                         continue
 
                     # 检查是否是好友关系（直接查询数据库而不是依赖内存中的好友列表）
-                    conn = sqlite3.connect("chat.db")
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (inviter, to_user))
-                    count = cursor.fetchone()[0]
-                    conn.close()
+                    conn = None
+                    try:
+                        conn = sqlite3.connect("chat.db")
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (inviter, to_user))
+                        count = cursor.fetchone()[0]
+                    finally:
+                        if conn:
+                            conn.close()
                     if count == 0:
                         send_msg(client_sock, {"type": "group_invite_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
                         logging.warning(f"Group invite from '{inviter}' to '{to_user}' blocked: not friends.")
@@ -1191,6 +1253,7 @@ def handle_client(client_sock, addr):
 
             elif mtype == "group_join":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     user_to_join = current_username
                     logging.info(f"Processing group join request from '{user_to_join}' for group '{gid}'.")
@@ -1204,16 +1267,18 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "您已是该群成员"})
                         logging.warning(f"Group join by '{user_to_join}' failed: Already a member of group '{gid}'.")
                         continue
-                    # 防越权：仅收到过邀请的用户可加入群组
+                    # 防越权：仅收到过邀请的用户可加入群组（先校验，成功写库后才消费邀请，
+                    # 避免 DB 写失败时邀请丢失导致无法重试）
                     with group_pending_joins_lock:
                         if gid not in group_pending_joins or user_to_join not in group_pending_joins.get(gid, {}):
                             send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "您未被邀请加入该群组"})
                             logging.warning(f"Group join by '{user_to_join}' blocked for group '{gid}': no pending invite.")
                             continue
-                        group_pending_joins[gid].pop(user_to_join, None)
-                    
+
                     group["members"].append(user_to_join)
                     if update_group_members_db(gid, group["members"]):
+                        with group_pending_joins_lock:
+                            group_pending_joins.get(gid, {}).pop(user_to_join, None)
                         with groups_data_lock:
                             groups_data[gid] = group # 更新内存中的群组数据
                         payload = {
@@ -1238,9 +1303,12 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after join attempt by '{user_to_join}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_join from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_leave":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     user_to_leave = current_username
                     logging.info(f"Processing group leave request from '{user_to_leave}' for group '{gid}'.")
@@ -1278,9 +1346,12 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after leave attempt by '{user_to_leave}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_leave from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_kick":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     kick_user = msg.get("kick")
                     requester = current_username
@@ -1329,6 +1400,8 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after kick attempt by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_kick from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_info":
                 try:
@@ -1515,9 +1588,14 @@ def handle_client(client_sock, addr):
             if current_username and client_sock in usernames and usernames[client_sock] == current_username:
                 del usernames[client_sock]
                 logging.info(f"User {current_username} disconnected.")
+                # 若该用户没有其他在线连接，清理其内存中的好友列表，防止泄漏
+                if current_username not in usernames.values():
+                    with user_friends_lock:
+                        user_friends.pop(current_username, None)
         # 清理会话时间戳，防止内存泄漏
         if client_sock in session_timestamps:
             del session_timestamps[client_sock]
+        remove_send_lock(client_sock)
         broadcast_online_users()
         client_sock.close()
 

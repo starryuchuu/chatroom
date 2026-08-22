@@ -209,6 +209,9 @@ class ChatClient:
         构建聊天界面，包含好友列表、在线用户列表、聊天显示区域和消息输入框。
         """
         self.clear_window()
+        # 解除登录界面的回车登录绑定，否则聊天界面中在输入框外按 Enter
+        # 会再次触发 login() 并访问已销毁的输入框
+        self.master.unbind('<Return>')
         top_frame = tk.Frame(self.master)
         top_frame.pack(side=tk.TOP, fill=tk.X)
         tk.Label(top_frame, text=f"当前用户：{self.username}", fg="green").pack(side=tk.LEFT, padx=10, pady=5)
@@ -317,7 +320,8 @@ class ChatClient:
         try:
             logging.info(f"Sending friend request to '{friend}'.")
             send_msg(self.sock, req)
-            threading.Timer(0.5, self.maybe_show_friend_request_success, args=(friend,)).start()
+            # 用 after 在主线程调度，threading.Timer 的回调在非主线程弹 Tk 对话框不安全
+            self.master.after(500, lambda: self.maybe_show_friend_request_success(friend))
         except Exception as e:
             logging.error(f"发送好友请求失败: {e}")
             messagebox.showerror("发送失败", "好友申请发送失败")
@@ -576,8 +580,11 @@ class ChatClient:
             }
             send_msg(self.sock, login_data)
             logging.info(f"Connected to server {SERVER_HOST}:{self.server_port}")
-            
+
+            # 认证阶段设置超时，防止服务器半开连接导致登录流程永久阻塞
+            self.sock.settimeout(30)
             auth_response = recv_msg(self.sock)
+            self.sock.settimeout(None)
             if isinstance(auth_response, dict) and auth_response.get("type") == "login_result":
                 if auth_response.get("success"):
                     logging.info("Login successful")
@@ -609,7 +616,7 @@ class ChatClient:
             return
             
         ts = time.strftime('%Y-%m-%d %H:%M:%S')
-        
+        sent = False
         try:
             if not self.session_key:
                 messagebox.showerror("错误", "会话密钥未建立，无法发送消息")
@@ -625,6 +632,7 @@ class ChatClient:
                 }
                 logging.info(f"Sending group message to GID '{self.current_group}'.")
                 send_msg(self.sock, data)
+                sent = True
             elif self.current_friend:
                 data = {
                     "type": "private_chat",
@@ -635,14 +643,17 @@ class ChatClient:
                 }
                 logging.info(f"Sending private message to '{self.current_friend}'.")
                 send_msg(self.sock, data)
+                sent = True
             else:
                 messagebox.showwarning("提示", "请选择好友或群组进行聊天")
                 return
         except Exception as e:
             logging.error(f"发送消息失败: {e}")
             messagebox.showerror("发送失败", "消息发送失败")
-        
-        self.msg_entry.delete("1.0", tk.END)
+
+        # 仅在发送成功后清空输入框，失败时保留内容供用户重试
+        if sent:
+            self.msg_entry.delete("1.0", tk.END)
 
     def register(self):
         """
@@ -939,13 +950,14 @@ class ChatClient:
                             if gid in self.groups and kicked_user in self.groups[gid]["members"]:
                                 self.groups[gid]["members"].remove(kicked_user)
                             self.master.after(0, lambda k=kicked_user, g=gid: messagebox.showinfo("踢出成员", f"已将 {k} 从群聊 {g} 踢出"))
-                            if kicked_user == self.username: # 自己被踢出
+                            if kicked_user == self.username: # 自己被踢出：移除群组并清空选中聊天
                                 if gid in self.groups:
                                     del self.groups[gid]
                                 if hasattr(self, f'group_messages_{gid}'):
                                     delattr(self, f'group_messages_{gid}')
+                                if self.current_group == gid:
+                                    self.master.after(0, self.clear_chat_selection)
                             self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
                         else:
                             error_msg = msg.get("error", "踢出成员失败")
                             self.master.after(0, lambda em=error_msg: messagebox.showerror("踢出成员失败", em))
@@ -1161,9 +1173,9 @@ class ChatClient:
         try:
             sel = self.group_listbox.curselection()
             if sel:
-                group_name = self.group_listbox.get(sel[0])
-                # 通过群组名称反向查找gid
-                gid = self.get_gid_by_name(group_name)
+                # 按列表索引映射 gid（群组列表按 self.groups 的插入顺序渲染），
+                # 通过群名反查在存在同名群组时会选错目标
+                gid = self.get_gid_by_index(sel[0])
                 if gid:
                     self.current_group = gid
                     self.current_friend = None # 确保私聊和群聊互斥
@@ -1179,8 +1191,8 @@ class ChatClient:
         try:
             sel = self.group_listbox.curselection()
             if sel:
-                group_name = self.group_listbox.get(sel[0])
-                gid = self.get_gid_by_name(group_name)
+                # 按列表索引映射 gid，避免同名群组时通过群名反查选错目标
+                gid = self.get_gid_by_index(sel[0])
                 if gid:
                     self.show_group_info(gid)
         except tk.TclError:
@@ -1311,6 +1323,13 @@ class ChatClient:
                 return gid
         return None
 
+    def get_gid_by_index(self, index):
+        """通过群组列表的显示索引查找GID（群组列表按 self.groups 的插入顺序渲染）"""
+        gids = list(self.groups.keys())
+        if 0 <= index < len(gids):
+            return gids[index]
+        return None
+
     def update_group_info_window(self, window, gid):
         """更新群组信息窗口的内容"""
         info = self.groups.get(gid)
@@ -1319,13 +1338,18 @@ class ChatClient:
 
         # 更新标题和成员列表
         window.title(f"群聊信息 - {info.get('group_name')}")
-        
-        listbox = None
-        for widget in window.winfo_children():
-            if isinstance(widget, tk.Listbox):
-                listbox = widget
-                break
-        
+
+        def find_listbox(widget):
+            # 递归查找：成员 Listbox 嵌套在 top_frame 中，winfo_children 只返回直接子级
+            for child in widget.winfo_children():
+                if isinstance(child, tk.Listbox):
+                    return child
+                found = find_listbox(child)
+                if found:
+                    return found
+            return None
+
+        listbox = find_listbox(window)
         if listbox:
             listbox.delete(0, tk.END)
             for member in info.get("members", []):
