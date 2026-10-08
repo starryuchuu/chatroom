@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -62,10 +63,10 @@ func verifyPassword(password, encoded string, legacyUsername string) (bool, erro
 // RegisterUser 将新用户插入数据库，密码经过Argon2哈希
 func RegisterUser(username, password string) error {
 	// 输入校验：限制长度，防止超大字段撑爆数据库
-	if len(username) < 2 || len(username) > 20 {
+	if utf8.RuneCountInString(username) < 2 || utf8.RuneCountInString(username) > 20 {
 		return errors.New("用户名长度必须在 2-20 个字符之间")
 	}
-	if len(password) < 6 || len(password) > 64 {
+	if utf8.RuneCountInString(password) < 6 || utf8.RuneCountInString(password) > 64 {
 		return errors.New("密码长度必须在 6-64 个字符之间")
 	}
 

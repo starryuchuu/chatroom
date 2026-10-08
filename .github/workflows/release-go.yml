@@ -1,0 +1,143 @@
+name: Release Go
+
+"on":
+  push:
+    branches: [master]
+    paths: [go-server/VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-go-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: .exe
+          - os: ubuntu-latest
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+          cache-dependency-path: go-server/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install Python client dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Static checks
+        working-directory: go-server
+        run: go vet ./...
+      - name: Windows Go regression tests
+        if: runner.os == 'Windows'
+        working-directory: go-server
+        run: go test -count=1 ./...
+      - name: Linux Go regression and race tests
+        if: runner.os == 'Linux'
+        working-directory: go-server
+        run: go test -race -count=1 ./...
+      - name: Build native interoperability test server
+        working-directory: go-server
+        shell: bash
+        run: go build -o "${{ github.workspace }}/go-interop-server${{ matrix.suffix }}" ./cmd/server
+      - name: Python client interoperability
+        env:
+          CHATROOM_GO_SERVER_EXE: ${{ github.workspace }}/go-interop-server${{ matrix.suffix }}
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -p test_go_interop.py -v
+
+  build:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            suffix: .exe
+          - goos: windows
+            goarch: arm64
+            suffix: .exe
+          - goos: linux
+            goarch: amd64
+            suffix: ''
+          - goos: linux
+            goarch: arm64
+            suffix: ''
+          - goos: darwin
+            goarch: amd64
+            suffix: ''
+          - goos: darwin
+            goarch: arm64
+            suffix: ''
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+          cache-dependency-path: go-server/go.sum
+      - name: Build platform binary
+        working-directory: go-server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < VERSION)
+          mkdir -p ../release-assets
+          go build -trimpath -ldflags="-s -w -X main.version=$version" \
+            -o "../release-assets/go-server-${GOOS}-${GOARCH}${{ matrix.suffix }}" ./cmd/server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish Go release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag=$(tr -d '\r\n' < go-server/VERSION)
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "go-server/VERSION must contain a stable semantic version"
+            exit 1
+          fi
+          git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
+          (cd release-assets && sha256sum go-server-* "chatroom-${tag}-source.zip" > SHA256SUMS)
+          gh release create "$tag" release-assets/* \
+            --target "$GITHUB_SHA" --title "$tag — Go 服务端稳定性修复" \
+            --notes-file go-server/RELEASE_NOTES.md --latest

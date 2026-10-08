@@ -3,63 +3,90 @@ package protocol
 import (
 	"encoding/binary"
 	"encoding/json"
-	"io"
 	"fmt"
+	"io"
 	"net"
+	"sync"
+	"time"
 )
 
-// SendMsg 向指定的连接发送消息
-// 消息会被序列化为JSON，并在前面加上一个4字节的长度前缀
+const MaxMessageLen = 1024 * 1024
+const WriteTimeout = 30 * time.Second
+
+// Conn serializes complete frames sent by concurrent handlers and broadcasts.
+// Its lock belongs to the connection, so closed sessions need no global cleanup.
+type Conn struct {
+	net.Conn
+	writeMu sync.Mutex
+}
+
+func WrapConn(conn net.Conn) *Conn {
+	if wrapped, ok := conn.(*Conn); ok {
+		return wrapped
+	}
+	return &Conn{Conn: conn}
+}
+
+// SendMsg sends one length-prefixed JSON frame. Shared server connections must
+// be wrapped once with WrapConn before being published to other goroutines.
 func SendMsg(conn net.Conn, msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
-
-	// 创建一个4字节的头部来存储消息长度
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, uint32(len(data)))
-
-	// 首先发送头部
-	if _, err := conn.Write(header); err != nil {
+	if len(data) > MaxMessageLen {
+		return fmt.Errorf("message too large: %d bytes (max: %d)", len(data), MaxMessageLen)
+	}
+	if wrapped, ok := conn.(*Conn); ok {
+		wrapped.writeMu.Lock()
+		defer wrapped.writeMu.Unlock()
+	}
+	// Refresh inside the frame lock; a deadline set at connection establishment
+	// expires even when a session remains active.
+	if err := conn.SetWriteDeadline(time.Now().Add(WriteTimeout)); err != nil {
 		return err
 	}
-
-	// 然后发送消息体
-	if _, err := conn.Write(data); err != nil {
-		return err
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame, uint32(len(data)))
+	copy(frame[4:], data)
+	for len(frame) > 0 {
+		n, err := conn.Write(frame)
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		if n <= 0 || n > len(frame) {
+			conn.Close()
+			return io.ErrShortWrite
+		}
+		frame = frame[n:]
 	}
-
 	return nil
 }
 
-// RecvMsg 从指定的连接接收消息
-// 它首先读取4字节的长度前缀，然后读取完整的消息体并解码为JSON
 func RecvMsg(conn net.Conn) (map[string]interface{}, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(conn, header); err != nil {
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
 		return nil, err
 	}
-
-	msgLen := binary.BigEndian.Uint32(header)
-
-	data := make([]byte, msgLen)
-
-	// 限制最大消息长度为 10MB，防止内存耗尽攻击
-	const maxMessageLen = 10 * 1024 * 1024
-	if msgLen > maxMessageLen {
-		return nil, fmt.Errorf("message too large: %d bytes (max: %d)", msgLen, maxMessageLen)
+	msgLen := binary.BigEndian.Uint32(header[:])
+	// Validate BEFORE allocating memory, including lengths near uint32's limit.
+	if msgLen > MaxMessageLen {
+		return nil, fmt.Errorf("message too large: %d bytes (max: %d)", msgLen, MaxMessageLen)
 	}
+	if msgLen == 0 {
+		return nil, fmt.Errorf("empty message")
+	}
+	data := make([]byte, msgLen)
 	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, err
 	}
-
 	var msg map[string]interface{}
 	if err := json.Unmarshal(data, &msg); err != nil {
-		// 如果JSON解码失败，尝试将其作为普通字符串返回
-		// 这对于处理某些非JSON格式的响应（尽管我们的协议主要是JSON）可能有用
-		return map[string]interface{}{"data": string(data)}, nil
+		return nil, err
 	}
-
+	if msg == nil {
+		return nil, fmt.Errorf("message must be a JSON object")
+	}
 	return msg, nil
 }

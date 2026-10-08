@@ -55,14 +55,14 @@ func handleConnection(conn net.Conn) {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(3 * time.Minute)
-		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	}
+	conn = protocol.WrapConn(conn)
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	var currentUsername string // 用于在连接关闭时移除客户端
 	defer func() {
 		if currentUsername != "" {
-			clientManager.RemoveClient(currentUsername)
+			clientManager.RemoveClient(currentUsername, conn)
 			// 广播在线用户列表更新
 			clientManager.BroadcastMessage(map[string]interface{}{
 				"type":  "online_users",
@@ -113,18 +113,21 @@ func handleConnection(conn net.Conn) {
 		log.Printf("解密会话密钥失败 (OAEP with SHA-1): %v", err)
 		return
 	}
+	if len(sessionKey) != 16 && len(sessionKey) != 24 && len(sessionKey) != 32 {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "error", "message": "无效的会话密钥"})
+		return
+	}
 	log.Printf("与 %s 的会话密钥已成功建立", conn.RemoteAddr().String())
 
 	// 3. 处理认证
 	username, err := handlers.HandleAuth(conn, sessionKey, clientManager)
-	if err != nil {
+	if err != nil || username == "" {
 		log.Printf("认证失败或连接关闭: %v", err)
 		return // 认证失败或客户端断开，关闭连接
 	}
 
 	// 如果认证成功，username将不会为空
 	log.Printf("用户 %s 已通过认证", username)
-	currentUsername = username // 记录当前连接的用户名
 
 	// 加载用户的好友列表
 	friends, err := database.LoadFriends(username)
@@ -140,6 +143,14 @@ func handleConnection(conn net.Conn) {
 		log.Printf("用户 %s 重复登录被拒绝（AddClient 冲突）", username)
 		return
 	}
+	currentUsername = username // Only an owned reservation may be removed on exit.
+	if err := protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true}); err != nil {
+		return
+	}
+	if !clientManager.ActivateClient(username, conn) {
+		return
+	}
+	conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 
 	// 发送好友列表给客户端
 	friendList := make([]string, 0, len(friends))
@@ -222,5 +233,6 @@ func handleConnection(conn net.Conn) {
 	}
 
 	// 认证后的消息循环
+	handlers.SendPendingNotifications(conn, username)
 	handlers.HandleClientMessages(conn, username, sessionKey, clientManager)
 }

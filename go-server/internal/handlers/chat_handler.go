@@ -6,6 +6,7 @@ import (
 	"chatroom/internal/protocol"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,13 +15,13 @@ import (
 
 // 待处理的好友请求：{requester: set(target)}，仅真实收到请求者可响应，防止伪造好友关系
 var (
-	pendingFriendRequests   = make(map[string]map[string]struct{})
+	pendingFriendRequests   = make(map[string]map[string]time.Time)
 	pendingFriendRequestsMu sync.Mutex
 )
 
 // 待加入群组的用户：{gid: set(username)}，仅收到过邀请的用户可加入，防止越权加入
 var (
-	pendingGroupJoins   = make(map[string]map[string]struct{})
+	pendingGroupJoins   = make(map[string]map[string]groupInvitation)
 	pendingGroupJoinsMu sync.Mutex
 )
 
@@ -28,7 +29,7 @@ var (
 func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, clientManager types.ClientManager) {
 	for {
 		// 重置读取超时
-		conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 		msg, err := protocol.RecvMsg(conn)
 		if err != nil {
 			log.Printf("从用户 %s 接收消息失败: %v", username, err)
@@ -77,6 +78,8 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 }
 
 func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	toUser, ok := msg["to"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "目标用户格式错误"})
@@ -153,10 +156,11 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 
 	// 记录待加入请求（仅收到过邀请的用户才能 join，防止越权加入）
 	pendingGroupJoinsMu.Lock()
+	pruneGroupInvitesLocked(time.Now())
 	if pendingGroupJoins[gid] == nil {
-		pendingGroupJoins[gid] = make(map[string]struct{})
+		pendingGroupJoins[gid] = make(map[string]groupInvitation)
 	}
-	pendingGroupJoins[gid][toUser] = struct{}{}
+	pendingGroupJoins[gid][toUser] = groupInvitation{Inviter: inviter, CreatedAt: time.Now()}
 	pendingGroupJoinsMu.Unlock()
 
 	// 转发邀请给被邀请用户
@@ -170,18 +174,20 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 		})
 		if err != nil {
 			log.Printf("转发群组邀请给 %s 失败: %v", toUser, err)
-			protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "转发群组邀请失败"})
+			protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "邀请已保存，对方重新登录后可见"})
 			return
 		}
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "已向 " + toUser + " 发送邀请"})
 		log.Printf("群组邀请从 '%s' 转发到 '%s'，群组ID: %s", inviter, toUser, gid)
 	} else {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "用户 " + toUser + " 不在线"})
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "邀请已保存，对方上线后可见"})
 		log.Printf("群组邀请从 '%s' 到 '%s' 失败: 用户不在线", inviter, toUser)
 	}
 }
 
 func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "群组ID格式错误"})
@@ -213,6 +219,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 
 	// 防越权校验：仅收到过邀请的用户可加入群组
 	pendingGroupJoinsMu.Lock()
+	pruneGroupInvitesLocked(time.Now())
 	invited := pendingGroupJoins[gid] != nil
 	if invited {
 		_, invited = pendingGroupJoins[gid][userToJoin]
@@ -223,7 +230,6 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 		log.Printf("用户 '%s' 加入群组 '%s' 被阻止: 无待处理邀请", userToJoin, gid)
 		return
 	}
-	delete(pendingGroupJoins[gid], userToJoin)
 	pendingGroupJoinsMu.Unlock()
 
 	// 添加用户到群组成员列表
@@ -236,6 +242,12 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "加入失败"})
 		return
 	}
+	pendingGroupJoinsMu.Lock()
+	delete(pendingGroupJoins[gid], userToJoin)
+	if len(pendingGroupJoins[gid]) == 0 {
+		delete(pendingGroupJoins, gid)
+	}
+	pendingGroupJoinsMu.Unlock()
 
 	// 发送成功响应给加入者
 	payload := map[string]interface{}{
@@ -267,6 +279,8 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 }
 
 func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_leave_result", "success": false, "error": "群组ID格式错误"})
@@ -345,6 +359,8 @@ func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interfac
 }
 
 func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "群组ID格式错误"})
@@ -445,6 +461,8 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 }
 
 func handleGroupInfo(conn net.Conn, username string, msg map[string]interface{}) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_info", "error": "群组ID格式错误"})
@@ -488,6 +506,8 @@ func handleGroupInfo(conn net.Conn, username string, msg map[string]interface{})
 }
 
 func handleGroupDisband(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_disband_result", "success": false, "error": "群组ID格式错误"})
@@ -517,6 +537,9 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_disband_result", "success": false, "error": "解散群聊失败"})
 		return
 	}
+	pendingGroupJoinsMu.Lock()
+	delete(pendingGroupJoins, gid)
+	pendingGroupJoinsMu.Unlock()
 
 	// 通知所有成员群组已解散
 	disbandNotification := map[string]interface{}{
@@ -541,6 +564,8 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 }
 
 func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "群组ID格式错误"})
@@ -626,6 +651,8 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 }
 
 func handleGroupRename(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "群组ID格式错误"})
@@ -816,15 +843,16 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 
 	// 记录待处理请求，用于 friend_response 防伪校验
 	pendingFriendRequestsMu.Lock()
+	pruneFriendRequestsLocked(time.Now())
 	if pendingFriendRequests[fromUser] == nil {
-		pendingFriendRequests[fromUser] = make(map[string]struct{})
+		pendingFriendRequests[fromUser] = make(map[string]time.Time)
 	}
 	if _, exists := pendingFriendRequests[fromUser][toUser]; exists {
 		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "已发送过好友申请，请等待对方处理"})
 		return
 	}
-	pendingFriendRequests[fromUser][toUser] = struct{}{}
+	pendingFriendRequests[fromUser][toUser] = time.Now()
 	pendingFriendRequestsMu.Unlock()
 
 	// 转发请求给目标用户
@@ -833,18 +861,20 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 		err := protocol.SendMsg(toClient.Conn, map[string]interface{}{"type": "friend_request", "from": fromUser})
 		if err != nil {
 			log.Printf("转发好友请求给 %s 失败: %v", toUser, err)
-			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "转发好友请求失败"})
+			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已保存，对方重新登录后可见"})
 			return
 		}
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已发送"})
 		log.Printf("好友请求从 '%s' 转发到 '%s'", fromUser, toUser)
 	} else {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "用户 " + toUser + " 不在线"})
+		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已保存，对方上线后可见"})
 		log.Printf("好友请求从 '%s' 到 '%s' 失败: 用户不在线", fromUser, toUser)
 	}
 }
 
 func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[string]interface{}, clientManager types.ClientManager) {
+	unlock := lockGroupOperation(msg)
+	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_chat_result", "success": false, "error": "群组ID格式错误"})
@@ -913,7 +943,7 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 
 func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, clientManager types.ClientManager) {
 	groupName, ok := msg["group_name"].(string)
-	if !ok || groupName == "" {
+	if !ok || strings.TrimSpace(groupName) == "" {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "群组名称无效"})
 		return
 	}
@@ -924,11 +954,24 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 		return
 	}
 
-	var members []string
+	members := []string{owner}
+	seen := map[string]bool{owner: true}
 	for _, m := range membersInterface {
-		if memberName, ok := m.(string); ok {
-			members = append(members, memberName)
+		memberName, ok := m.(string)
+		if !ok || memberName == "" {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "成员列表格式错误"})
+			return
 		}
+		if seen[memberName] {
+			continue
+		}
+		areFriends, err := database.AreFriends(owner, memberName)
+		if err != nil || !areFriends {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "只能邀请好友创建群聊"})
+			return
+		}
+		seen[memberName] = true
+		members = append(members, memberName)
 	}
 
 	// 确保群主在成员列表中
@@ -949,6 +992,8 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "创建群组失败"})
 		return
 	}
+	unlock := lockGroupOperation(map[string]interface{}{"gid": newGroup.GID})
+	defer unlock()
 
 	log.Printf("用户 '%s' 创建了新群组 '%s' (GID: %s)", owner, groupName, newGroup.GID)
 
@@ -985,6 +1030,7 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 
 	// 防伪校验：仅当请求发起者确实向本用户发送过好友请求时才允许响应
 	pendingFriendRequestsMu.Lock()
+	pruneFriendRequestsLocked(time.Now())
 	if pendingFriendRequests[fromUser] == nil {
 		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "没有来自该用户的好友请求，无法响应"})
@@ -997,8 +1043,20 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 		log.Printf("好友响应从 '%s' 到 '%s' 被阻止: 无待处理请求", responder, fromUser)
 		return
 	}
+	// Persist before acknowledging acceptance or consuming the request. A failed
+	// transaction must leave the request available for the responder to retry.
+	if accepted {
+		if err := database.SaveFriendRelationship(responder, fromUser); err != nil {
+			pendingFriendRequestsMu.Unlock()
+			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "保存好友关系失败"})
+			return
+		}
+	}
 	// 请求已处理，移除待处理记录
 	delete(pendingFriendRequests[fromUser], responder)
+	if len(pendingFriendRequests[fromUser]) == 0 {
+		delete(pendingFriendRequests, fromUser)
+	}
 	pendingFriendRequestsMu.Unlock()
 
 	// 转发响应给请求发起者
@@ -1017,14 +1075,6 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 	}
 
 	if accepted {
-		// 保存好友关系到数据库
-		err := database.SaveFriendRelationship(responder, fromUser)
-		if err != nil {
-			log.Printf("保存好友关系失败: %v", err)
-			// 即使保存失败，也尝试通知客户端
-			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "保存好友关系失败"})
-			return
-		}
 		log.Printf("好友关系 '%s' 和 '%s' 已保存", responder, fromUser)
 
 		// 通知双方更新好友列表

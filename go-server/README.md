@@ -1,5 +1,16 @@
 # Go Chatroom Server
 
+## v1.0.6 修复与发布
+
+详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，兼容 v1.0.5 Python 客户端。
+
+```bash
+go test ./...
+go vet ./...
+# Linux 上检查并发数据竞争
+go test -race ./...
+```
+
 这是一个用Go语言编写的聊天室服务端，具有以下功能：
 
 ## 功能特性

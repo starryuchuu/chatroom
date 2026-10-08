@@ -23,7 +23,7 @@ func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientMana
 
 		msgType, ok := msg["type"].(string)
 		if !ok {
-			log.Printf("收到的认证消息格式错误: %v", msg)
+			log.Printf("收到的认证消息格式错误")
 			continue
 		}
 
@@ -51,38 +51,38 @@ func handleRegister(conn net.Conn, sessionKey []byte, msg map[string]interface{}
 	encryptedData, ok := msg["data"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
 	if err != nil {
 		log.Printf("解密注册信息失败: %v", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册处理失败"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	var regInfo map[string]interface{}
 	if err := json.Unmarshal([]byte(decryptedData), &regInfo); err != nil {
 		log.Printf("解析注册JSON失败: %v", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册处理失败"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	username, ok := regInfo["from"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 	password, ok := regInfo["password"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	err = database.RegisterUser(username, password)
 	if err != nil {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": err.Error()})
-		return "", nil // 注册失败，继续等待下一个认证消息
+		return "", errors.New("认证未通过") // 注册失败，关闭此次认证连接
 	}
 
 	protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": true})
@@ -95,12 +95,12 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 	username, ok := msg["from"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 	password, ok := msg["password"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	// 检查用户是否已在线，防止重复登录造成身份混淆/劫持
@@ -118,7 +118,6 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 	}
 
 	if valid {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true})
 		log.Printf("用户 %s 登录成功", username)
 		return username, nil // 登录成功，返回用户名
 	}
@@ -133,21 +132,21 @@ func handleEncryptedLogin(conn net.Conn, sessionKey []byte, clientManager types.
 	encryptedData, ok := msg["data"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据格式错误"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
 	if err != nil {
 		log.Printf("解密登录信息失败: %v", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据处理失败"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	var loginInfo map[string]interface{}
 	if err := json.Unmarshal([]byte(decryptedData), &loginInfo); err != nil {
 		log.Printf("解析登录JSON失败: %v", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据处理失败"})
-		return "", nil
+		return "", errors.New("认证未通过")
 	}
 
 	return handleLogin(conn, clientManager, loginInfo)

@@ -12,8 +12,10 @@ const (
 	ServerPort     = "12346"
 )
 
+var version = "dev"
+
 func main() {
-	log.Println("正在启动聊天服务器...")
+	log.Printf("正在启动聊天服务器 (%s)...", version)
 
 	// 初始化数据库
 	database.InitDB("./chat.db")

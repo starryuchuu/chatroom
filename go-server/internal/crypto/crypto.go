@@ -41,14 +41,32 @@ func EnsureRSAKeys() (*rsa.PrivateKey, []byte) {
 		log.Fatalf("无法解析私钥: %v", err)
 	}
 
-	// 加载公钥
-	publicKeyBytes, err = os.ReadFile(publicKeyFile)
+	// Derive the public key from the loaded private key. A missing or mismatched
+	// public file must not break startup/handshakes or rotate the private identity.
+	derivedDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	if err != nil {
+		log.Fatalf("无法序列化公钥: %v", err)
+	}
+	derivedPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: derivedDER})
+	publicKeyBytes, err = os.ReadFile(publicKeyFile)
+	if err != nil && !os.IsNotExist(err) {
 		log.Fatalf("无法读取公钥文件: %v", err)
 	}
 	pubPem, _ := pem.Decode(publicKeyBytes)
-	if pubPem == nil || pubPem.Type != "PUBLIC KEY" {
-		log.Fatal("公钥文件格式无效")
+	matches := false
+	if pubPem != nil && pubPem.Type == "PUBLIC KEY" {
+		if parsed, parseErr := x509.ParsePKIXPublicKey(pubPem.Bytes); parseErr == nil {
+			if pub, ok := parsed.(*rsa.PublicKey); ok {
+				matches = pub.E == privateKey.E && pub.N.Cmp(privateKey.N) == 0
+			}
+		}
+	}
+	if !matches {
+		if err := os.WriteFile(publicKeyFile, derivedPEM, 0644); err != nil {
+			log.Fatalf("无法修复公钥文件: %v", err)
+		}
+		publicKeyBytes = derivedPEM
+		log.Println("公钥文件已根据现有私钥修复。")
 	}
 
 	log.Println("RSA密钥已成功加载。")
