@@ -39,6 +39,25 @@ class ClientTests(unittest.TestCase):
         app.history_syncing = False
         return app
 
+    def test_server_error_survives_disconnect(self):
+        app = self.app()
+        order = []
+        app.disconnect = lambda: order.append('disconnect')
+        app.notify = lambda title, text: order.append(text)
+        app.handle_server_message({'type': 'error', 'message': 'expired'})
+        self.assertEqual(order, ['disconnect', 'expired'])
+
+    def test_group_snapshot_chunks_are_applied_only_when_complete(self):
+        import json
+        app = self.app()
+        app.groups = {'old': {}}
+        app.refresh_group_listbox = Mock()
+        data = json.dumps({'type': 'user_groups_list', 'groups': [{'gid': 'g', 'group_name': '名字'}]})
+        app.handle_server_message({'type': 'user_groups_chunk', 'data': data[:20], 'first': True})
+        self.assertIn('old', app.groups)
+        app.handle_server_message({'type': 'user_groups_chunk', 'data': data[20:], 'last': True})
+        self.assertEqual(set(app.groups), {'g'})
+
     def test_old_connection_events_do_not_disconnect_new_login(self):
         app = self.app()
         app.handle_server_message = Mock()
@@ -347,6 +366,145 @@ class ServerTests(unittest.TestCase):
             self.assertIsNotNone(msg)
             if msg['type'] == kind: return msg
         self.fail('missing message: ' + kind)
+
+    def test_large_legacy_group_snapshot_roundtrips_bounded_packets(self):
+        import json
+        s = self.server
+        name = '名字' * 100000
+        gid = s.create_group_db('alice', name, ['alice'])
+        packets = []
+        with patch.object(s, 'enqueue_packet', side_effect=lambda sock, data, ready=None: packets.append(data)):
+            s.send_user_groups(object(), 'alice')
+        messages = [json.loads(packet[4:]) for packet in packets]
+        self.assertGreater(len(messages), 1)
+        self.assertTrue(all(len(packet) - 4 <= s.MAX_MESSAGE_LEN for packet in packets))
+        snapshot = json.loads(''.join(msg['data'] for msg in messages))
+        self.assertEqual(snapshot['groups'][0]['group_name'], name)
+        self.assertEqual(snapshot['groups'][0]['gid'], gid)
+
+    def test_successful_auth_preserves_ip_failures(self):
+        s = self.server
+        s.record_auth_failure('127.0.0.1')
+        _, _, result = self.connect('alice')
+        self.assertTrue(result['success'])
+        _, _, result = self.connect('newuser', register=True)
+        self.assertTrue(result['success'])
+        self.assertEqual(len(s.rate_limit_tracker['127.0.0.1']), 1)
+
+    def test_drip_feed_cannot_extend_receive_deadline(self):
+        s = self.server
+        sock = Mock()
+        sock.recv.return_value = b'x'
+        with patch.object(s.time, 'monotonic', side_effect=[10, 10.1, 10.3]):
+            self.assertIsNone(s.recvall(sock, 4, deadline=10.2))
+        self.assertEqual(sock.recv.call_count, 2)
+
+    def test_join_immediately_replays_only_joined_group_history(self):
+        s = self.server
+        gid = s.create_group_db('alice', 'Team', ['alice'])
+        s.save_message('group', 'alice', None, gid, 'before join', '2026-10-08 10:00:00')
+        bob, key, _ = self.connect('bob')
+        self.read_type(bob, 'online_users')
+        s.group_pending_joins[gid] = {'bob': ('alice', time.time())}
+        client.send_msg(bob, {'type': 'group_join', 'gid': gid})
+        self.assertTrue(self.read_type(bob, 'group_join_result')['success'])
+        history = self.read_type(bob, 'group_chat')
+        self.assertEqual(history['gid'], gid)
+        self.assertEqual(client.decrypt_message(history['content'], key), 'before join')
+        self.read_type(bob, 'history_end')
+
+    def test_group_chat_is_queued_before_concurrent_kick(self):
+        s = self.server
+        gid = s.create_group_db('alice', 'Team', ['alice', 'bob'])
+        alice, _, _ = self.connect('alice')
+        bob, key, _ = self.connect('bob')
+        self.read_type(alice, 'online_users'); self.read_type(bob, 'online_users')
+        entered, finish = threading.Event(), threading.Event()
+        original = s.save_message
+        def paused_save(*args):
+            entered.set()
+            if not finish.wait(3):
+                raise TimeoutError('test did not release save')
+            return original(*args)
+        with patch.object(s, 'save_message', side_effect=paused_save):
+            client.send_msg(bob, {'type': 'group_chat', 'gid': gid,
+                                    'content': client.encrypt_message('in flight', key)})
+            self.assertTrue(entered.wait(3))
+            client.send_msg(alice, {'type': 'group_kick', 'gid': gid, 'kick': 'bob'})
+            finish.set()
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_chat_result')
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_chat')
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_kick_notification')
+        self.assertNotIn('bob', s.get_group_db(gid)['members'])
+
+    def test_group_chat_is_queued_before_concurrent_disband(self):
+        s = self.server
+        gid = s.create_group_db('alice', 'Team', ['alice', 'bob'])
+        alice, _, _ = self.connect('alice')
+        bob, key, _ = self.connect('bob')
+        self.read_type(alice, 'online_users'); self.read_type(bob, 'online_users')
+        entered, finish = threading.Event(), threading.Event()
+        original = s.save_message
+        def paused_save(*args):
+            entered.set()
+            if not finish.wait(3):
+                raise TimeoutError('test did not release save')
+            return original(*args)
+        with patch.object(s, 'save_message', side_effect=paused_save):
+            client.send_msg(bob, {'type': 'group_chat', 'gid': gid,
+                                    'content': client.encrypt_message('in flight', key)})
+            self.assertTrue(entered.wait(3))
+            client.send_msg(alice, {'type': 'group_disband', 'gid': gid})
+            finish.set()
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_chat_result')
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_chat')
+            self.assertEqual(client.recv_msg(bob)['type'], 'group_disband_notification')
+        self.assertIsNone(s.get_group_db(gid))
+
+    def test_snapshot_staging_blocks_member_changes_until_queued(self):
+        import json
+        s = self.server
+        s.create_group_db('alice', 'Team', ['alice'])
+        entered, finish, acquired = threading.Event(), threading.Event(), threading.Event()
+        packets = []
+        original = s.send_msg
+        def paused_send(sock, msg):
+            if msg['type'] == 'user_groups_list':
+                entered.set()
+                if not finish.wait(3):
+                    raise TimeoutError('test did not release snapshot')
+            return original(sock, msg)
+        def change():
+            s.group_ops_lock.acquire()
+            try:
+                acquired.set()
+                s.send_msg(target, {'type': 'group_disband_notification', 'gid': 'g'})
+            finally:
+                s.group_ops_lock.release()
+        target = object()
+        with patch.object(s, 'send_msg', side_effect=paused_send), patch.object(s, 'enqueue_packet', side_effect=lambda sock, packet, ready=None: packets.append(packet)):
+            sync = threading.Thread(target=s.send_user_groups, args=(target, 'alice'))
+            sync.start()
+            self.assertTrue(entered.wait(3))
+            mutation = threading.Thread(target=change)
+            mutation.start()
+            try:
+                self.assertFalse(acquired.wait(.1))
+            finally:
+                finish.set()
+                sync.join(3); mutation.join(3)
+        self.assertFalse(sync.is_alive()); self.assertFalse(mutation.is_alive())
+        self.assertEqual([json.loads(packet[4:])['type'] for packet in packets],
+                         ['user_groups_list', 'group_disband_notification'])
+
+    def test_long_rename_rejected_before_database_change(self):
+        s = self.server
+        gid = s.create_group_db('alice', 'Before', ['alice'])
+        alice, _, _ = self.connect('alice')
+        self.read_type(alice, 'online_users')
+        client.send_msg(alice, {'type': 'group_rename', 'gid': gid, 'new_name': 'x' * 129})
+        self.assertFalse(self.read_type(alice, 'group_rename_result')['success'])
+        self.assertEqual(s.get_group_db(gid)['group_name'], 'Before')
 
     def test_rate_limit_cleanup_uses_scalar_timestamps(self):
         s = self.server

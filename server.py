@@ -31,6 +31,7 @@ DB_FILE_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
 # 安全加固配置
 MAX_MESSAGE_LEN = 1 * 1024 * 1024  # 单条消息最大长度（字节），防止内存耗尽攻击
 AUTH_TIMEOUT_SECONDS = 30  # 认证阶段套接字超时（秒）
+GROUP_NAME_MAX_LEN = 128
 USERNAME_MIN_LEN = 2  # 用户名最小长度
 USERNAME_MAX_LEN = 20  # 用户名最大长度
 PASSWORD_MIN_LEN = 6  # 密码最小长度
@@ -164,7 +165,7 @@ def record_auth_failure(ip_address):
 
 def clear_rate_limit(ip_address):
     """
-    认证成功后清除该 IP 的失败记录。
+    显式重置该 IP 的失败记录；成功认证不得调用此函数。
     """
     with rate_limit_lock:
         rate_limit_tracker.pop(ip_address, None)
@@ -203,7 +204,7 @@ cipher_rsa_decrypt = PKCS1_OAEP.new(private_key)
 
 
 # 接收指定字节数的数据
-def recvall(sock, n):
+def recvall(sock, n, deadline=None):
     """
     从套接字接收指定字节数的数据。
     参数:
@@ -215,6 +216,11 @@ def recvall(sock, n):
     data = b''
     while len(data) < n:
         try:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                sock.settimeout(remaining)
             packet = sock.recv(n - len(data))
             if not packet:
                 return None
@@ -321,7 +327,7 @@ def send_msg(sock, msg):
             sock.sendall(packet)
 
 # 接收消息，读取消息长度头部并接收完整消息
-def recv_msg(sock):
+def recv_msg(sock, deadline=None):
     """
     从套接字接收消息，首先读取长度头部，然后接收完整消息。
     参数:
@@ -330,14 +336,14 @@ def recv_msg(sock):
         接收到的消息 dict 或 str，如果连接关闭则返回None
     """
     try:
-        header = recvall(sock, 4)
+        header = recvall(sock, 4, deadline)
         if not header:
             return None
         msg_len = struct.unpack('!I', header)[0]
         if msg_len > MAX_MESSAGE_LEN:
             logging.warning(f"Message too large: {msg_len} bytes (max: {MAX_MESSAGE_LEN}), closing connection")
             return None
-        data = recvall(sock, msg_len)
+        data = recvall(sock, msg_len, deadline)
         if data is None:
             return None
         try:
@@ -573,32 +579,45 @@ def send_user_groups(client_sock, username):
     """
     查找用户所属的所有群组并发送给客户端。
     """
-    conn = sqlite3.connect("chat.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT gid, group_name, owner, members FROM groups")
-    rows = cursor.fetchall()
-    
-    user_groups = []
-    for row in rows:
-        gid, group_name, owner, members_json = row
-        members = json.loads(members_json)
-        if username in members:
-            user_groups.append({
-                "gid": gid,
-                "group_name": group_name,
-                "owner": owner,
-                "members": members
-            })
-    
-    conn.close()
-    
-    if user_groups:
-        send_msg(client_sock, {"type": "user_groups_list", "groups": user_groups})
-        logging.info(f"Sent {len(user_groups)} groups to user '{username}'.")
+    group_ops_lock.acquire()
+    try:
+        conn = sqlite3.connect("chat.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT gid, group_name, owner, members FROM groups")
+        rows = cursor.fetchall()
+
+        user_groups = []
+        for row in rows:
+            gid, group_name, owner, members_json = row
+            members = json.loads(members_json)
+            if username in members:
+                user_groups.append({
+                    "gid": gid,
+                    "group_name": group_name,
+                    "owner": owner,
+                    "members": members
+                })
+
+        conn.close()
+
+        payload = {"type": "user_groups_list", "groups": user_groups}
+        serialized = json.dumps(payload)
+        if len(serialized.encode('utf-8')) <= MAX_MESSAGE_LEN:
+            send_msg(client_sock, payload)
+        else:
+            # ensure_ascii JSON is ASCII; wrapping doubles quotes and backslashes at most.
+            chunk_size = max(1, (MAX_MESSAGE_LEN - 256) // 2)
+            for offset in range(0, len(serialized), chunk_size):
+                send_msg(client_sock, {"type": "user_groups_chunk",
+                                      "data": serialized[offset:offset + chunk_size],
+                                      "first": offset == 0,
+                                      "last": offset + chunk_size >= len(serialized)})
+    finally:
+        group_ops_lock.release()
 
 
 # 发送聊天历史记录给客户端
-def send_history(client_sock, username):
+def send_history(client_sock, username, only_gid=None):
     """
     发送群聊和私聊历史记录给客户端。
     参数:
@@ -623,6 +642,8 @@ def send_history(client_sock, username):
         all_groups = cursor.fetchall()
         user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
         
+        if only_gid is not None:
+            user_gids = [gid for gid in user_gids if gid == only_gid]
         if user_gids:
             # 使用参数化查询来避免 SQL 注入 - 修复 f-string 拼接问题
             placeholders = ','.join('?' * len(user_gids))
@@ -640,7 +661,13 @@ def send_history(client_sock, username):
                     "timestamp": timestamp,
                     "message_id": message_id
                 }
-                send_msg(client_sock, hist_msg)
+                group_ops_lock.acquire()
+                try:
+                    current_group = get_group_db(gid)
+                    if current_group and username in current_group["members"]:
+                        send_msg(client_sock, hist_msg)
+                finally:
+                    group_ops_lock.release()
         
         # 发送私聊历史 - 仅发送双方仍是好友的消息，避免向已解除关系的好友泄露历史
         with user_friends_lock:
@@ -651,7 +678,7 @@ def send_history(client_sock, username):
             ORDER BY id ASC
         """, (boundary, username, username))
         rows = cursor.fetchall()
-        for row in rows:
+        for row in ([] if only_gid is not None else rows):
             message_id, from_user, to_user, message, timestamp = row
             # 计算聊天对象；若已不是好友，则跳过该历史消息
             chat_partner = to_user if from_user == username else from_user
@@ -860,13 +887,14 @@ def handle_client(client_sock, addr):
     current_username = None
     try:
         # 认证阶段设置套接字超时，防止未认证连接无限挂起线程（DoS）
+        auth_deadline = time.monotonic() + AUTH_TIMEOUT_SECONDS
         client_sock.settimeout(AUTH_TIMEOUT_SECONDS)
 
         # 1. 发送公钥
         send_msg(client_sock, {"type": "public_key", "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
-        encrypted_session_key_data = recv_msg(client_sock)
+        encrypted_session_key_data = recv_msg(client_sock, auth_deadline)
         if not isinstance(encrypted_session_key_data, dict) or encrypted_session_key_data.get("type") != "session_key":
             logging.error(f"Failed to receive session key from {addr}")
             return
@@ -882,11 +910,15 @@ def handle_client(client_sock, addr):
             session_keys[client_sock] = session_key
         logging.info(f"Session key established with {addr}")
 
-        auth_data = recv_msg(client_sock)
+        auth_data = recv_msg(client_sock, auth_deadline)
         if not isinstance(auth_data, dict):
             record_auth_failure(ip_address)
             send_msg(client_sock, {"type": "login_result", "success": False, "error": "协议错误"})
             logging.error(f"Protocol error during authentication from {addr}")
+            return
+
+        if is_rate_limited(ip_address):
+            send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
             return
 
         if auth_data.get("type") == "encrypted_register":
@@ -900,7 +932,6 @@ def handle_client(client_sock, addr):
 
                 reg_ok, reg_err = register_user(username, password)
                 if reg_ok:
-                    clear_rate_limit(ip_address)
                     send_msg(client_sock, {"type": "register_result", "success": True})
                     logging.info(f"User {username} registered successfully from {addr}")
                 else:
@@ -956,7 +987,6 @@ def handle_client(client_sock, addr):
                 current_username = username # 记录当前连接的用户名
                 send_msg(client_sock, {"type": "login_result", "success": True})
                 usernames[client_sock] = username
-            clear_rate_limit(ip_address)
             with user_friends_lock:
                 user_friends[username] = load_friends(username)
             # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
@@ -1176,6 +1206,7 @@ def handle_client(client_sock, addr):
 
             elif mtype == "group_create":
                 try:
+                    group_ops_lock.acquire()
                     group_name = msg.get("group_name")
                     owner = current_username
                     members = msg.get("members", [])
@@ -1216,6 +1247,9 @@ def handle_client(client_sock, addr):
                     if owner not in members:
                         members.append(owner)
 
+                    if len(group_name) > GROUP_NAME_MAX_LEN:
+                        send_msg(client_sock, {"type": "group_create_result", "success": False, "error": "群聊名称不能超过128个字符"})
+                        continue
                     gid = create_group_db(owner, group_name, members)
                     if gid:
                         with groups_data_lock:
@@ -1243,10 +1277,13 @@ def handle_client(client_sock, addr):
                 except Exception as e:
                     logging.error(f"Error processing group_create from {current_username}: {e}")
                     send_msg(client_sock, {"type": "group_create_result", "success": False, "error": "操作处理失败，请重试"})
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_chat":
                 message_id = None
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     encrypted_content = msg.get("content")
                     # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
@@ -1311,6 +1348,8 @@ def handle_client(client_sock, addr):
                     logging.error(f"Error processing group_chat from {current_username}: {e}")
                     if message_id is None:
                         send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息保存失败，请重试"})
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_invite":
                 try:
@@ -1385,6 +1424,7 @@ def handle_client(client_sock, addr):
                     group_ops_lock.release()
 
             elif mtype == "group_join":
+                joined_history_gid = None
                 try:
                     group_ops_lock.acquire()
                     gid = msg.get("gid")
@@ -1429,6 +1469,7 @@ def handle_client(client_sock, addr):
                             "members": group["members"]
                         }
                         send_msg(client_sock, payload)
+                        joined_history_gid = gid
                         logging.info(f"User '{user_to_join}' successfully joined group '{gid}'.")
                         
                         # 向所有成员广播群组更新信息
@@ -1445,6 +1486,8 @@ def handle_client(client_sock, addr):
                     send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
+                if joined_history_gid is not None:
+                    send_history(client_sock, current_username, only_gid=joined_history_gid)
 
             elif mtype == "group_leave":
                 try:
@@ -1687,14 +1730,14 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "只有群主才能修改群聊名称"})
                         logging.warning(f"Group rename by '{requester}' blocked: Not the owner of group '{gid}'.")
                         continue
-                    if not new_name or new_name.strip() == "":
-                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "群聊名称不能为空"})
+                    if not isinstance(new_name, str) or not new_name.strip() or len(new_name) > GROUP_NAME_MAX_LEN:
+                        send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "群聊名称须为1至128个字符"})
                         logging.warning(f"Group rename by '{requester}' failed: New name is empty.")
                         continue
 
                     if update_group_name_db(gid, new_name):
                         # 保存旧名称用于通知
-                        old_name = group["group_name"]
+                        old_name = group["group_name"][:GROUP_NAME_MAX_LEN]
                         # 更新内存中的群组数据（持锁）
                         group["group_name"] = new_name
                         with groups_data_lock:

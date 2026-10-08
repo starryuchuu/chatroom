@@ -349,6 +349,7 @@ class ChatClient:
         self.private_chats = {}
         self.group_chat = []
         self.groups = {}
+        self.group_sync_chunks = []
         
         self.build_login()
 
@@ -893,9 +894,18 @@ class ChatClient:
                 logging.info(f"Received online users list: {user_list}")
                 self.run_ui(lambda ul=user_list: self.update_online_users(ul))
 
+            elif mtype == "user_groups_chunk":
+                if msg.get("first"):
+                    self.group_sync_chunks = []
+                self.group_sync_chunks.append(msg["data"])
+                if msg.get("last"):
+                    snapshot = json.loads("".join(self.group_sync_chunks))
+                    del self.group_sync_chunks
+                    self.handle_server_message(snapshot)
+
             elif mtype == "user_groups_list":
                 group_list = msg.get("groups", [])
-                logging.info(f"Received initial group list: {group_list}")
+                logging.info("Received initial group list (%s groups)", len(group_list) if isinstance(group_list, list) else "invalid")
                 self.groups = {g["gid"]: g for g in group_list}
                 self.run_ui(self.refresh_group_listbox)
 
@@ -1205,8 +1215,10 @@ class ChatClient:
                 # 服务器主动通知的错误（如会话过期、速率限制等），提示后返回登录界面
                 err = msg.get("message", "服务器错误")
                 logging.warning(f"服务器错误: {err}")
-                self.run_ui(lambda e=err: self.notify("服务器通知", e))
-                self.run_ui(self.disconnect)
+                def show_server_error(e=err):
+                    self.disconnect()
+                    self.notify("服务器通知", e)
+                self.run_ui(show_server_error)
                 return
 
             elif mtype == "private_chat_result":
