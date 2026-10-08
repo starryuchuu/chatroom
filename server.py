@@ -101,7 +101,7 @@ def ensure_rsa_keys():
         public_key = key.publickey().export_key()
         with open('public_key.pem', 'wb') as f:
             f.write(public_key)
-        print("RSA密钥对 'private_key.pem' 和 'public_key.pem' 已重新生成。")
+        logging.info("RSA key pair 'private_key.pem' and 'public_key.pem' generated.")
     with open("private_key.pem", "rb") as f:
         private_key = RSA.import_key(f.read())
     with open("public_key.pem", "rb") as f:

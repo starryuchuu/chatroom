@@ -1,6 +1,7 @@
 """Regression tests using real RSA/AES/Argon2 and isolated SQLite state."""
 import base64
 import importlib.util
+import io
 import os
 from pathlib import Path
 import queue
@@ -180,6 +181,19 @@ class ServerTests(unittest.TestCase):
         s.rate_limit_tracker['active'] = [time.time()] * s.RATE_LIMIT_MAX_ATTEMPTS
         self.assertTrue(s.is_rate_limited('active'))
         self.assertEqual(set(s.rate_limit_tracker), {'active'})
+
+    def test_key_generation_with_ascii_console(self):
+        previous_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as key_dir:
+            try:
+                os.chdir(key_dir)
+                with io.TextIOWrapper(io.BytesIO(), encoding='ascii') as console:
+                    with patch('sys.stdout', console):
+                        private_key, public_pem = self.server.ensure_rsa_keys()
+                self.assertTrue(private_key.has_private())
+                self.assertEqual(client.RSA.import_key(public_pem).n, private_key.n)
+            finally:
+                os.chdir(previous_cwd)
 
     def test_rate_limited_connections_do_not_leak_send_locks(self):
         s = self.server
