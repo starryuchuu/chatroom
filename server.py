@@ -14,6 +14,7 @@ import logging
 import json
 import uuid # 用于生成群组ID
 import stat
+import queue
 
 # 安全配置常量
 RSA_KEY_SIZE = 3072  # 使用更强的 RSA 密钥长度
@@ -55,7 +56,7 @@ rate_limit_lock = threading.Lock()
 # 带过期时间，避免目标用户永远不响应时请求者无法再次申请、集合无限增长。
 pending_friend_requests = {}
 pending_friend_requests_lock = threading.Lock()
-# 待加入群组的用户：{gid: set(username)}，仅收到过邀请的用户可加入，防止越权加入群组
+# 待加入群组的用户：{gid: {username: (inviter, created_at)}}，仅收到过邀请的用户可加入，防止越权加入群组
 group_pending_joins = {}
 group_pending_joins_lock = threading.Lock()
 
@@ -66,7 +67,27 @@ session_keys_lock = threading.Lock()
 user_friends_lock = threading.Lock()
 groups_data_lock = threading.Lock()
 # 群成员读-改-写串行化锁：并发 join/leave/kick 同一群组时防止互相覆盖
-group_ops_lock = threading.Lock()
+class GroupOperationLock:
+    """Stage immutable notifications in commit order; no network I/O in the lock."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.local = threading.local()
+
+    def acquire(self):
+        self.lock.acquire()
+        self.local.notifications = []
+
+    def release(self):
+        ready = threading.Event()
+        try:
+            for sock, data in self.local.notifications:
+                enqueue_packet(sock, data, ready=ready)
+        finally:
+            del self.local.notifications
+            self.lock.release()
+            ready.set()
+
+group_ops_lock = GroupOperationLock()
 
 
 # 检查并生成/加载RSA密钥
@@ -199,6 +220,8 @@ def recvall(sock, n):
                 return None
             data += packet
         except socket.timeout:
+            if sock in session_timestamps and not is_session_expired(sock):
+                continue
             logging.warning("Socket recvall timeout")
             return None
         except Exception as e:
@@ -220,26 +243,82 @@ def get_send_lock(sock):
 def remove_send_lock(sock):
     with send_locks_guard:
         send_locks.pop(sock, None)
+    with send_queues_guard:
+        outbox = send_queues.pop(sock, None)
+    if outbox is not None:
+        try:
+            outbox.put_nowait(None)
+        except queue.Full:
+            pass
 
 # 发送消息，包含消息长度头部
-def send_msg(sock, msg):
-    """
-    向套接字发送消息，消息前附加长度头部。
-    参数：
-        sock: 套接字对象
-        msg: 要发送的消息字符串或字典
-    """
+SEND_TIMEOUT_SECONDS = 5
+send_queues = {}
+send_queues_guard = threading.Lock()
+
+def close_connection(sock):
     try:
-        if isinstance(msg, dict):
-            data = json.dumps(msg).encode('utf-8')
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+def send_worker(sock, outbox):
+    try:
+        while True:
+            item = outbox.get()
+            if item is None:
+                return
+            packet, ready = item
+            if ready is not None:
+                ready.wait()
+            with get_send_lock(sock):
+                sock.sendall(packet)
+    except Exception:
+        logging.exception("发送超时或连接关闭")
+        close_connection(sock)
+    finally:
+        with send_queues_guard:
+            if send_queues.get(sock) is outbox:
+                send_queues.pop(sock, None)
+        with send_locks_guard:
+            send_locks.pop(sock, None)
+
+def enqueue_packet(sock, packet, ready=None):
+    with send_queues_guard:
+        outbox = send_queues.get(sock)
+        if outbox is None:
+            outbox = queue.Queue(maxsize=256)
+            send_queues[sock] = outbox
+            threading.Thread(target=send_worker, args=(sock, outbox), daemon=True).start()
+    try:
+        if getattr(group_ops_lock.local, 'notifications', None) is not None:
+            outbox.put_nowait((packet, ready))
         else:
-            data = str(msg).encode('utf-8')
-        header = struct.pack('!I', len(data))
-        lock = get_send_lock(sock)
-        with lock:
-            sock.sendall(header + data)
-    except Exception as e:
-        logging.error(f"send_msg error: {e}")
+            outbox.put((packet, ready), timeout=SEND_TIMEOUT_SECONDS)
+    except queue.Full:
+        close_connection(sock)
+
+def validate_chat_packet(kind, sender, recipient, gid, content, timestamp):
+    # The forwarded packet adds metadata that the incoming packet may omit.
+    payload = {'type': kind, 'from': sender, 'content': content,
+               'timestamp': timestamp, 'message_id': 9223372036854775807}
+    payload['gid' if kind == 'group_chat' else 'to'] = gid if kind == 'group_chat' else recipient
+    if len(json.dumps(payload).encode('utf-8')) > MAX_MESSAGE_LEN:
+        raise ValueError('消息内容过长，无法转发')
+
+def send_msg(sock, msg):
+    data = json.dumps(msg).encode('utf-8') if isinstance(msg, dict) else str(msg).encode('utf-8')
+    if len(data) > MAX_MESSAGE_LEN:
+        raise ValueError("消息包超过大小限制")
+    packet = struct.pack('!I', len(data)) + data
+    staged = getattr(group_ops_lock.local, 'notifications', None)
+    if staged is not None:
+        staged.append((sock, packet))
+    elif sock in session_timestamps:
+        enqueue_packet(sock, packet)
+    else:
+        with get_send_lock(sock):
+            sock.sendall(packet)
 
 # 接收消息，读取消息长度头部并接收完整消息
 def recv_msg(sock):
@@ -380,6 +459,7 @@ def save_friend_relationship(user1, user2):
     except Exception as e:
         conn.rollback()
         logging.error(f"保存好友关系失败: {e}")
+        raise
     finally:
         conn.close()
 
@@ -480,9 +560,11 @@ def save_message(chat_type, from_user, to_user, gid, message, timestamp):
                 VALUES (?, ?, ?, ?, ?)
             """, (chat_type, from_user, to_user, message, timestamp))
         conn.commit()
+        return cursor.lastrowid
     except Exception as e:
         conn.rollback()
         logging.error(f"保存消息失败: {e}")
+        raise
     finally:
         conn.close()
 
@@ -523,6 +605,7 @@ def send_history(client_sock, username):
         client_sock: 客户端套接字
         username: 用户名
     """
+    send_msg(client_sock, {"type": "history_begin"})
     session_key = session_keys.get(client_sock)
     if not session_key:
         logging.warning(f"No session key found for user '{username}' when sending history.")
@@ -533,6 +616,8 @@ def send_history(client_sock, username):
         conn = sqlite3.connect("chat.db")
         cursor = conn.cursor()
         
+        cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages")
+        boundary = cursor.fetchone()[0]
         # 发送群聊历史 - 只发送用户所在群组的
         cursor.execute("SELECT gid, members FROM groups")
         all_groups = cursor.fetchall()
@@ -541,18 +626,19 @@ def send_history(client_sock, username):
         if user_gids:
             # 使用参数化查询来避免 SQL 注入 - 修复 f-string 拼接问题
             placeholders = ','.join('?' * len(user_gids))
-            query = "SELECT from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND gid IN ({}) ORDER BY id ASC".format(placeholders)
-            cursor.execute(query, user_gids)
+            query = "SELECT id, from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND id<=? AND gid IN ({}) ORDER BY id ASC".format(placeholders)
+            cursor.execute(query, [boundary] + user_gids)
             rows = cursor.fetchall()
             for row in rows:
-                from_user, gid, message, timestamp = row
+                message_id, from_user, gid, message, timestamp = row
                 encrypted_msg = encrypt_message(message, session_key)
                 hist_msg = {
                     "type": "group_chat",
                     "from": from_user,
                     "gid": gid,
                     "content": encrypted_msg,
-                    "timestamp": timestamp
+                    "timestamp": timestamp,
+                    "message_id": message_id
                 }
                 send_msg(client_sock, hist_msg)
         
@@ -560,13 +646,13 @@ def send_history(client_sock, username):
         with user_friends_lock:
             friends_set = user_friends.get(username, set())
         cursor.execute("""
-            SELECT from_user, to_user, message, timestamp FROM messages 
-            WHERE chat_type='private' AND (from_user=? OR to_user=?) 
+            SELECT id, from_user, to_user, message, timestamp FROM messages
+            WHERE id<=? AND chat_type='private' AND (from_user=? OR to_user=?)
             ORDER BY id ASC
-        """, (username, username))
+        """, (boundary, username, username))
         rows = cursor.fetchall()
         for row in rows:
-            from_user, to_user, message, timestamp = row
+            message_id, from_user, to_user, message, timestamp = row
             # 计算聊天对象；若已不是好友，则跳过该历史消息
             chat_partner = to_user if from_user == username else from_user
             if chat_partner not in friends_set:
@@ -577,12 +663,15 @@ def send_history(client_sock, username):
                 "from": from_user,
                 "to": to_user,
                 "content": encrypted_msg,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "message_id": message_id
             }
             send_msg(client_sock, hist_msg)
         conn.close()
+        send_msg(client_sock, {"type": "history_end", "boundary": boundary})
         logging.info(f"Successfully sent history to user '{username}'.")
     except Exception as e:
+        send_msg(client_sock, {"type": "error", "message": "历史同步失败，请重新登录"})
         logging.error(f"Error sending history to user '{username}': {e}")
         if conn:
             conn.close()
@@ -650,7 +739,12 @@ def send_pending_group_invites(client_sock, username):
         for gid, joins in group_pending_joins.items():
             if username in joins:
                 pending.append((gid, joins[username]))
-    for gid, inviter in pending:
+    for gid, invitation in pending:
+        inviter, created = invitation if isinstance(invitation, tuple) else (invitation, time.time())
+        if time.time() - created > PENDING_REQUEST_TIMEOUT_SECONDS:
+            with group_pending_joins_lock:
+                group_pending_joins.get(gid, {}).pop(username, None)
+            continue
         group = get_group_db(gid)
         if group:
             send_msg(client_sock, {"type": "group_invite", "from": inviter, "gid": gid, "group_name": group["group_name"]})
@@ -866,7 +960,7 @@ def handle_client(client_sock, addr):
             with user_friends_lock:
                 user_friends[username] = load_friends(username)
             # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
-            client_sock.settimeout(SESSION_TIMEOUT_MINUTES * 60)
+            client_sock.settimeout(SEND_TIMEOUT_SECONDS)
             # 记录会话时间戳用于过期检查
             session_timestamps[client_sock] = datetime.datetime.now().timestamp()
             logging.info(f"User {username} logged in from {addr}")
@@ -977,6 +1071,8 @@ def handle_client(client_sock, addr):
                             send_msg(client_sock, {"type": "friend_response_result", "success": False, "error": "没有来自该用户的好友请求，无法响应"})
                             logging.warning(f"Friend response from '{responder}' to '{from_user}' blocked: no pending request.")
                             continue
+                        if accepted:
+                            save_friend_relationship(responder, from_user)
                         del pending_friend_requests[(from_user, responder)]
 
                     from_sock = get_sock_by_username(from_user)
@@ -994,7 +1090,6 @@ def handle_client(client_sock, addr):
                             if from_user in user_friends:
                                 user_friends[from_user].add(responder)
                         
-                        save_friend_relationship(responder, from_user)
                         logging.info(f"Friend relationship between '{responder}' and '{from_user}' saved.")
 
                         # 通知双方更新好友列表
@@ -1005,8 +1100,10 @@ def handle_client(client_sock, addr):
                             send_msg(from_sock, {"type": "friend_update", "friend": responder})
                 except Exception as e:
                     logging.error(f"Error processing friend_response from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "friend_response_result", "success": False, "error": "好友关系保存失败，请重试"})
                 
             elif mtype == "private_chat":
+                message_id = None
                 try:
                     to_user = msg.get("to")
                     encrypted_content = msg.get("content")
@@ -1015,28 +1112,33 @@ def handle_client(client_sock, addr):
                     
                     if to_user == current_username: # 不能给自己发私聊
                         logging.warning(f"User '{current_username}' tried to send a private message to themselves.")
+                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
                     # 检查是否是好友关系（持锁读取，与 friend_response 的写入保持一致）
                     with user_friends_lock:
                         is_friend = to_user in user_friends.get(current_username, set())
                     if not is_friend:
-                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "error": f"您和 {to_user} 不是好友关系"})
+                        send_msg(client_sock, {"type": "private_chat_result", "request_id": msg.get("request_id"), "success": False, "error": f"您和 {to_user} 不是好友关系"})
                         logging.warning(f"Private chat from '{current_username}' to '{to_user}' blocked: not friends.")
                         continue
 
                     sender_session_key = session_keys.get(client_sock)
                     if not sender_session_key:
                         logging.error(f"No session key found for '{current_username}' to send private chat.")
+                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
                     try:
                         plaintext = decrypt_message(encrypted_content, sender_session_key)
                     except Exception as e:
                         logging.error(f"解密来自 {current_username} 的私聊消息失败: {e}")
+                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
-                    save_message('private', current_username, to_user, None, plaintext, now)
+                    validate_chat_packet('private_chat', current_username, to_user, None, encrypted_content, now)
+                    message_id = save_message('private', current_username, to_user, None, plaintext, now)
+                    send_msg(client_sock, {"type": "private_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
                     logging.info(f"Private message from '{current_username}' to '{to_user}' saved to database.")
 
                     # 为接收者准备消息
@@ -1049,7 +1151,8 @@ def handle_client(client_sock, addr):
                                 "from": current_username,
                                 "to": to_user,
                                 "content": encrypt_message(plaintext, recipient_session_key),
-                                "timestamp": now
+                                "timestamp": now,
+                                "message_id": message_id
                             }
                             send_msg(to_sock, message_for_recipient)
                             logging.info(f"Private message from '{current_username}' forwarded to '{to_user}'.")
@@ -1062,11 +1165,14 @@ def handle_client(client_sock, addr):
                         "from": current_username,
                         "to": to_user,
                         "content": encrypt_message(plaintext, sender_session_key),
-                        "timestamp": now
+                        "timestamp": now,
+                        "message_id": message_id
                     }
                     send_msg(client_sock, message_for_sender)
                 except Exception as e:
                     logging.error(f"Error processing private_chat from {current_username}: {e}")
+                    if message_id is None:
+                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息保存失败，请重试"})
 
             elif mtype == "group_create":
                 try:
@@ -1136,8 +1242,10 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to create group '{group_name}' for '{owner}' in database.")
                 except Exception as e:
                     logging.error(f"Error processing group_create from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_create_result", "success": False, "error": "操作处理失败，请重试"})
 
             elif mtype == "group_chat":
+                message_id = None
                 try:
                     gid = msg.get("gid")
                     encrypted_content = msg.get("content")
@@ -1146,33 +1254,37 @@ def handle_client(client_sock, addr):
                     from_user = current_username
                     
                     if gid == "all":
-                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "error": "全体群组功能已禁用"})
+                        send_msg(client_sock, {"type": "group_chat_result", "request_id": msg.get("request_id"), "success": False, "error": "全体群组功能已禁用"})
                         continue
 
                     group = get_group_db(gid)
                     if not group:
-                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "error": "群组不存在"})
+                        send_msg(client_sock, {"type": "group_chat_result", "request_id": msg.get("request_id"), "success": False, "error": "群组不存在"})
                         logging.warning(f"Group chat from '{from_user}' failed: Group '{gid}' does not exist.")
                         continue
                     
                     # 检查用户是否是群成员
                     if from_user not in group["members"]:
-                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "error": "您不是该群成员"})
+                        send_msg(client_sock, {"type": "group_chat_result", "request_id": msg.get("request_id"), "success": False, "error": "您不是该群成员"})
                         logging.warning(f"Group chat from '{from_user}' to group '{gid}' blocked: not a member.")
                         continue
 
                     sender_session_key = session_keys.get(client_sock)
                     if not sender_session_key:
                         logging.error(f"No session key for '{from_user}' to send group chat.")
+                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
                     try:
                         plaintext = decrypt_message(encrypted_content, sender_session_key)
                     except Exception as e:
                         logging.error(f"解密来自 {from_user} 的群聊消息失败 (群组: {gid}): {e}")
+                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
 
-                    save_message('group', from_user, None, gid, plaintext, now)
+                    validate_chat_packet('group_chat', from_user, None, gid, encrypted_content, now)
+                    message_id = save_message('group', from_user, None, gid, plaintext, now)
+                    send_msg(client_sock, {"type": "group_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
                     logging.info(f"Group message from '{from_user}' in group '{gid}' saved to database.")
 
                     # 为每个群成员单独加密并发送消息
@@ -1186,7 +1298,8 @@ def handle_client(client_sock, addr):
                                     "from": from_user,
                                     "gid": gid,
                                     "content": encrypt_message(plaintext, member_session_key),
-                                    "timestamp": now
+                                    "timestamp": now,
+                                    "message_id": message_id
                                 }
                                 try:
                                     send_msg(sock, message_to_send)
@@ -1196,6 +1309,8 @@ def handle_client(client_sock, addr):
                                 logging.warning(f"Could not find session key for group member '{member}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_chat from {current_username}: {e}")
+                    if message_id is None:
+                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息保存失败，请重试"})
 
             elif mtype == "group_invite":
                 try:
@@ -1239,11 +1354,11 @@ def handle_client(client_sock, addr):
                         continue
 
                     # 记录待加入请求（仅收到过邀请的用户才能 join，防止越权加入）
-                    # 值改为 dict {username: inviter}，以便离线邀请补发时能告知邀请者
+                    # 保存邀请者与创建时间，离线补发并限制有效期
                     with group_pending_joins_lock:
                         if gid not in group_pending_joins:
                             group_pending_joins[gid] = {}
-                        group_pending_joins[gid][to_user] = inviter
+                        group_pending_joins[gid][to_user] = (inviter, time.time())
 
                     to_sock = get_sock_by_username(to_user)
                     if to_sock:
@@ -1255,6 +1370,17 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group invite from '{inviter}' stored for offline user '{to_user}' in group '{gid}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_invite from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_invite_result", "success": False, "error": "操作处理失败，请重试"})
+                finally:
+                    group_ops_lock.release()
+
+            elif mtype == "group_invite_response":
+                group_ops_lock.acquire()
+                try:
+                    gid = msg.get("gid")
+                    with group_pending_joins_lock:
+                        group_pending_joins.get(gid, {}).pop(current_username, None)
+                    send_msg(client_sock, {"type": "group_invite_response_result", "success": True, "gid": gid})
                 finally:
                     group_ops_lock.release()
 
@@ -1282,6 +1408,12 @@ def handle_client(client_sock, addr):
                             logging.warning(f"Group join by '{user_to_join}' blocked for group '{gid}': no pending invite.")
                             continue
 
+                    invitation = group_pending_joins[gid][user_to_join]
+                    if isinstance(invitation, tuple) and time.time() - invitation[1] > PENDING_REQUEST_TIMEOUT_SECONDS:
+                        with group_pending_joins_lock:
+                            group_pending_joins[gid].pop(user_to_join, None)
+                        send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "邀请已过期"})
+                        continue
                     group["members"].append(user_to_join)
                     if update_group_members_db(gid, group["members"]):
                         with group_pending_joins_lock:
@@ -1310,6 +1442,7 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after join attempt by '{user_to_join}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_join from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1353,6 +1486,7 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after leave attempt by '{user_to_leave}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_leave from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_leave_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1407,6 +1541,7 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to update group members in DB for group '{gid}' after kick attempt by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_kick from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_kick_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1428,6 +1563,7 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group_info request failed: gid '{gid}' not found.")
                 except Exception as e:
                     logging.error(f"Error processing group_info from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_info", "gid": msg.get("gid"), "error": "操作处理失败，请重试"})
             
             elif mtype == "group_disband":
                 try:
@@ -1463,7 +1599,7 @@ def handle_client(client_sock, addr):
                         }
                         for member in group["members"]:
                             sock = get_sock_by_username(member)
-                            if sock:
+                            if sock and sock is not client_sock:
                                 send_msg(sock, disband_notification)
                         
                         send_msg(client_sock, {"type": "group_disband_result", "success": True, "gid": gid})
@@ -1473,6 +1609,7 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to disband group '{gid}' by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_disband from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_disband_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1519,7 +1656,7 @@ def handle_client(client_sock, addr):
                         }
                         for member in group["members"]:
                             sock = get_sock_by_username(member)
-                            if sock:
+                            if sock and sock is not client_sock:
                                 send_msg(sock, transfer_notification)
                         
                         send_msg(client_sock, {"type": "group_transfer_result", "success": True, "gid": gid, "new_owner": new_owner})
@@ -1529,6 +1666,7 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to transfer group '{gid}' ownership from '{requester}' to '{new_owner}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_transfer from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_transfer_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1573,16 +1711,17 @@ def handle_client(client_sock, addr):
                         }
                         for member in group["members"]:
                             sock = get_sock_by_username(member)
-                            if sock:
+                            if sock and sock is not client_sock:
                                 send_msg(sock, rename_notification)
                         
-                        send_msg(client_sock, {"type": "group_rename_result", "success": True, "gid": gid, "new_name": new_name})
+                        send_msg(client_sock, {"type": "group_rename_result", "success": True, "gid": gid, "old_name": old_name, "new_name": new_name})
                         logging.info(f"Group '{gid}' successfully renamed from '{old_name}' to '{new_name}' by '{requester}'.")
                     else:
                         send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "修改群聊名称失败"})
                         logging.error(f"Failed to rename group '{gid}' to '{new_name}' by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_rename from {current_username}: {e}")
+                    send_msg(client_sock, {"type": "group_rename_result", "success": False, "error": "操作处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
