@@ -133,8 +133,8 @@ func handleConnection(conn net.Conn) {
 	friends, err := database.LoadFriends(username)
 	if err != nil {
 		log.Printf("为用户 %s 加载好友列表失败: %v", username, err)
-		// 即使加载失败，也让用户登录，好友列表将为空
-		friends = make(map[string]struct{})
+		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "好友列表加载失败"})
+		return
 	}
 
 	// 将客户端添加到管理器（原子地防止同一用户名重复登录）
@@ -147,6 +147,7 @@ func handleConnection(conn net.Conn) {
 	if err := protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true}); err != nil {
 		return
 	}
+	protocol.EnableQueuedWrites(conn)
 	if !clientManager.ActivateClient(username, conn) {
 		return
 	}
@@ -177,7 +178,8 @@ func handleConnection(conn net.Conn) {
 	userGroups, err := database.GetUserGroups(username)
 	if err != nil {
 		log.Printf("无法为用户 %s 获取群组列表: %v", username, err)
-		// 即使获取失败，也继续执行，不中断连接
+		protocol.SendMsgWait(conn, map[string]interface{}{"type": "error", "message": "群组列表加载失败，请重新登录"})
+		return
 	} else if len(userGroups) > 0 {
 		groupsMsg := map[string]interface{}{
 			"type":   "user_groups_list",
@@ -190,46 +192,10 @@ func handleConnection(conn net.Conn) {
 		}
 	}
 
-	// 发送聊天历史记录
-	history, err := database.GetChatHistory(username)
-	if err != nil {
-		log.Printf("无法为用户 %s 获取聊天记录: %v", username, err)
-	} else {
-		log.Printf("正在为用户 %s 发送 %d 条历史消息...", username, len(history))
-		for _, msg := range history {
-			// 加密消息内容
-			encryptedContent, err := crypto.EncryptMessage(msg.Content, sessionKey)
-			if err != nil {
-				log.Printf("加密历史消息失败 (from: %s): %v", msg.FromUser, err)
-				continue
-			}
-
-			var histMsg map[string]interface{}
-			if msg.ChatType == "group" {
-				histMsg = map[string]interface{}{
-					"type":      "group_chat",
-					"from":      msg.FromUser,
-					"gid":       msg.GID,
-					"content":   encryptedContent,
-					"timestamp": msg.Timestamp,
-				}
-			} else { // private
-				histMsg = map[string]interface{}{
-					"type":      "private_chat",
-					"from":      msg.FromUser,
-					"to":        msg.ToUser,
-					"content":   encryptedContent,
-					"timestamp": msg.Timestamp,
-				}
-			}
-
-			if err := protocol.SendMsg(conn, histMsg); err != nil {
-				log.Printf("发送历史消息给 %s 失败: %v", username, err)
-				// 如果一条消息发送失败，可以选择中断或继续
-				break
-			}
-		}
-		log.Printf("历史消息发送完成 for %s", username)
+	if err := sendHistory(conn, username, sessionKey); err != nil {
+		log.Printf("历史同步失败: %v", err)
+		protocol.SendMsgWait(conn, map[string]interface{}{"type": "error", "message": "历史同步失败，请重新登录"})
+		return
 	}
 
 	// 认证后的消息循环

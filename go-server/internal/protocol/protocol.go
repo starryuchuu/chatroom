@@ -11,25 +11,64 @@ import (
 )
 
 const MaxMessageLen = 1024 * 1024
-const WriteTimeout = 30 * time.Second
+const WriteTimeout = 5 * time.Second
 
 // Conn serializes complete frames sent by concurrent handlers and broadcasts.
 // Its lock belongs to the connection, so closed sessions need no global cleanup.
 type Conn struct {
 	net.Conn
-	writeMu sync.Mutex
+	writeMu   sync.Mutex
+	stateMu   sync.RWMutex
+	outbox    chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func WrapConn(conn net.Conn) *Conn {
 	if wrapped, ok := conn.(*Conn); ok {
 		return wrapped
 	}
-	return &Conn{Conn: conn}
+	return &Conn{Conn: conn, done: make(chan struct{})}
 }
 
-// SendMsg sends one length-prefixed JSON frame. Shared server connections must
-// be wrapped once with WrapConn before being published to other goroutines.
-func SendMsg(conn net.Conn, msg interface{}) error {
+// EnableQueuedWrites is called after the synchronous successful login response.
+// Mutation handlers enqueue immutable frames in commit order without network I/O.
+func EnableQueuedWrites(conn net.Conn) {
+	if c, ok := conn.(*Conn); ok {
+		c.stateMu.Lock()
+		if c.outbox == nil {
+			c.outbox = make(chan []byte, 256)
+			go c.writeLoop(c.outbox)
+		}
+		c.stateMu.Unlock()
+	}
+}
+
+func (c *Conn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
+}
+
+func (c *Conn) writeLoop(outbox <-chan []byte) {
+	for {
+		select {
+		case <-c.done:
+			return
+		case frame := <-outbox:
+			if err := writeFrame(c, frame); err != nil {
+				c.Close()
+				return
+			}
+		}
+	}
+}
+
+// ValidateMessage checks the final serialized size before database persistence.
+func ValidateMessage(msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -37,6 +76,69 @@ func SendMsg(conn net.Conn, msg interface{}) error {
 	if len(data) > MaxMessageLen {
 		return fmt.Errorf("message too large: %d bytes (max: %d)", len(data), MaxMessageLen)
 	}
+	return nil
+}
+
+// SendMsg sends one length-prefixed JSON frame. Shared server connections must
+// be wrapped once with WrapConn before being published to other goroutines.
+func SendMsg(conn net.Conn, msg interface{}) error {
+	return sendMsg(conn, msg, false)
+}
+
+// SendMsgWait provides bounded backpressure for history, outside mutation locks.
+func SendMsgWait(conn net.Conn, msg interface{}) error {
+	return sendMsg(conn, msg, true)
+}
+
+func sendMsg(conn net.Conn, msg interface{}, wait bool) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if len(data) > MaxMessageLen {
+		return fmt.Errorf("message too large: %d bytes (max: %d)", len(data), MaxMessageLen)
+	}
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame, uint32(len(data)))
+	copy(frame[4:], data)
+	if c, ok := conn.(*Conn); ok {
+		c.stateMu.RLock()
+		outbox := c.outbox
+		c.stateMu.RUnlock()
+		if outbox != nil {
+			select {
+			case <-c.done:
+				return net.ErrClosed
+			default:
+			}
+			if wait {
+				timer := time.NewTimer(WriteTimeout)
+				defer timer.Stop()
+				select {
+				case <-c.done:
+					return net.ErrClosed
+				case outbox <- frame:
+					return nil
+				case <-timer.C:
+					c.Close()
+					return fmt.Errorf("outgoing queue timeout")
+				}
+			}
+			select {
+			case <-c.done:
+				return net.ErrClosed
+			case outbox <- frame:
+				return nil
+			default:
+				c.Close()
+				return fmt.Errorf("outgoing queue full")
+			}
+		}
+	}
+	return writeFrame(conn, frame)
+}
+
+func writeFrame(conn net.Conn, frame []byte) error {
 	if wrapped, ok := conn.(*Conn); ok {
 		wrapped.writeMu.Lock()
 		defer wrapped.writeMu.Unlock()
@@ -46,9 +148,6 @@ func SendMsg(conn net.Conn, msg interface{}) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(WriteTimeout)); err != nil {
 		return err
 	}
-	frame := make([]byte, 4+len(data))
-	binary.BigEndian.PutUint32(frame, uint32(len(data)))
-	copy(frame[4:], data)
 	for len(frame) > 0 {
 		n, err := conn.Write(frame)
 		if err != nil {

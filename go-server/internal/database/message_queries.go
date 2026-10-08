@@ -3,142 +3,74 @@ package database
 import (
 	"chatroom/internal/models"
 	"database/sql"
-	"log"
+	"strings"
 )
 
-// SaveMessage 保存聊天消息到数据库
+// SaveMessage keeps the existing API for callers that do not need a receipt.
 func SaveMessage(chatType, fromUser, toUser, gid, message, timestamp string) error {
-	stmt, err := DB.Prepare(`
-		INSERT INTO messages (chat_type, from_user, to_user, gid, message, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
-		log.Printf("准备保存消息语句失败: %v", err)
-		return err
-	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(chatType, fromUser, toUser, gid, message, timestamp)
-	if err != nil {
-		log.Printf("执行保存消息失败: %v", err)
-		return err
-	}
-	return nil
+	_, err := SaveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp)
+	return err
 }
 
-// GetChatHistory 获取一个用户的完整聊天历史（私聊和群聊）
+// SaveMessageWithID returns the committed SQLite ID used in live and history frames.
+func SaveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string) (int64, error) {
+	result, err := DB.Exec(`INSERT INTO messages (chat_type, from_user, to_user, gid, message, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?)`, chatType, fromUser, toUser, gid, message, timestamp)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
 func GetChatHistory(username string) ([]models.Message, error) {
-	var history []models.Message
+	history, _, err := GetChatHistorySnapshot(username)
+	return history, err
+}
 
-	// 1. 获取用户所在的群组
-	userGroups, err := GetUserGroups(username)
-	if err != nil {
-		return nil, err
+// GetChatHistorySnapshot uses one ID boundary and query for all conversations.
+// Messages committed after the boundary are delivered through the online session.
+func GetChatHistorySnapshot(username string) ([]models.Message, int64, error) {
+	var boundary int64
+	if err := DB.QueryRow("SELECT COALESCE(MAX(id), 0) FROM messages").Scan(&boundary); err != nil {
+		return nil, 0, err
 	}
-
-	// 2. 获取群聊历史
-	if len(userGroups) > 0 {
-		var gids []interface{}
-		gidQueryPart := ""
-		for i, group := range userGroups {
-			gids = append(gids, group.GID)
-			gidQueryPart += "?"
-			if i < len(userGroups)-1 {
-				gidQueryPart += ","
-			}
-		}
-
-		// 使用参数化查询，避免 SQL 注入 - 修复字符串拼接问题
-		query := `
-			SELECT from_user, gid, message, timestamp, chat_type, to_user
-			FROM messages
-			WHERE chat_type='group' AND gid IN (` + gidQueryPart + `)
-			ORDER BY id ASC
-		`
-		rows, err := DB.Query(query, gids...)
-		if err != nil {
-			log.Printf("查询群聊历史失败: %v", err)
-			return nil, err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var msg models.Message
-			var toUser, gid, fromUser, timestamp, chatType, message string
-			// to_user 在群聊中为 NULL，所以需要处理
-			var nullableToUser sql.NullString
-			err := rows.Scan(&fromUser, &gid, &message, &timestamp, &chatType, &nullableToUser)
-			if err != nil {
-				log.Printf("扫描群聊历史行失败: %v", err)
-				continue
-			}
-			if nullableToUser.Valid {
-				toUser = nullableToUser.String
-			}
-			msg.FromUser = fromUser
-			msg.GID = gid
-			msg.Content = message
-			msg.Timestamp = timestamp
-			msg.ChatType = chatType
-			msg.ToUser = toUser
-			history = append(history, msg)
-		}
-	}
-
-	// 3. 获取私聊历史（仅发送双方仍是好友的消息，避免向已解除关系的好友泄露历史）
-	friends, err := LoadFriends(username)
+	groups, err := GetUserGroups(username)
 	if err != nil {
-		log.Printf("加载好友列表失败（用于历史消息过滤）: %v", err)
-		friends = make(map[string]struct{})
+		return nil, 0, err
 	}
-	query := `
-		SELECT from_user, to_user, message, timestamp, chat_type, gid
-		FROM messages
-		WHERE chat_type='private' AND (from_user=? OR to_user=?)
-		ORDER BY id ASC
-	`
-	rows, err := DB.Query(query, username, username)
+	args := []interface{}{boundary, username, username, username, username}
+	groupFilter := "0"
+	if len(groups) > 0 {
+		placeholders := make([]string, len(groups))
+		for i, group := range groups {
+			placeholders[i] = "?"
+			args = append(args, group.GID)
+		}
+		groupFilter = "(chat_type='group' AND gid IN (" + strings.Join(placeholders, ",") + "))"
+	}
+	rows, err := DB.Query(`SELECT id, chat_type, from_user, to_user, gid, message, timestamp
+		FROM messages WHERE id<=? AND (
+		(chat_type='private' AND (from_user=? OR to_user=?) AND
+		 EXISTS (SELECT 1 FROM friends WHERE user=? AND
+		 friend=CASE WHEN from_user=? THEN to_user ELSE from_user END)) OR `+groupFilter+`)
+		ORDER BY id ASC`, args...)
 	if err != nil {
-		log.Printf("查询私聊历史失败: %v", err)
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-
+	var history []models.Message
 	for rows.Next() {
-		var msg models.Message
-		var toUser, gid, fromUser, timestamp, chatType, message string
-		var nullableGid sql.NullString
-		err := rows.Scan(&fromUser, &toUser, &message, &timestamp, &chatType, &nullableGid)
-		if err != nil {
-			log.Printf("扫描私聊历史行失败: %v", err)
-			continue
+		var message models.Message
+		var toUser, gid sql.NullString
+		if err := rows.Scan(&message.ID, &message.ChatType, &message.FromUser, &toUser, &gid,
+			&message.Content, &message.Timestamp); err != nil {
+			return nil, 0, err
 		}
-		// 计算聊天对象；若已不是好友，跳过该历史消息
-		chatPartner := fromUser
-		if fromUser == username {
-			chatPartner = toUser
-		}
-		if _, ok := friends[chatPartner]; !ok {
-			continue
-		}
-		if nullableGid.Valid {
-			gid = nullableGid.String
-		}
-		msg.FromUser = fromUser
-		msg.ToUser = toUser
-		msg.Content = message
-		msg.Timestamp = timestamp
-		msg.ChatType = chatType
-		msg.GID = gid
-		history = append(history, msg)
+		message.ToUser, message.GID = toUser.String, gid.String
+		history = append(history, message)
 	}
-
-	// 4. 对所有消息按时间戳排序 (如果需要跨类型排序)
-	// 在这里，我们通过 ORDER BY id ASC 来保证顺序，这通常等同于时间顺序
-	// 如果需要严格按时间戳字符串排序，可以使用 sort.Slice
-	// sort.Slice(history, func(i, j int) bool {
-	// 	return history[i].Timestamp < history[j].Timestamp
-	// })
-
-	return history, nil
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return history, boundary, nil
 }

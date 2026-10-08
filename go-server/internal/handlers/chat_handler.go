@@ -57,6 +57,8 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 			handleGroupCreate(conn, username, msg, clientManager)
 		case "group_invite":
 			handleGroupInvite(conn, username, msg, clientManager)
+		case "group_invite_response":
+			handleGroupInviteResponse(conn, username, msg)
 		case "group_join":
 			handleGroupJoin(conn, username, msg, clientManager)
 		case "group_leave":
@@ -549,6 +551,9 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 	}
 
 	for _, member := range group.Members {
+		if member == requester {
+			continue
+		}
 		if client, found := clientManager.GetClient(member); found {
 			protocol.SendMsg(client.Conn, disbandNotification)
 		}
@@ -635,6 +640,9 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 	}
 
 	for _, member := range group.Members {
+		if member == requester {
+			continue
+		}
 		if client, found := clientManager.GetClient(member); found {
 			protocol.SendMsg(client.Conn, transferNotification)
 		}
@@ -704,6 +712,9 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 	}
 
 	for _, member := range group.Members {
+		if member == requester {
+			continue
+		}
 		if client, found := clientManager.GetClient(member); found {
 			protocol.SendMsg(client.Conn, renameNotification)
 		}
@@ -712,6 +723,7 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 	// 向请求者确认
 	protocol.SendMsg(conn, map[string]interface{}{
 		"type":     "group_rename_result",
+		"old_name": oldName,
 		"success":  true,
 		"gid":      gid,
 		"new_name": newName,
@@ -721,84 +733,48 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 
 func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[string]interface{}, clientManager types.ClientManager) {
 	toUser, ok := msg["to"].(string)
+	if !ok || toUser == "" || toUser == fromUser {
+		sendChatResult(conn, "private_chat", msg, 0, "目标用户格式错误")
+		return
+	}
+	content, ok := msg["content"].(string)
 	if !ok {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "private_chat_result", "success": false, "error": "目标用户格式错误"})
+		sendChatResult(conn, "private_chat", msg, 0, "消息内容格式错误")
 		return
 	}
-	encryptedContent, ok := msg["content"].(string)
-	if !ok {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "private_chat_result", "success": false, "error": "消息内容格式错误"})
+	friends, err := database.AreFriends(fromUser, toUser)
+	if err != nil || !friends {
+		sendChatResult(conn, "private_chat", msg, 0, "好友关系校验失败")
 		return
 	}
-	timestamp := time.Now().Format("2006-01-02 15:04:05") // Go的时间格式化
-
-	if toUser == fromUser {
-		log.Printf("用户 '%s' 尝试给自己发送私聊消息", fromUser)
-		return
-	}
-
-	// 检查是否是好友关系，防止非好友向任意用户发送私聊
-	areFriends, err := database.AreFriends(fromUser, toUser)
+	plaintext, err := crypto.DecryptMessage(content, sessionKey)
 	if err != nil {
-		log.Printf("检查好友关系失败 (%s, %s): %v", fromUser, toUser, err)
-		protocol.SendMsg(conn, map[string]interface{}{"type": "private_chat_result", "success": false, "error": "服务器内部错误"})
+		sendChatResult(conn, "private_chat", msg, 0, "消息解密失败")
 		return
 	}
-	if !areFriends {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "private_chat_result", "success": false, "error": "您和 " + toUser + " 不是好友关系"})
-		log.Printf("私聊从 '%s' 到 '%s' 被阻止: 不是好友", fromUser, toUser)
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	payload := chatPayload("private_chat", fromUser, toUser, content, timestamp, 9223372036854775807)
+	if err := protocol.ValidateMessage(payload); err != nil {
+		sendChatResult(conn, "private_chat", msg, 0, "消息内容过长")
 		return
 	}
-
-	plaintext, err := crypto.DecryptMessage(encryptedContent, sessionKey)
-	if err != nil {
-		log.Printf("解密来自 %s 的私聊消息失败: %v", fromUser, err)
-		return
-	}
-
-	err = database.SaveMessage("private", fromUser, toUser, "", plaintext, timestamp)
+	id, err := database.SaveMessageWithID("private", fromUser, toUser, "", plaintext, timestamp)
 	if err != nil {
 		log.Printf("保存私聊消息失败: %v", err)
+		sendChatResult(conn, "private_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
-	log.Printf("私聊消息从 '%s' 到 '%s' 已保存到数据库", fromUser, toUser)
-
-	// 准备发送给接收者的消息
-	recipientClient, found := clientManager.GetClient(toUser)
-	if found {
-		encryptedMsgForRecipient, err := crypto.EncryptMessage(plaintext, recipientClient.SessionKey)
+	// Receipt acknowledges persistence, independently of recipient delivery.
+	sendChatResult(conn, "private_chat", msg, id, "")
+	protocol.SendMsg(conn, chatPayload("private_chat", fromUser, toUser, content, timestamp, id))
+	if recipient, found := clientManager.GetClient(toUser); found {
+		encrypted, err := crypto.EncryptMessage(plaintext, recipient.SessionKey)
 		if err != nil {
 			log.Printf("加密发送给 %s 的消息失败: %v", toUser, err)
 			return
 		}
-		messageForRecipient := map[string]interface{}{
-			"type":      "private_chat",
-			"from":      fromUser,
-			"to":        toUser,
-			"content":   encryptedMsgForRecipient,
-			"timestamp": timestamp,
-		}
-		protocol.SendMsg(recipientClient.Conn, messageForRecipient)
-		log.Printf("私聊消息从 '%s' 转发到 '%s'", fromUser, toUser)
-	} else {
-		log.Printf("用户 '%s' 不在线，无法发送私聊消息", toUser)
-		// 可以选择通知发送者对方不在线
+		protocol.SendMsg(recipient.Conn, chatPayload("private_chat", fromUser, toUser, encrypted, timestamp, id))
 	}
-
-	// 准备发送给发送者的消息（用于客户端显示）
-	encryptedMsgForSender, err := crypto.EncryptMessage(plaintext, sessionKey)
-	if err != nil {
-		log.Printf("加密发送给 %s 的消息失败: %v", fromUser, err)
-		return
-	}
-	messageForSender := map[string]interface{}{
-		"type":      "private_chat",
-		"from":      fromUser,
-		"to":        toUser,
-		"content":   encryptedMsgForSender,
-		"timestamp": timestamp,
-	}
-	protocol.SendMsg(conn, messageForSender)
 }
 
 func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interface{}, clientManager types.ClientManager) {
@@ -876,67 +852,58 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 	unlock := lockGroupOperation(msg)
 	defer unlock()
 	gid, ok := msg["gid"].(string)
-	if !ok {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_chat_result", "success": false, "error": "群组ID格式错误"})
+	if !ok || gid == "" {
+		sendChatResult(conn, "group_chat", msg, 0, "群组ID格式错误")
 		return
 	}
-	encryptedContent, ok := msg["content"].(string)
+	content, ok := msg["content"].(string)
 	if !ok {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_chat_result", "success": false, "error": "消息内容格式错误"})
+		sendChatResult(conn, "group_chat", msg, 0, "消息内容格式错误")
 		return
 	}
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("处理群聊消息失败，无法获取群组 %s: %v", gid, err)
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_chat_result", "success": false, "error": "群组不存在"})
+		sendChatResult(conn, "group_chat", msg, 0, "群组不存在")
 		return
 	}
-
-	// 检查用户是否是群成员
-	isMember := false
-	for _, member := range group.Members {
-		if member == fromUser {
-			isMember = true
+	member := false
+	for _, name := range group.Members {
+		if name == fromUser {
+			member = true
 			break
 		}
 	}
-	if !isMember {
-		log.Printf("用户 %s 尝试向非成员群组 %s 发送消息", fromUser, gid)
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_chat_result", "success": false, "error": "您不是该群成员"})
+	if !member {
+		sendChatResult(conn, "group_chat", msg, 0, "您不是该群成员")
 		return
 	}
-
-	plaintext, err := crypto.DecryptMessage(encryptedContent, sessionKey)
+	plaintext, err := crypto.DecryptMessage(content, sessionKey)
 	if err != nil {
-		log.Printf("解密来自 %s 的群聊消息失败: %v", fromUser, err)
+		sendChatResult(conn, "group_chat", msg, 0, "消息解密失败")
 		return
 	}
-
-	err = database.SaveMessage("group", fromUser, "", gid, plaintext, timestamp)
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	if err := protocol.ValidateMessage(chatPayload("group_chat", fromUser, gid, content, timestamp, 9223372036854775807)); err != nil {
+		sendChatResult(conn, "group_chat", msg, 0, "消息内容过长")
+		return
+	}
+	id, err := database.SaveMessageWithID("group", fromUser, "", gid, plaintext, timestamp)
 	if err != nil {
 		log.Printf("保存群聊消息失败: %v", err)
+		sendChatResult(conn, "group_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
-	log.Printf("群聊消息从 '%s' 到群组 '%s' 已保存", fromUser, gid)
-
-	// 向所有在线的群成员广播消息
-	for _, memberName := range group.Members {
-		if recipientClient, found := clientManager.GetClient(memberName); found {
-			encryptedMsg, err := crypto.EncryptMessage(plaintext, recipientClient.SessionKey)
+	sendChatResult(conn, "group_chat", msg, id, "")
+	for _, name := range group.Members {
+		if name == fromUser {
+			protocol.SendMsg(conn, chatPayload("group_chat", fromUser, gid, content, timestamp, id))
+		} else if recipient, found := clientManager.GetClient(name); found {
+			encrypted, err := crypto.EncryptMessage(plaintext, recipient.SessionKey)
 			if err != nil {
-				log.Printf("加密发送给群成员 %s 的消息失败: %v", memberName, err)
+				log.Printf("加密群消息失败: %v", err)
 				continue
 			}
-			messageToSend := map[string]interface{}{
-				"type":      "group_chat",
-				"from":      fromUser,
-				"gid":       gid,
-				"content":   encryptedMsg,
-				"timestamp": timestamp,
-			}
-			protocol.SendMsg(recipientClient.Conn, messageToSend)
+			protocol.SendMsg(recipient.Conn, chatPayload("group_chat", fromUser, gid, encrypted, timestamp, id))
 		}
 	}
 }

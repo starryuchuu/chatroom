@@ -1,8 +1,16 @@
 # Go Chatroom Server
 
-## v1.0.6 修复与发布
+## v1.0.8：适配新版 Python 客户端
 
-详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，兼容 v1.0.5 Python 客户端。
+当前源码支持消息保存确认（`request_id`、`message_id`）、历史同步开始/结束及统一 ID 边界、群邀请拒绝、改名结果的旧名称和单次群管理结果通知。登录后使用每连接发送队列及 5 秒写入超时，群操作不再等待网络写入；历史发送使用有界回压。
+
+默认监听 `127.0.0.1:12346`，在 v1.0.7 或 v1.0.8 客户端登录界面的端口框输入 `12346` 即可。数据库不需要迁移；旧客户端可以继续忽略新增的协议字段。
+
+本地验证通过 Go 单元测试、`go vet`、`go test -race` 和 5 项真实 Python/Go 互操作测试，包含真实 Tk 客户端的发送确认流程。Linux 的 Tk 测试需要图形桌面或 `xvfb-run`。v1.0.8 将 Python 客户端、Python 服务端与 Go 服务端一同发布。
+
+## 下载与验证
+
+详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，兼容 v1.0.7 / v1.0.8 Python 客户端。
 
 ```bash
 go test ./...
