@@ -1,0 +1,79 @@
+name: Release Python
+
+"on":
+  push:
+    branches: [master]
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-python-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            suffix: .exe
+          - os: ubuntu-latest
+            platform: linux
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Regression tests (real cryptography)
+        run: python -m unittest discover -s tests -v
+      - name: Build server
+        run: pyinstaller --onefile --clean --name server-${{ matrix.platform }} server.py
+      - name: Build client
+        run: pyinstaller --onefile --windowed --clean --name client-${{ matrix.platform }} client.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-release-${{ matrix.platform }}
+          path: |
+            dist/server-${{ matrix.platform }}${{ matrix.suffix }}
+            dist/client-${{ matrix.platform }}${{ matrix.suffix }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: python-release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag=$(tr -d '\r\n' < VERSION)
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must contain a stable semantic version"
+            exit 1
+          fi
+          git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
+          gh release create "$tag" release-assets/* client.py server.py requirements.txt \
+            --target "$GITHUB_SHA" --title "$tag — Python 稳定性修复" \
+            --notes-file RELEASE_NOTES.md --latest

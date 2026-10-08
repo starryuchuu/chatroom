@@ -120,7 +120,7 @@ def is_rate_limited(ip_address):
         # 定期清理无活动 IP 的记录，防止字典无限增长（内存泄漏）
         if len(rate_limit_tracker) > 1000:
             stale_ips = [ip for ip, records in rate_limit_tracker.items()
-                         if not records or current_time - records[-1][0] >= RATE_LIMIT_WINDOW_SECONDS]
+                         if not records or current_time - records[-1] >= RATE_LIMIT_WINDOW_SECONDS]
             for ip in stale_ips:
                 del rate_limit_tracker[ip]
 
@@ -756,6 +756,11 @@ def handle_client(client_sock, addr):
         logging.warning(f"Rate limit exceeded for IP {ip_address}")
         send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
         client_sock.close()
+        remove_send_lock(client_sock)
+        # 此分支在认证 try/finally 之前退出，也需清理 main() 登记的连接。
+        with clients_lock:
+            if client_sock in clients:
+                clients.remove(client_sock)
         return
     
     current_username = None
@@ -986,9 +991,8 @@ def handle_client(client_sock, addr):
                                 user_friends[responder] = set()
                             user_friends[responder].add(from_user)
                             
-                            if from_user not in user_friends:
-                                user_friends[from_user] = set()
-                            user_friends[from_user].add(responder)
+                            if from_user in user_friends:
+                                user_friends[from_user].add(responder)
                         
                         save_friend_relationship(responder, from_user)
                         logging.info(f"Friend relationship between '{responder}' and '{from_user}' saved.")
@@ -1195,6 +1199,7 @@ def handle_client(client_sock, addr):
 
             elif mtype == "group_invite":
                 try:
+                    group_ops_lock.acquire()
                     to_user = msg.get("to")
                     gid = msg.get("gid")
                     inviter = current_username
@@ -1250,6 +1255,8 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Group invite from '{inviter}' stored for offline user '{to_user}' in group '{gid}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_invite from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_join":
                 try:
@@ -1424,6 +1431,7 @@ def handle_client(client_sock, addr):
             
             elif mtype == "group_disband":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     requester = current_username
                     logging.info(f"Processing group disband request for gid '{gid}' from '{requester}'.")
@@ -1465,9 +1473,12 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to disband group '{gid}' by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_disband from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_transfer":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     new_owner = msg.get("new_owner")
                     requester = current_username
@@ -1518,9 +1529,12 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to transfer group '{gid}' ownership from '{requester}' to '{new_owner}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_transfer from {current_username}: {e}")
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_rename":
                 try:
+                    group_ops_lock.acquire()
                     gid = msg.get("gid")
                     new_name = msg.get("new_name")
                     requester = current_username
@@ -1569,7 +1583,9 @@ def handle_client(client_sock, addr):
                         logging.error(f"Failed to rename group '{gid}' to '{new_name}' by '{requester}'.")
                 except Exception as e:
                     logging.error(f"Error processing group_rename from {current_username}: {e}")
-            
+                finally:
+                    group_ops_lock.release()
+
             else:
                 logging.warning(f"Unknown message type received: {mtype} from {current_username}")
 

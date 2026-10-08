@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox, scrolledtext
 import socket
 import threading
+import queue
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
@@ -172,9 +173,11 @@ class ChatClient:
         self.chat_frames = {}  # 用于存储每个好友或群组的聊天框架
         self.current_chat_frame = None  # 当前显示的聊天框架
         self.is_loading_messages = False  # 标记是否正在加载消息
-        self.running = True  # 控制接收线程
+        self.running = False  # 控制接收线程
+        self.incoming = queue.Queue()
         self.server_port = int(SERVER_PORT)  # 连接端口（可在登录界面修改）
         self.build_login()
+        self.master.after(50, self.drain_incoming)
 
     def build_login(self):
         """
@@ -277,11 +280,20 @@ class ChatClient:
         self.running = False
         if self.sock:
             try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
                 self.sock.close()
-            except:
+            except OSError:
                 pass
             self.sock = None
             
+        self.session_key = None
+        self.username = None
+        for name in list(vars(self)):
+            if name.startswith("group_messages_"):
+                delattr(self, name)
         # 清理所有聊天相关的状态
         self.chat_frames = {}
         self.current_chat_frame = None
@@ -320,22 +332,9 @@ class ChatClient:
         try:
             logging.info(f"Sending friend request to '{friend}'.")
             send_msg(self.sock, req)
-            # 用 after 在主线程调度，threading.Timer 的回调在非主线程弹 Tk 对话框不安全
-            self.master.after(500, lambda: self.maybe_show_friend_request_success(friend))
         except Exception as e:
             logging.error(f"发送好友请求失败: {e}")
             messagebox.showerror("发送失败", "好友申请发送失败")
-
-    def maybe_show_friend_request_success(self, friend):
-        """
-        在发送好友请求后，延迟显示请求发送成功的提示。
-        参数:
-            friend: 好友用户名
-        """
-        with friend_request_lock:
-            result = self.friend_request_result
-        if result is None:
-            messagebox.showinfo("提示", "好友申请发送成功")
 
     def handle_friend_request(self, from_user):
         """
@@ -470,9 +469,13 @@ class ChatClient:
     def clear_chat_selection(self):
         """清空当前选中的聊天对象（退出群聊/被踢/群解散等场景），回到无选中状态"""
         try:
+            # 隐藏当前聊天框即可。清空选择后调用 clear_chat_bubbles 会
+            # 销毁 chat_container 的所有子框架，让缓存指向已销毁的控件。
+            if self.current_chat_frame is not None:
+                self.current_chat_frame.pack_forget()
+            self.current_chat_frame = None
             self.current_friend = None
             self.current_group = None
-            self.clear_chat_bubbles()
             self.master.after_idle(self.scroll_to_bottom)
         except tk.TclError:
             logging.warning("clear_chat_selection called on a destroyed widget.")
@@ -512,7 +515,7 @@ class ChatClient:
         处理登录逻辑，验证用户名和密码，并连接到服务器。
         """
         username = self.username_entry.get().strip()
-        password = self.password_entry.get().strip()
+        password = self.password_entry.get()
         if not username or not password:
             messagebox.showerror("错误", "用户名和密码不能为空！")
             return
@@ -540,7 +543,7 @@ class ChatClient:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)  # 设置连接超时
             self.sock.connect((SERVER_HOST, self.server_port))
-            self.sock.settimeout(None)  # 连接后取消超时
+            self.sock.settimeout(30)  # 密钥交换也必须有超时
 
             # 密钥交换
             # 1. 接收并校验公钥（指纹验证 + 回环限制，防止中间人攻击）
@@ -590,7 +593,7 @@ class ChatClient:
                     logging.info("Login successful")
                     self.running = True
                     self.build_chat()
-                    threading.Thread(target=self.receive_msg, daemon=True).start()
+                    threading.Thread(target=self.receive_msg, args=(self.sock,), daemon=True).start()
                     return
                 else:
                     error_msg = auth_response.get("error", "登录失败")
@@ -674,7 +677,7 @@ class ChatClient:
         
         def do_register():
             username = username_entry.get().strip()
-            password = password_entry.get().strip()
+            password = password_entry.get()
             if not username or not password:
                 messagebox.showerror("错误", "用户名和密码不能为空！")
                 return
@@ -694,7 +697,7 @@ class ChatClient:
                 temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 temp_sock.settimeout(10)
                 temp_sock.connect((SERVER_HOST, self.server_port))
-                temp_sock.settimeout(None)
+                temp_sock.settimeout(30)
 
                 public_key_data = recv_msg(temp_sock)
                 public_key, key_err = check_server_public_key(public_key_data)
@@ -765,362 +768,381 @@ class ChatClient:
         for user in user_list:
             self.online_listbox.insert(tk.END, user)
 
-    def receive_msg(self):
-        """
-        接收服务器消息的线程函数，处理各种类型的消息，包括群聊、私聊、好友请求等。
-        """
-        while self.running:
+    def receive_msg(self, sock):
+        """Read only from this connection; never call Tk from the worker."""
+        while self.running and self.sock is sock:
             try:
-                msg = recv_msg(self.sock)
-                if not msg:
-                    logging.info("服务器断开连接")
-                    self.master.after(0, lambda: messagebox.showerror("连接断开", "与服务器的连接已断开"))
-                    self.master.after(0, self.disconnect)
+                msg = recv_msg(sock)
+            except Exception:
+                msg = None
+            self.incoming.put((sock, msg))
+            if msg is None:
+                return
+
+    def drain_incoming(self):
+        """Apply network events on Tk's thread, discarding old connection events."""
+        try:
+            # Bound work so a busy server cannot starve keyboard/window events.
+            for _ in range(100):
+                try:
+                    sock, msg = self.incoming.get_nowait()
+                except queue.Empty:
                     break
-
-                # 畸形消息过滤：非 dict 或 type 非字符串的消息直接忽略，避免接收线程崩溃
-                if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
-                    logging.warning(f"收到格式异常的消息，已忽略: {str(msg)[:100]}")
+                if not self.running or self.sock is not sock:
                     continue
+                if msg is None:
+                    self.disconnect()
+                    messagebox.showerror("连接断开", "与服务器的连接已断开")
+                    continue
+                try:
+                    self.handle_server_message(msg)
+                except Exception:
+                    logging.exception("忽略格式异常的服务器消息")
+        finally:
+            self.master.after(50, self.drain_incoming)
 
-                if isinstance(msg, dict):
-                    mtype = msg.get("type")
-                    if mtype == "online_users":
-                        user_list = msg.get("users", [])
-                        logging.info(f"Received online users list: {user_list}")
-                        self.master.after(0, lambda ul=user_list: self.update_online_users(ul))
-                    
-                    elif mtype == "user_groups_list":
-                        group_list = msg.get("groups", [])
-                        logging.info(f"Received initial group list: {group_list}")
-                        self.groups = {g["gid"]: g for g in group_list}
-                        self.master.after(0, self.refresh_group_listbox)
-                    
-                    elif mtype == "friends_list":
-                        friends_list = msg.get("friends", [])
-                        logging.info(f"Received friends list: {friends_list}")
-                        self.friends = friends_list
-                        # 更新好友列表框
-                        self.master.after(0, self.update_friends_listbox)
-                    
-                    elif mtype == "private_chat":
-                        logging.info(f"Received private chat message: {msg}")
-                        from_user = msg.get("from")
-                        to_user = msg.get("to")
-                        encrypted_content = msg.get("content")
-                        time_str = msg.get("timestamp", "")
-                        if not self.session_key:
-                            continue
-                        try:
-                            content = decrypt_message(encrypted_content, self.session_key)
-                        except Exception as e:
-                            logging.error(f"解密来自 {from_user} 的私聊消息失败: {e}")
-                            content = "[消息解密失败]"
+    @staticmethod
+    def run_ui(callback):
+        callback()
 
-                        show = f'{from_user}: {content}'
-                        is_self = (from_user == self.username)
+    def handle_server_message(self, msg):
+        """Handle a server event on the main thread."""
+        # 畸形消息过滤：非 dict 或 type 非字符串的消息直接忽略，避免接收线程崩溃
+        if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
+            logging.warning(f"收到格式异常的消息，已忽略: {str(msg)[:100]}")
+            return
 
-                        # 确定聊天对象
-                        chat_partner = to_user if is_self else from_user
+        if isinstance(msg, dict):
+            mtype = msg.get("type")
+            if mtype == "online_users":
+                user_list = msg.get("users", [])
+                logging.info(f"Received online users list: {user_list}")
+                self.run_ui(lambda ul=user_list: self.update_online_users(ul))
 
-                        # 如果聊天对象不在好友列表中，则添加（处理接收新好友消息的情况）
-                        if chat_partner not in self.friends:
-                            self.friends.append(chat_partner)
-                            # 使用lambda的默认参数来捕获当前的chat_partner值
-                            self.master.after(0, lambda p=chat_partner: self.friends_listbox.insert(tk.END, p))
-                            self.private_chats[chat_partner] = []
+            elif mtype == "user_groups_list":
+                group_list = msg.get("groups", [])
+                logging.info(f"Received initial group list: {group_list}")
+                self.groups = {g["gid"]: g for g in group_list}
+                self.run_ui(self.refresh_group_listbox)
 
-                        # 将消息存储在聊天对象的名下
-                        if chat_partner not in self.private_chats:
-                            self.private_chats[chat_partner] = []
-                        self.private_chats[chat_partner].append(((show, time_str), is_self))
+            elif mtype == "friends_list":
+                friends_list = msg.get("friends", [])
+                logging.info(f"Received friends list: {friends_list}")
+                self.friends = friends_list
+                # 更新好友列表框
+                self.run_ui(self.update_friends_listbox)
 
-                        # 如果当前聊天窗口是该对象，则显示消息
-                        if self.current_friend == chat_partner:
-                            # 使用lambda的默认参数来捕获当前值
-                            self.master.after(0, lambda s=show, t=time_str, i=is_self, p=chat_partner: self.display_message_with_time(s, t, i, friend=p))
-                    
-                    elif mtype == "group_chat":
-                        logging.info(f"Received group chat message: {msg}")
-                        gid = msg.get("gid")
-                        from_user = msg.get("from")
-                        encrypted_content = msg.get("content")
-                        time_str = msg.get("timestamp", "")
-                        if not self.session_key:
-                            continue
-                        try:
-                            content = decrypt_message(encrypted_content, self.session_key)
-                        except Exception as e:
-                            logging.error(f"解密来自 {from_user} 的群聊消息失败 (群组: {gid}): {e}")
-                            content = "[消息解密失败]"
-                        
-                        show = f'{from_user}(群聊): {content}'
-                        is_self = (from_user == self.username)
-                        
-                        # 如果客户端不知道这个群组，请求信息
-                        if gid not in self.groups:
-                            self.master.after(0, lambda g=gid: self.request_group_info(g))
+            elif mtype == "private_chat":
+                logging.info(f"Received private chat message: {msg}")
+                from_user = msg.get("from")
+                to_user = msg.get("to")
+                encrypted_content = msg.get("content")
+                time_str = msg.get("timestamp", "")
+                if not self.session_key:
+                    return
+                try:
+                    content = decrypt_message(encrypted_content, self.session_key)
+                except Exception as e:
+                    logging.error(f"解密来自 {from_user} 的私聊消息失败: {e}")
+                    content = "[消息解密失败]"
 
-                        # 确保该群组的消息列表存在
-                        if not hasattr(self, f'group_messages_{gid}'):
-                            setattr(self, f'group_messages_{gid}', [])
-                        
-                        # 存储消息
-                        getattr(self, f'group_messages_{gid}').append(((show, time_str), is_self))
-                        
-                        # 如果当前聊天窗口是该群组，则显示消息
+                show = f'{from_user}: {content}'
+                is_self = (from_user == self.username)
+
+                # 确定聊天对象
+                chat_partner = to_user if is_self else from_user
+
+                # 如果聊天对象不在好友列表中，则添加（处理接收新好友消息的情况）
+                if chat_partner not in self.friends:
+                    self.friends.append(chat_partner)
+                    # 使用lambda的默认参数来捕获当前的chat_partner值
+                    self.run_ui(lambda p=chat_partner: self.friends_listbox.insert(tk.END, p))
+                    self.private_chats[chat_partner] = []
+
+                # 将消息存储在聊天对象的名下
+                if chat_partner not in self.private_chats:
+                    self.private_chats[chat_partner] = []
+                self.private_chats[chat_partner].append(((show, time_str), is_self))
+
+                # 如果当前聊天窗口是该对象，则显示消息
+                if self.current_friend == chat_partner:
+                    # 使用lambda的默认参数来捕获当前值
+                    self.run_ui(lambda s=show, t=time_str, i=is_self, p=chat_partner: self.display_message_with_time(s, t, i, friend=p))
+
+            elif mtype == "group_chat":
+                logging.info(f"Received group chat message: {msg}")
+                gid = msg.get("gid")
+                from_user = msg.get("from")
+                encrypted_content = msg.get("content")
+                time_str = msg.get("timestamp", "")
+                if not self.session_key:
+                    return
+                try:
+                    content = decrypt_message(encrypted_content, self.session_key)
+                except Exception as e:
+                    logging.error(f"解密来自 {from_user} 的群聊消息失败 (群组: {gid}): {e}")
+                    content = "[消息解密失败]"
+
+                show = f'{from_user}(群聊): {content}'
+                is_self = (from_user == self.username)
+
+                # 如果客户端不知道这个群组，请求信息
+                if gid not in self.groups:
+                    self.run_ui(lambda g=gid: self.request_group_info(g))
+
+                # 确保该群组的消息列表存在
+                if not hasattr(self, f'group_messages_{gid}'):
+                    setattr(self, f'group_messages_{gid}', [])
+
+                # 存储消息
+                getattr(self, f'group_messages_{gid}').append(((show, time_str), is_self))
+
+                # 如果当前聊天窗口是该群组，则显示消息
+                if self.current_group == gid:
+                    self.run_ui(lambda s=show, t=time_str, i=is_self, g=gid: self.display_message_with_time(s, t, i, friend=g))
+
+            elif mtype == "group_create_result":
+                logging.info(f"Received group create result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    group_name = msg.get("group_name", "新群聊")
+                    owner = msg.get("owner") # 从消息中获取群主
+                    members = msg.get("members", [])
+                    self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                    self.run_ui(self.refresh_group_listbox) # 刷新整个列表以保持一致性
+                    if owner == self.username: # 只有创建者会看到这个弹窗
+                        self.run_ui(lambda gn=group_name, g=gid: messagebox.showinfo("群聊创建", f"群聊 '{gn}' 创建成功！ID: {g}"))
+                else:
+                    error_msg = msg.get("error", "创建群聊失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("群聊创建失败", em))
+
+            elif mtype == "group_info":
+                logging.info(f"Received group info: {msg}")
+                gid = msg.get("gid")
+                if gid and "error" not in msg:
+                    self.groups[gid] = msg
+                    self.run_ui(lambda g=gid: self.show_group_info_after_update(g))
+                else:
+                    err = msg.get("error", "获取群组信息失败")
+                    self.run_ui(lambda em=err: messagebox.showerror("群组信息", em))
+
+            elif mtype == "group_invite":
+                logging.info(f"Received group invite: {msg}")
+                from_user = msg.get("from")
+                gid = msg.get("gid")
+                self.run_ui(lambda fu=from_user, g=gid: self.handle_group_invite(fu, g))
+
+            elif mtype == "group_join_result":
+                logging.info(f"Received group join result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    group_name = msg.get("group_name", "未知群聊")
+                    owner = msg.get("owner")
+                    members = msg.get("members", [])
+                    self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                    self.run_ui(self.refresh_group_listbox)
+                    self.run_ui(lambda gn=group_name: messagebox.showinfo("加入群聊", f"成功加入群聊: {gn}"))
+                else:
+                    error_msg = msg.get("error", "加入群聊失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("加入群聊失败", em))
+
+            elif mtype == "group_update":
+                logging.info(f"Received group update: {msg}")
+                gid = msg.get("gid")
+                group_name = msg.get("group_name")
+                owner = msg.get("owner")
+                members = msg.get("members")
+                self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
+                self.run_ui(self.refresh_group_listbox)
+
+            elif mtype == "group_leave_result":
+                logging.info(f"Received group leave result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    if gid in self.groups:
+                        del self.groups[gid]
+                    if hasattr(self, f'group_messages_{gid}'):
+                        delattr(self, f'group_messages_{gid}')
+                    self.run_ui(lambda: self.refresh_group_listbox())
+                    self.run_ui(lambda g=gid: messagebox.showinfo("退出群聊", f"成功退出群聊: {g}"))
+                    if self.current_group == gid:
+                        self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
+                else:
+                    error_msg = msg.get("error", "退出群聊失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("退出群聊失败", em))
+
+            elif mtype == "group_kick_result":
+                logging.info(f"Received group kick result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    kicked_user = msg.get("kick")
+                    if gid in self.groups and kicked_user in self.groups[gid]["members"]:
+                        self.groups[gid]["members"].remove(kicked_user)
+                    self.run_ui(lambda k=kicked_user, g=gid: messagebox.showinfo("踢出成员", f"已将 {k} 从群聊 {g} 踢出"))
+                    if kicked_user == self.username: # 自己被踢出：移除群组并清空选中聊天
+                        if gid in self.groups:
+                            del self.groups[gid]
+                        if hasattr(self, f'group_messages_{gid}'):
+                            delattr(self, f'group_messages_{gid}')
                         if self.current_group == gid:
-                            self.master.after(0, lambda s=show, t=time_str, i=is_self, g=gid: self.display_message_with_time(s, t, i, friend=g))
+                            self.run_ui(self.clear_chat_selection)
+                    self.run_ui(lambda: self.refresh_group_listbox())
+                else:
+                    error_msg = msg.get("error", "踢出成员失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("踢出成员失败", em))
 
-                    elif mtype == "group_create_result":
-                        logging.info(f"Received group create result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            group_name = msg.get("group_name", "新群聊")
-                            owner = msg.get("owner") # 从消息中获取群主
-                            members = msg.get("members", [])
-                            self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
-                            self.master.after(0, self.refresh_group_listbox) # 刷新整个列表以保持一致性
-                            if owner == self.username: # 只有创建者会看到这个弹窗
-                                self.master.after(0, lambda gn=group_name, g=gid: messagebox.showinfo("群聊创建", f"群聊 '{gn}' 创建成功！ID: {g}"))
-                        else:
-                            error_msg = msg.get("error", "创建群聊失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("群聊创建失败", em))
-                    
-                    elif mtype == "group_info":
-                        logging.info(f"Received group info: {msg}")
-                        gid = msg.get("gid")
-                        if gid and "error" not in msg:
-                            self.groups[gid] = msg
-                            self.master.after(0, lambda g=gid: self.show_group_info_after_update(g))
-                        else:
-                            err = msg.get("error", "获取群组信息失败")
-                            self.master.after(0, lambda em=err: messagebox.showerror("群组信息", em))
+            elif mtype == "group_kick_notification":
+                logging.info(f"Received group kick notification: {msg}")
+                gid = msg.get("gid")
+                group_name = msg.get("group_name")
+                self.run_ui(lambda gn=group_name: messagebox.showinfo("群聊通知", f"您已被从群聊 {gn} 移除"))
+                if gid in self.groups:
+                    del self.groups[gid]
+                if hasattr(self, f'group_messages_{gid}'):
+                    delattr(self, f'group_messages_{gid}')
+                self.run_ui(lambda: self.refresh_group_listbox())
+                if self.current_group == gid:
+                    self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
 
-                    elif mtype == "group_invite":
-                        logging.info(f"Received group invite: {msg}")
-                        from_user = msg.get("from")
-                        gid = msg.get("gid")
-                        self.master.after(0, lambda fu=from_user, g=gid: self.handle_group_invite(fu, g))
-                    
-                    elif mtype == "group_join_result":
-                        logging.info(f"Received group join result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            group_name = msg.get("group_name", "未知群聊")
-                            owner = msg.get("owner")
-                            members = msg.get("members", [])
-                            self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
-                            self.master.after(0, self.refresh_group_listbox)
-                            self.master.after(0, lambda gn=group_name: messagebox.showinfo("加入群聊", f"成功加入群聊: {gn}"))
-                        else:
-                            error_msg = msg.get("error", "加入群聊失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("加入群聊失败", em))
-                    
-                    elif mtype == "group_update":
-                        logging.info(f"Received group update: {msg}")
-                        gid = msg.get("gid")
-                        group_name = msg.get("group_name")
-                        owner = msg.get("owner")
-                        members = msg.get("members")
-                        self.groups[gid] = {"group_name": group_name, "owner": owner, "members": members}
-                        self.master.after(0, self.refresh_group_listbox)
-                    
-                    elif mtype == "group_leave_result":
-                        logging.info(f"Received group leave result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            if gid in self.groups:
-                                del self.groups[gid]
-                            if hasattr(self, f'group_messages_{gid}'):
-                                delattr(self, f'group_messages_{gid}')
-                            self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda g=gid: messagebox.showinfo("退出群聊", f"成功退出群聊: {g}"))
-                            if self.current_group == gid:
-                                self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
-                        else:
-                            error_msg = msg.get("error", "退出群聊失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("退出群聊失败", em))
-                    
-                    elif mtype == "group_kick_result":
-                        logging.info(f"Received group kick result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            kicked_user = msg.get("kick")
-                            if gid in self.groups and kicked_user in self.groups[gid]["members"]:
-                                self.groups[gid]["members"].remove(kicked_user)
-                            self.master.after(0, lambda k=kicked_user, g=gid: messagebox.showinfo("踢出成员", f"已将 {k} 从群聊 {g} 踢出"))
-                            if kicked_user == self.username: # 自己被踢出：移除群组并清空选中聊天
-                                if gid in self.groups:
-                                    del self.groups[gid]
-                                if hasattr(self, f'group_messages_{gid}'):
-                                    delattr(self, f'group_messages_{gid}')
-                                if self.current_group == gid:
-                                    self.master.after(0, self.clear_chat_selection)
-                            self.master.after(0, lambda: self.refresh_group_listbox())
-                        else:
-                            error_msg = msg.get("error", "踢出成员失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("踢出成员失败", em))
-                    
-                    elif mtype == "group_kick_notification":
-                        logging.info(f"Received group kick notification: {msg}")
-                        gid = msg.get("gid")
-                        group_name = msg.get("group_name")
-                        self.master.after(0, lambda gn=group_name: messagebox.showinfo("群聊通知", f"您已被从群聊 {gn} 移除"))
-                        if gid in self.groups:
-                            del self.groups[gid]
-                        if hasattr(self, f'group_messages_{gid}'):
-                            delattr(self, f'group_messages_{gid}')
-                        self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
-                    
-                    elif mtype == "friend_request":
-                        logging.info(f"Received friend request: {msg}")
-                        from_user = msg.get("from")
-                        self.master.after(0, lambda fu=from_user: self.handle_friend_request(fu))
-                    
-                    elif mtype == "friend_response":
-                        logging.info(f"Received friend response: {msg}")
-                        from_user = msg.get("from")
-                        accepted = msg.get("accepted")
-                        self.master.after(0, lambda fu=from_user, ac=accepted: self.handle_friend_response(fu, ac))
-                    
-                    elif mtype == "friend_update":
-                        logging.info(f"Received friend update: {msg}")
-                        new_friend = msg.get("friend")
-                        if new_friend and new_friend not in self.friends:
-                            self.friends.append(new_friend)
-                            self.private_chats[new_friend] = []
-                            self.master.after(0, lambda f=new_friend: self.friends_listbox.insert(tk.END, f))
-                    
-                    elif mtype == "friend_request_result":
-                        logging.info(f"Received friend request result: {msg}")
-                        with friend_request_lock:
-                            self.friend_request_result = msg.get("success")
-                        if not msg.get("success"):
-                            error_msg = msg.get("error", "好友申请失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("好友申请失败", em))
-                    
-                    elif mtype == "group_invite_result":
-                        logging.info(f"Received group invite result: {msg}")
-                        if not msg.get("success"):
-                            error_msg = msg.get("error", "群邀请失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("群邀请失败", em))
-                    
-                    elif mtype == "group_disband_result":
-                        logging.info(f"Received group disband result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            if gid in self.groups:
-                                del self.groups[gid]
-                            if hasattr(self, f'group_messages_{gid}'):
-                                delattr(self, f'group_messages_{gid}')
-                            self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda: messagebox.showinfo("解散群聊", "群聊已成功解散"))
-                            if self.current_group == gid:
-                                self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
-                        else:
-                            error_msg = msg.get("error", "解散群聊失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("解散群聊失败", em))
-                    
-                    elif mtype == "group_disband_notification":
-                        logging.info(f"Received group disband notification: {msg}")
-                        gid = msg.get("gid")
-                        group_name = msg.get("group_name")
-                        self.master.after(0, lambda gn=group_name: messagebox.showinfo("群聊通知", f"群聊 {gn} 已被解散"))
-                        if gid in self.groups:
-                            del self.groups[gid]
-                        if hasattr(self, f'group_messages_{gid}'):
-                            delattr(self, f'group_messages_{gid}')
-                        self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, self.clear_chat_selection) # 清空当前选中聊天
-                    
-                    elif mtype == "group_transfer_result":
-                        logging.info(f"Received group transfer result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            new_owner = msg.get("new_owner")
-                            if gid in self.groups:
-                                self.groups[gid]["owner"] = new_owner
-                            self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda no=new_owner: messagebox.showinfo("转让群主", f"群主已成功转让给 {no}"))
-                        else:
-                            error_msg = msg.get("error", "转让群主失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("转让群主失败", em))
-                    
-                    elif mtype == "group_transfer_notification":
-                        logging.info(f"Received group transfer notification: {msg}")
-                        gid = msg.get("gid")
-                        old_owner = msg.get("old_owner")
-                        new_owner = msg.get("new_owner")
-                        group_name = msg.get("group_name")
-                        if gid in self.groups:
-                            self.groups[gid]["owner"] = new_owner
-                        self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda gn=group_name, oo=old_owner, no=new_owner: messagebox.showinfo("群聊通知", f"群聊 {gn} 的群主已由 {oo} 转让给 {no}"))
-                    
-                    elif mtype == "group_rename_result":
-                        logging.info(f"Received group rename result: {msg}")
-                        if msg.get("success"):
-                            gid = msg.get("gid")
-                            new_name = msg.get("new_name")
-                            # 群组不在本地时 old_name 无法得知，回退为 gid，避免未绑定变量
-                            old_name = self.groups[gid].get("group_name", gid) if gid in self.groups else gid
-                            if gid in self.groups:
-                                self.groups[gid]["group_name"] = new_name
-                            self.master.after(0, lambda: self.refresh_group_listbox())
-                            self.master.after(0, lambda on=old_name, nn=new_name: messagebox.showinfo("修改群聊名称", f"群聊名称已从 '{on}' 修改为 '{nn}'"))
-                        else:
-                            error_msg = msg.get("error", "修改群聊名称失败")
-                            self.master.after(0, lambda em=error_msg: messagebox.showerror("修改群聊名称失败", em))
-                    
-                    elif mtype == "group_rename_notification":
-                        logging.info(f"Received group rename notification: {msg}")
-                        gid = msg.get("gid")
-                        old_name = msg.get("old_name")
-                        new_name = msg.get("new_name")
-                        if gid in self.groups:
-                            self.groups[gid]["group_name"] = new_name
-                        self.master.after(0, lambda: self.refresh_group_listbox())
-                        self.master.after(0, lambda on=old_name, nn=new_name: messagebox.showinfo("群聊通知", f"群聊名称已由群主 {msg.get('owner')} 从 '{on}' 修改为 '{nn}'"))
-                    
-                    elif mtype == "error":
-                        # 服务器主动通知的错误（如会话过期、速率限制等），提示后返回登录界面
-                        err = msg.get("message", "服务器错误")
-                        logging.warning(f"服务器错误: {err}")
-                        self.master.after(0, lambda e=err: messagebox.showerror("服务器通知", e))
-                        self.master.after(0, self.disconnect)
-                        break
+            elif mtype == "friend_request":
+                logging.info(f"Received friend request: {msg}")
+                from_user = msg.get("from")
+                self.run_ui(lambda fu=from_user: self.handle_friend_request(fu))
 
-                    elif mtype == "private_chat_result":
-                        if not msg.get("success"):
-                            err = msg.get("error", "私聊消息发送失败")
-                            self.master.after(0, lambda e=err: messagebox.showerror("私聊失败", e))
+            elif mtype == "friend_response":
+                logging.info(f"Received friend response: {msg}")
+                from_user = msg.get("from")
+                accepted = msg.get("accepted")
+                self.run_ui(lambda fu=from_user, ac=accepted: self.handle_friend_response(fu, ac))
 
-                    elif mtype == "group_chat_result":
-                        if not msg.get("success"):
-                            err = msg.get("error", "群聊消息发送失败")
-                            self.master.after(0, lambda e=err: messagebox.showerror("群聊失败", e))
+            elif mtype == "friend_update":
+                logging.info(f"Received friend update: {msg}")
+                new_friend = msg.get("friend")
+                if new_friend and new_friend not in self.friends:
+                    self.friends.append(new_friend)
+                    self.private_chats[new_friend] = []
+                    self.run_ui(lambda f=new_friend: self.friends_listbox.insert(tk.END, f))
 
-                    elif mtype == "friend_response_result":
-                        if not msg.get("success"):
-                            err = msg.get("error", "好友响应失败")
-                            self.master.after(0, lambda e=err: messagebox.showerror("好友响应失败", e))
-                    
-                    else:
-                        logging.warning(f"收到未知格式消息: {msg}")
+            elif mtype == "friend_request_result":
+                logging.info(f"Received friend request result: {msg}")
+                with friend_request_lock:
+                    self.friend_request_result = msg.get("success")
+                if msg.get("success"):
+                    messagebox.showinfo("好友申请", msg.get("message", "好友申请发送成功"))
+                else:
+                    error_msg = msg.get("error", "好友申请失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("好友申请失败", em))
 
-            except (ConnectionResetError, ConnectionAbortedError):
-                logging.warning("与服务器的连接已断开。")
-                if self.running:
-                    self.master.after(0, lambda: messagebox.showwarning("连接断开", "与服务器的连接已断开，请重新登录。"))
-                    self.master.after(0, self.disconnect)
-                break
-            except Exception as e:
-                logging.exception(f"接收消息时发生未知异常: {e}")
-                if self.running:
-                    self.master.after(0, self.disconnect)
-                break
+            elif mtype == "group_invite_result":
+                logging.info(f"Received group invite result: {msg}")
+                if not msg.get("success"):
+                    error_msg = msg.get("error", "群邀请失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("群邀请失败", em))
+
+            elif mtype == "group_disband_result":
+                logging.info(f"Received group disband result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    if gid in self.groups:
+                        del self.groups[gid]
+                    if hasattr(self, f'group_messages_{gid}'):
+                        delattr(self, f'group_messages_{gid}')
+                    self.run_ui(lambda: self.refresh_group_listbox())
+                    self.run_ui(lambda: messagebox.showinfo("解散群聊", "群聊已成功解散"))
+                    if self.current_group == gid:
+                        self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
+                else:
+                    error_msg = msg.get("error", "解散群聊失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("解散群聊失败", em))
+
+            elif mtype == "group_disband_notification":
+                logging.info(f"Received group disband notification: {msg}")
+                gid = msg.get("gid")
+                group_name = msg.get("group_name")
+                self.run_ui(lambda gn=group_name: messagebox.showinfo("群聊通知", f"群聊 {gn} 已被解散"))
+                if gid in self.groups:
+                    del self.groups[gid]
+                if hasattr(self, f'group_messages_{gid}'):
+                    delattr(self, f'group_messages_{gid}')
+                self.run_ui(lambda: self.refresh_group_listbox())
+                if self.current_group == gid:
+                    self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
+
+            elif mtype == "group_transfer_result":
+                logging.info(f"Received group transfer result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    new_owner = msg.get("new_owner")
+                    if gid in self.groups:
+                        self.groups[gid]["owner"] = new_owner
+                    self.run_ui(lambda: self.refresh_group_listbox())
+                    self.run_ui(lambda no=new_owner: messagebox.showinfo("转让群主", f"群主已成功转让给 {no}"))
+                else:
+                    error_msg = msg.get("error", "转让群主失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("转让群主失败", em))
+
+            elif mtype == "group_transfer_notification":
+                logging.info(f"Received group transfer notification: {msg}")
+                gid = msg.get("gid")
+                old_owner = msg.get("old_owner")
+                new_owner = msg.get("new_owner")
+                group_name = msg.get("group_name")
+                if gid in self.groups:
+                    self.groups[gid]["owner"] = new_owner
+                self.run_ui(lambda: self.refresh_group_listbox())
+                self.run_ui(lambda gn=group_name, oo=old_owner, no=new_owner: messagebox.showinfo("群聊通知", f"群聊 {gn} 的群主已由 {oo} 转让给 {no}"))
+
+            elif mtype == "group_rename_result":
+                logging.info(f"Received group rename result: {msg}")
+                if msg.get("success"):
+                    gid = msg.get("gid")
+                    new_name = msg.get("new_name")
+                    # 群组不在本地时 old_name 无法得知，回退为 gid，避免未绑定变量
+                    old_name = self.groups[gid].get("group_name", gid) if gid in self.groups else gid
+                    if gid in self.groups:
+                        self.groups[gid]["group_name"] = new_name
+                    self.run_ui(lambda: self.refresh_group_listbox())
+                    self.run_ui(lambda on=old_name, nn=new_name: messagebox.showinfo("修改群聊名称", f"群聊名称已从 '{on}' 修改为 '{nn}'"))
+                else:
+                    error_msg = msg.get("error", "修改群聊名称失败")
+                    self.run_ui(lambda em=error_msg: messagebox.showerror("修改群聊名称失败", em))
+
+            elif mtype == "group_rename_notification":
+                logging.info(f"Received group rename notification: {msg}")
+                gid = msg.get("gid")
+                old_name = msg.get("old_name")
+                new_name = msg.get("new_name")
+                if gid in self.groups:
+                    self.groups[gid]["group_name"] = new_name
+                self.run_ui(lambda: self.refresh_group_listbox())
+                self.run_ui(lambda on=old_name, nn=new_name, owner=msg.get("owner"): messagebox.showinfo("群聊通知", f"群聊名称已由群主 {owner} 从 '{on}' 修改为 '{nn}'"))
+
+            elif mtype == "error":
+                # 服务器主动通知的错误（如会话过期、速率限制等），提示后返回登录界面
+                err = msg.get("message", "服务器错误")
+                logging.warning(f"服务器错误: {err}")
+                self.run_ui(lambda e=err: messagebox.showerror("服务器通知", e))
+                self.run_ui(self.disconnect)
+                return
+
+            elif mtype == "private_chat_result":
+                if not msg.get("success"):
+                    err = msg.get("error", "私聊消息发送失败")
+                    self.run_ui(lambda e=err: messagebox.showerror("私聊失败", e))
+
+            elif mtype == "group_chat_result":
+                if not msg.get("success"):
+                    err = msg.get("error", "群聊消息发送失败")
+                    self.run_ui(lambda e=err: messagebox.showerror("群聊失败", e))
+
+            elif mtype == "friend_response_result":
+                if not msg.get("success"):
+                    err = msg.get("error", "好友响应失败")
+                    self.run_ui(lambda e=err: messagebox.showerror("好友响应失败", e))
+
+            else:
+                logging.warning(f"收到未知格式消息: {msg}")
+
 
     def clear_window(self):
         """
