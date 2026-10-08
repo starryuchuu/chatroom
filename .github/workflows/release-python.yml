@@ -35,8 +35,19 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller
-      - name: Regression tests (real cryptography)
+      - name: Install Linux GUI test dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth python3-tk
+      - name: Windows regression tests (real cryptography and Tk)
+        if: runner.os == 'Windows'
+        env:
+          PYTHONIOENCODING: utf-8
         run: python -m unittest discover -s tests -v
+      - name: Linux regression tests (real cryptography and Tk)
+        if: runner.os == 'Linux'
+        env:
+          PYTHONIOENCODING: utf-8
+        run: xvfb-run -a python -m unittest discover -s tests -v
       - name: Build server
         run: pyinstaller --onefile --clean --name server-${{ matrix.platform }} server.py
       - name: Build client
@@ -74,6 +85,7 @@ jobs:
             exit 1
           fi
           git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
+          (cd release-assets && sha256sum client-* server-* "chatroom-${tag}-source.zip" > SHA256SUMS)
           gh release create "$tag" release-assets/* client.py server.py requirements.txt \
             --target "$GITHUB_SHA" --title "$tag — Python 稳定性修复" \
             --notes-file RELEASE_NOTES.md --latest
