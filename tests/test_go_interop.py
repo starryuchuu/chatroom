@@ -20,6 +20,9 @@ spec.loader.exec_module(client)
 class GoInteropTests(unittest.TestCase):
     def setUp(self):
         probe = socket.socket()
+        # Linux retains recently closed TCP endpoints in TIME_WAIT. The Go
+        # listener permits address reuse; the preflight probe must do so too.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(('127.0.0.1', 12346))
         finally:
