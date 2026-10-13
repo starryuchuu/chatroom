@@ -1,6 +1,8 @@
 package database
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/argon2"
@@ -41,5 +43,22 @@ func TestInvalidHashRejected(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("无效哈希不应通过验证")
+	}
+}
+
+func TestSelfDescribedPythonParametersAndBounds(t *testing.T) {
+	salt := []byte("test salt 1234567")
+	expected := argon2.IDKey([]byte("secret123"), salt, 3, 64*1024, 4, 32)
+	encoded := "$argon2id$v=19$m=65536,t=3,p=4$" + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(expected)
+	ok, err := verifyPassword("secret123", encoded, "")
+	if err != nil || !ok {
+		t.Fatal("Python parameters rejected", err)
+	}
+	for _, bad := range []string{"m=65536,t=0,p=4", "m=65536,t=999999,p=4", "m=999999999,t=1,p=4", "m=65536,t=1,p=0", "m=0,t=1,p=4"} {
+		candidate := strings.Replace(encoded, "m=65536,t=3,p=4", bad, 1)
+		ok, err = verifyPassword("secret123", candidate, "")
+		if err != nil || ok {
+			t.Fatal("unsafe parameters accepted", bad)
+		}
 	}
 }

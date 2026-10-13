@@ -8,6 +8,9 @@ build/
 # ---- 运行时生成的文件 ----
 chat.db
 chat.db-journal
+chat.db-wal
+chat.db-shm
+*.db.key
 private_key.pem
 public_key.pem
 
@@ -29,3 +32,4 @@ Thumbs.db
 
 # ---- 编辑器配置 ----
 .vscode/
+

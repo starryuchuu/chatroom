@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -38,9 +39,14 @@ func TestHistorySnapshotUsesCommittedIDsGlobalOrderAndFriendFilter(t *testing.T)
 		}
 	}
 	// NULL columns from existing Python databases must remain readable.
-	if _, err := DB.Exec("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice','python','now')"); err != nil {
+	if _, err := DB.Exec("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES(?,?,?,?,?)", "private", storage.token("bob"), storage.token("alice"), "", ""); err != nil {
 		t.Fatal(err)
 	}
+	var id int64
+	DB.QueryRow("SELECT MAX(id) FROM messages").Scan(&id)
+	body, _ := storage.seal("python", messageStorageContext(id, "private", storage.token("bob"), storage.token("alice"), "")...)
+	at, _ := storage.seal("now", "messages", "timestamp", fmt.Sprint(id))
+	DB.Exec("UPDATE messages SET message=?,timestamp=? WHERE id=?", body, at, id)
 	history, _, err = GetChatHistorySnapshot("alice")
 	if err != nil || len(history) != 4 {
 		t.Fatalf("NULL compatibility: %v %v", history, err)

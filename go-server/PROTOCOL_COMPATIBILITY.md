@@ -10,7 +10,7 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 认证覆盖序号及全部 JSON 字节，修改 `to`、`gid`、命令类型或其他字段都会被拒绝。两个方向序号独立从 0 递增，重复或乱序的报文被拒绝。方向密钥分别为 `HMAC-SHA256(session_key, "chatroom/frame/v2/client")` 和 `HMAC-SHA256(session_key, "chatroom/frame/v2/server")`。序号在实际发送顺序中分配，避免并发通知乱序；Python 和 Go 测试使用相同的固定向量。
 
-登录继续使用 `encrypted_login`，注册使用 `encrypted_register`。不接受明文 `login`。聊天正文和凭据保留 AES-GCM 加密；路由元数据可见。服务端解密并保存明文正文，因此本协议不是用户之间的端到端加密，也不提供前向保密。
+登录继续使用 `encrypted_login`，注册使用 `encrypted_register`。不接受明文 `login`。聊天正文和凭据保留 AES-GCM 加密；路由元数据可见。服务端解密后按存储 v1 加密保存正文，因此本协议不是用户之间的端到端加密，也不提供前向保密。
 
 ## 历史分页
 
@@ -29,3 +29,7 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 启动时自动增加 `pending_friend_requests`、`pending_group_invites` 及消息索引。申请与邀请有效期 24 小时，重启后恢复；接受好友或入群在数据库事务中消费申请，拒绝时先删除持久化记录再通知成功。原有账号和聊天记录保留。
 
 保存确认仍携带请求 ID 和提交后的消息 ID。未收到确认的发送结果仍属于未知状态，客户端保留输入，避免自动重发。
+
+## 存储格式 v1
+
+网络协议与存储格式分别版本化。此修改仍使用协议 v2，兼容 v1.0.10 客户端。Python 与 Go 可以顺序使用同一迁移后的数据库和 `chat.db.key`，不得同时运行或降级使用旧服务端。详情见 [存储说明](../STORAGE_ENCRYPTION.md)。

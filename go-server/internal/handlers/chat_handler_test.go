@@ -106,7 +106,7 @@ func setupHandlers(t *testing.T) *recordManager {
 	pendingFriendRequests = make(map[string]map[string]time.Time)
 	pendingGroupJoins = make(map[string]map[string]groupInvitation)
 	for _, name := range []string{"alice", "bob", "carol"} {
-		if _, err := database.DB.Exec("INSERT INTO users(username,password) VALUES(?,?)", name, "unused"); err != nil {
+		if err := database.RegisterUser(name, "unused-password"); err != nil {
 			t.Fatal(err)
 		}
 	}

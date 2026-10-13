@@ -2,6 +2,7 @@ import socket
 import transport
 import pending_store
 import history_store
+import storage
 import threading
 import time
 import datetime
@@ -397,48 +398,51 @@ def init_db():
     """
     初始化数据库，创建必要的表结构。
     """
-    conn = sqlite3.connect("chat.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_type TEXT NOT NULL,
-            from_user TEXT NOT NULL,
-            to_user TEXT,
-            gid TEXT,
-            message TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS friends (
-            user TEXT NOT NULL,
-            friend TEXT NOT NULL,
-            UNIQUE(user, friend)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS groups (
-            gid TEXT PRIMARY KEY,
-            group_name TEXT NOT NULL,
-            owner TEXT NOT NULL,
-            members TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-    cursor.executescript(pending_store.SCHEMA)
-    cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_from ON messages(chat_type,from_user,id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_to ON messages(chat_type,to_user,id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)")
-    conn.commit()
-    conn.close()
+    conn = storage.connect("chat.db")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_type TEXT NOT NULL,
+                from_user TEXT NOT NULL,
+                to_user TEXT,
+                gid TEXT,
+                message TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS friends (
+                user TEXT NOT NULL,
+                friend TEXT NOT NULL,
+                UNIQUE(user, friend)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                gid TEXT PRIMARY KEY,
+                group_name TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                members TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.executescript(pending_store.SCHEMA)
+        cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_from ON messages(chat_type,from_user,id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_to ON messages(chat_type,to_user,id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)")
+        conn.commit()
+        storage.initialize(conn)
+    finally:
+        conn.close()
     restore_pending_requests()
     # 设置数据库文件权限为仅所有者可读写 (600)
     if os.path.exists("chat.db"):
@@ -463,12 +467,13 @@ def load_friends(username):
     返回:
         好友列表集合
     """
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT friend FROM friends WHERE user=?", (username,))
+    cursor.execute("SELECT friend FROM friends WHERE user=?", (storage.token(username),))
     rows = cursor.fetchall()
     conn.close()
-    return set([row[0] for row in rows])
+    with closing(storage.connect()) as db:
+        return {storage.name(db, row[0]) for row in rows}
 
 # 保存好友关系到数据库
 def save_friend_relationship(user1, user2):
@@ -478,9 +483,11 @@ def save_friend_relationship(user1, user2):
         user1: 用户1
         user2: 用户2
     """
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
+        user1 = storage.put_name(conn, user1)
+        user2 = storage.put_name(conn, user2)
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user1, user2))
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user2, user1))
         cursor.execute("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", (user2,user1))
@@ -523,11 +530,12 @@ def register_user(username, password):
     if not (PASSWORD_MIN_LEN <= len(password) <= PASSWORD_MAX_LEN):
         return False, "密码长度必须在 %d-%d 个字符之间" % (PASSWORD_MIN_LEN, PASSWORD_MAX_LEN)
 
-    conn = sqlite3.connect("chat.db")
+    password_hash = hash_password(password)
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", 
-                      (username, hash_password(password)))
+                      (storage.put_name(conn, username), storage.seal(password_hash, "users", "password", storage.token(username))))
         conn.commit()
         return True, ""
     except sqlite3.IntegrityError:
@@ -545,16 +553,16 @@ def validate_user(username, password):
         password: 密码
         验证成功返回True，否则返回False
     """
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT password FROM users WHERE username=?", (username,))
+    cursor.execute("SELECT password FROM users WHERE username=?", (storage.token(username),))
     row = cursor.fetchone()
     conn.close()
     if row:
         from argon2 import PasswordHasher, exceptions
         ph = PasswordHasher()
         try:
-            return ph.verify(row[0], password)
+            return ph.verify(storage.open_field(row[0], "users", "password", storage.token(username)), password)
         except exceptions.VerifyMismatchError:
             return False
         except (exceptions.InvalidHashError, exceptions.VerificationError, exceptions.InvalidHash) as e:
@@ -575,21 +583,12 @@ def save_message(chat_type, from_user, to_user, gid, message, timestamp):
         message: 消息内容
         timestamp: 时间戳
     """
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
-        if chat_type == 'group':
-            cursor.execute("""
-                INSERT INTO messages (chat_type, from_user, gid, message, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            """, (chat_type, from_user, gid, message, timestamp))
-        else:
-            cursor.execute("""
-                INSERT INTO messages (chat_type, from_user, to_user, message, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            """, (chat_type, from_user, to_user, message, timestamp))
+        message_id = storage.save_message(conn, chat_type, from_user, to_user, gid, message, timestamp)
         conn.commit()
-        return cursor.lastrowid
+        return message_id
     except Exception as e:
         conn.rollback()
         logging.error(f"保存消息失败: {e}")
@@ -604,14 +603,14 @@ def send_user_groups(client_sock, username):
     """
     group_ops_lock.acquire()
     try:
-        conn = sqlite3.connect("chat.db")
+        conn = storage.connect("chat.db")
         cursor = conn.cursor()
         cursor.execute("SELECT gid, group_name, owner, members FROM groups")
         rows = cursor.fetchall()
 
         user_groups = []
         for row in rows:
-            gid, group_name, owner, members_json = row
+            gid, group_name, owner, members_json = storage.decode_group(row)
             members = json.loads(members_json)
             if username in members:
                 user_groups.append({
@@ -647,7 +646,7 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
     if only_gid is not None:
         kind, target = 'group', only_gid
     try:
-        with closing(sqlite3.connect("chat.db")) as conn:
+        with closing(storage.connect("chat.db")) as conn:
             boundary = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
         send_msg(client_sock, {"type":"history_begin"})
         rows, has_more = history_store.page(username, boundary, before=before, kind=kind, target=target)
@@ -685,9 +684,9 @@ def user_exists(username):
     返回:
         存在返回True，否则返回False
     """
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE username=?", (username,))
+    cursor.execute("SELECT id FROM users WHERE username=?", (storage.token(username),))
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
@@ -754,11 +753,11 @@ def send_pending_group_invites(client_sock, username):
 def create_group_db(owner, group_name, members):
     gid = str(uuid.uuid4())
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO groups (gid, group_name, owner, members, created_at) VALUES (?, ?, ?, ?, ?)",
-                       (gid, group_name, owner, json.dumps(members), now))
+                       (gid, storage.seal(group_name, "groups", "group_name", gid), storage.seal(owner, "groups", "owner", gid), storage.seal(json.dumps(members), "groups", "members", gid), storage.seal(now, "groups", "created_at", gid)))
         conn.commit()
         return gid
     except Exception as e:
@@ -769,12 +768,13 @@ def create_group_db(owner, group_name, members):
         conn.close()
 
 def get_group_db(gid):
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     cursor.execute("SELECT gid, group_name, owner, members, created_at FROM groups WHERE gid=?", (gid,))
     row = cursor.fetchone()
     conn.close()
     if row:
+        row = storage.decode_group(row)
         return {
             "gid": row[0],
             "group_name": row[1],
@@ -785,12 +785,12 @@ def get_group_db(gid):
     return None
 
 def update_group_members_db(gid, members, joined_user=None):
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE groups SET members=? WHERE gid=?", (json.dumps(members), gid))
+        cursor.execute("UPDATE groups SET members=? WHERE gid=?", (storage.seal(json.dumps(members), "groups", "members", gid), gid))
         if joined_user is not None:
-            cursor.execute("DELETE FROM pending_group_invites WHERE gid=? AND target=?", (gid,joined_user))
+            cursor.execute("DELETE FROM pending_group_invites WHERE gid=? AND target=?", (gid,storage.token(joined_user)))
         conn.commit()
         return True
     except Exception as e:
@@ -801,7 +801,7 @@ def update_group_members_db(gid, members, joined_user=None):
         conn.close()
 
 def delete_group_db(gid):
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM groups WHERE gid=?", (gid,))
@@ -816,10 +816,10 @@ def delete_group_db(gid):
         conn.close()
 
 def update_group_name_db(gid, new_name):
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE groups SET group_name=? WHERE gid=?", (new_name, gid))
+        cursor.execute("UPDATE groups SET group_name=? WHERE gid=?", (storage.seal(new_name, "groups", "group_name", gid), gid))
         conn.commit()
         return True
     except Exception as e:
@@ -830,10 +830,10 @@ def update_group_name_db(gid, new_name):
         conn.close()
 
 def transfer_group_ownership_db(gid, new_owner):
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE groups SET owner=? WHERE gid=?", (new_owner, gid))
+        cursor.execute("UPDATE groups SET owner=? WHERE gid=?", (storage.seal(new_owner, "groups", "owner", gid), gid))
         conn.commit()
         return True
     except Exception as e:
@@ -1061,9 +1061,9 @@ def handle_client(client_sock, addr):
                     # 检查是否已是好友
                     conn = None
                     try:
-                        conn = sqlite3.connect("chat.db")
+                        conn = storage.connect("chat.db")
                         cursor = conn.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (sender, to_user))
+                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (storage.token(sender), storage.token(to_user)))
                         already_friends = cursor.fetchone()[0] > 0
                     finally:
                         if conn:
@@ -1237,11 +1237,11 @@ def handle_client(client_sock, addr):
                     # 校验成员：必须与群主是好友关系（同时隐含成员必须真实存在），防止把任意用户拉入群
                     conn = None
                     try:
-                        conn = sqlite3.connect("chat.db")
+                        conn = storage.connect("chat.db")
                         cursor = conn.cursor()
                         invalid_members = []
                         for m in members:
-                            cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (owner, m))
+                            cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (storage.token(owner), storage.token(m)))
                             if cursor.fetchone()[0] == 0:
                                 invalid_members.append(m)
                     finally:
@@ -1391,9 +1391,9 @@ def handle_client(client_sock, addr):
                     # 检查是否是好友关系（直接查询数据库而不是依赖内存中的好友列表）
                     conn = None
                     try:
-                        conn = sqlite3.connect("chat.db")
+                        conn = storage.connect("chat.db")
                         cursor = conn.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (inviter, to_user))
+                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (storage.token(inviter), storage.token(to_user)))
                         count = cursor.fetchone()[0]
                     finally:
                         if conn:
@@ -1842,11 +1842,11 @@ def main():
     """
     init_db()
     # 加载所有群组到内存
-    conn = sqlite3.connect("chat.db")
+    conn = storage.connect("chat.db")
     cursor = conn.cursor()
     cursor.execute("SELECT gid, group_name, owner, members FROM groups")
     for row in cursor.fetchall():
-        gid, group_name, owner, members_json = row
+        gid, group_name, owner, members_json = storage.decode_group(row)
         groups_data[gid] = {"group_name": group_name, "owner": owner, "members": json.loads(members_json)}
     conn.close()
     

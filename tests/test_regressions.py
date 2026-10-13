@@ -923,9 +923,9 @@ class ServerTests(unittest.TestCase):
 
     def test_history_pagination_bounded_complete_and_authorized(self):
         s=self.server;s.save_friend_relationship('alice','bob')
-        with closing(s.sqlite3.connect('chat.db')) as db, db:
-            db.executemany("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice',?,'now')",[(str(i),) for i in range(205)])
-            db.execute("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','carol','alice','hidden','now')")
+        for i in range(205):
+            s.save_message('private','bob','alice',None,str(i),'now')
+        s.save_message('private','carol','alice',None,'hidden','now')
         peer,key,_=self.connect('alice');self.read_type(peer,'history_begin')
         seen=[]
         for size in (100,100,5):

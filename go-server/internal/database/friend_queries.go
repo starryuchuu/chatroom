@@ -13,6 +13,14 @@ func SaveFriendRelationship(user1, user2 string) error {
 	}
 	defer tx.Rollback() // 确保在函数退出时回滚，除非明确提交
 
+	user1, err = storage.putName(tx, user1)
+	if err != nil {
+		return err
+	}
+	user2, err = storage.putName(tx, user2)
+	if err != nil {
+		return err
+	}
 	stmt, err := tx.Prepare("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)")
 	if err != nil {
 		log.Printf("准备好友关系语句失败: %v", err)
@@ -40,7 +48,7 @@ func SaveFriendRelationship(user1, user2 string) error {
 
 // LoadFriends 从数据库加载用户的好友列表，并以map形式返回以便快速查找
 func LoadFriends(username string) (map[string]struct{}, error) {
-	rows, err := DB.Query("SELECT friend FROM friends WHERE user = ?", username)
+	rows, err := DB.Query("SELECT friend FROM friends WHERE user = ?", storage.token(username))
 	if err != nil {
 		log.Printf("查询好友列表失败: %v", err)
 		return nil, err
@@ -61,13 +69,22 @@ func LoadFriends(username string) (map[string]struct{}, error) {
 		log.Printf("遍历好友结果集失败: %v", err)
 		return nil, err
 	}
-	return friends, nil
+	rows.Close()
+	decoded := make(map[string]struct{}, len(friends))
+	for token := range friends {
+		name, err := storage.name(token)
+		if err != nil {
+			return nil, err
+		}
+		decoded[name] = struct{}{}
+	}
+	return decoded, nil
 }
 
 // AreFriends 检查两个用户是否是好友关系
 func AreFriends(user1, user2 string) (bool, error) {
 	var count int
-	err := DB.QueryRow("SELECT COUNT(*) FROM friends WHERE user = ? AND friend = ?", user1, user2).Scan(&count)
+	err := DB.QueryRow("SELECT COUNT(*) FROM friends WHERE user = ? AND friend = ?", storage.token(user1), storage.token(user2)).Scan(&count)
 	if err != nil {
 		log.Printf("检查好友关系失败 (%s, %s): %v", user1, user2, err)
 		return false, err
