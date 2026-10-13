@@ -1,7 +1,9 @@
 package database
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,5 +86,37 @@ func TestHistoryPagesAreBoundedCompleteAndFiltered(t *testing.T) {
 	page, _, err := GetHistoryPage("alice", boundary, 0, "private", "stranger")
 	if err != nil || len(page) != 0 {
 		t.Fatal("non-friend history exposed")
+	}
+}
+
+func TestConcurrentLoginReadsAndPendingWritesCommitReliably(t *testing.T) {
+	InitDB(filepath.Join(t.TempDir(), "chat.db"))
+	t.Cleanup(func() { DB.Close() })
+	var workers sync.WaitGroup
+	failures := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			for n := 0; n < 10; n++ {
+				if err := SavePendingFriend(fmt.Sprintf("requester%d", index), "bob", time.Now()); err != nil {
+					failures <- err
+					return
+				}
+				if _, _, err := GetChatHistorySnapshot("bob"); err != nil {
+					failures <- err
+					return
+				}
+			}
+		}(i)
+	}
+	workers.Wait()
+	close(failures)
+	for err := range failures {
+		t.Errorf("concurrent database operation failed: %v", err)
+	}
+	friends, _, err := LoadPendingRequests()
+	if err != nil || len(friends) != 20 {
+		t.Fatalf("durable requests: %d %v", len(friends), err)
 	}
 }

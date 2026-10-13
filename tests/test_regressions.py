@@ -1,4 +1,5 @@
 """Regression tests using real RSA/AES/Argon2 and isolated SQLite state."""
+from contextlib import closing
 import base64
 import importlib.util
 import io
@@ -880,7 +881,7 @@ class ServerTests(unittest.TestCase):
         peer.sendall(struct.pack('!I',len(data))+data)
         self.threads[-1].join(2)
         self.assertFalse(self.threads[-1].is_alive())
-        with s.sqlite3.connect('chat.db') as db:
+        with closing(s.sqlite3.connect('chat.db')) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
 
     def test_plain_control_frame_cannot_disband_group(self):
@@ -922,7 +923,7 @@ class ServerTests(unittest.TestCase):
 
     def test_history_pagination_bounded_complete_and_authorized(self):
         s=self.server;s.save_friend_relationship('alice','bob')
-        with s.sqlite3.connect('chat.db') as db:
+        with closing(s.sqlite3.connect('chat.db')) as db, db:
             db.executemany("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice',?,'now')",[(str(i),) for i in range(205)])
             db.execute("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','carol','alice','hidden','now')")
         peer,key,_=self.connect('alice');self.read_type(peer,'history_begin')

@@ -1,4 +1,5 @@
 """Python wire-protocol interoperability against an isolated Go server binary."""
+from contextlib import closing
 import base64
 import importlib.util
 import json
@@ -52,6 +53,9 @@ class GoInteropTests(unittest.TestCase):
         self.process.terminate()
         self.process.wait(timeout=10)
         self.log.close()
+        result = getattr(self._outcome, 'result', None)
+        if result is not None and any(test is self for test, _ in result.failures + result.errors):
+            print('Go server failure log:\n' + (Path(self.tmp.name) / 'server.log').read_text(encoding='utf-8')[-16000:])
         self.tmp.cleanup()
 
     def connect(self, username, password=' password ', register=False):
@@ -74,6 +78,8 @@ class GoInteropTests(unittest.TestCase):
         for _ in range(100):
             msg = client.recv_msg(peer)
             self.assertIsNotNone(msg)
+            if msg['type'] == 'error':
+                self.fail('Go server error while waiting for '+kind+': '+str(msg))
             if msg['type'] == kind:
                 return msg
         self.fail('missing message: ' + kind)
@@ -140,6 +146,7 @@ class GoInteropTests(unittest.TestCase):
         alice, ak, _ = self.connect('alice')
         bob, bk, _ = self.connect('bob')
         client.send_msg(alice, {'type': 'friend_request', 'to': 'bob'})
+        self.assertTrue(self.read_type(alice, 'friend_request_result')['success'])
         self.read_type(bob, 'friend_request')
         client.send_msg(bob, {'type': 'friend_response', 'to': 'alice', 'accepted': True})
         self.read_type(alice, 'friend_update')
@@ -288,7 +295,7 @@ class GoInteropTests(unittest.TestCase):
         import sqlite3
         for name in ('alice','bob'):
             self.assertTrue(self.connect(name,register=True)[2]['success'])
-        with sqlite3.connect(Path(self.tmp.name)/'chat.db') as db:
+        with closing(sqlite3.connect(Path(self.tmp.name)/'chat.db')) as db, db:
             db.executemany('INSERT INTO friends(user,friend) VALUES(?,?)',[('alice','bob'),('bob','alice')])
             db.executemany("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice',?,'now')",[(str(i),) for i in range(205)])
         alice,key,_=self.connect('alice');self.read_type(alice,'history_begin')

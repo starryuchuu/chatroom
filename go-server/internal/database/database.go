@@ -18,6 +18,13 @@ func InitDB(dataSourceName string) {
 		log.Fatalf("无法打开数据库: %v", err)
 	}
 
+	// SQLite serializes writes. One reusable connection avoids SQLITE_BUSY
+	// between login snapshots and concurrently persisted requests/messages.
+	DB.SetMaxOpenConns(1)
+	DB.SetMaxIdleConns(1)
+	if _, err = DB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		log.Fatalf("无法配置数据库等待时间: %v", err)
+	}
 	if err = DB.Ping(); err != nil {
 		log.Fatalf("无法连接到数据库: %v", err)
 	}
