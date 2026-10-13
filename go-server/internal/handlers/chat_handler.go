@@ -45,6 +45,8 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 		log.Printf("收到来自 %s 的消息类型: %s", username, msgType) // 不记录消息内容，避免日志泄露
 
 		switch msgType {
+		case "history_request":
+			handleHistoryRequest(conn, username, sessionKey, msg)
 		case "private_chat":
 			handlePrivateChat(conn, username, sessionKey, msg, clientManager)
 		case "friend_request":
@@ -162,7 +164,13 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 	if pendingGroupJoins[gid] == nil {
 		pendingGroupJoins[gid] = make(map[string]groupInvitation)
 	}
-	pendingGroupJoins[gid][toUser] = groupInvitation{Inviter: inviter, CreatedAt: time.Now()}
+	created := time.Now()
+	if err := database.SavePendingInvite(gid, toUser, inviter, created); err != nil {
+		pendingGroupJoinsMu.Unlock()
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "邀请保存失败，请重试"})
+		return
+	}
+	pendingGroupJoins[gid][toUser] = groupInvitation{Inviter: inviter, CreatedAt: created}
 	pendingGroupJoinsMu.Unlock()
 
 	// 转发邀请给被邀请用户
@@ -189,7 +197,18 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 
 func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{}, clientManager types.ClientManager) {
 	unlock := lockGroupOperation(msg)
-	defer unlock()
+	joined := false
+	defer func() {
+		unlock()
+		if joined {
+			if client, found := clientManager.GetClient(userToJoin); found && len(client.SessionKey) > 0 {
+				gid, _ := msg["gid"].(string)
+				if err := SendHistory(conn, userToJoin, client.SessionKey, "group", gid, 0); err != nil {
+					protocol.SendMsg(conn, map[string]interface{}{"type": "history_error", "error": "入群历史加载失败，请重试"})
+				}
+			}
+		}
+	}()
 	gid, ok := msg["gid"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "群组ID格式错误"})
@@ -238,7 +257,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 	group.Members = append(group.Members, userToJoin)
 
 	// 更新数据库中的群组成员
-	err = database.UpdateGroupMembers(gid, group.Members)
+	err = database.UpdateGroupMembersAndConsumeInvite(gid, group.Members, userToJoin)
 	if err != nil {
 		log.Printf("更新群组成员失败: %v", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "加入失败"})
@@ -262,6 +281,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 	}
 
 	protocol.SendMsg(conn, payload)
+	joined = true
 	log.Printf("用户 '%s' 成功加入群组 '%s'", userToJoin, gid)
 
 	// 向所有成员广播群组更新信息
@@ -828,7 +848,13 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "已发送过好友申请，请等待对方处理"})
 		return
 	}
-	pendingFriendRequests[fromUser][toUser] = time.Now()
+	created := time.Now()
+	if err := database.SavePendingFriend(fromUser, toUser, created); err != nil {
+		pendingFriendRequestsMu.Unlock()
+		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "好友申请保存失败，请重试"})
+		return
+	}
+	pendingFriendRequests[fromUser][toUser] = created
 	pendingFriendRequestsMu.Unlock()
 
 	// 转发请求给目标用户
@@ -909,6 +935,8 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 }
 
 func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, clientManager types.ClientManager) {
+	groupCatalogMu.RLock()
+	defer groupCatalogMu.RUnlock()
 	groupName, ok := msg["group_name"].(string)
 	if !ok || strings.TrimSpace(groupName) == "" {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "群组名称无效"})
@@ -1016,6 +1044,13 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 		if err := database.SaveFriendRelationship(responder, fromUser); err != nil {
 			pendingFriendRequestsMu.Unlock()
 			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "保存好友关系失败"})
+			return
+		}
+	}
+	if !accepted {
+		if err := database.DeletePendingFriend(fromUser, responder); err != nil {
+			pendingFriendRequestsMu.Unlock()
+			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "申请处理失败，请重试"})
 			return
 		}
 	}

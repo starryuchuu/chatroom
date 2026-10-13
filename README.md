@@ -11,13 +11,13 @@
 
 ## 📖 项目简介
 
-本项目是一个**安全加密的即时通讯聊天室系统**，采用现代密码学技术实现端到端加密通信。系统提供完整的社交功能，包括私聊、群聊、好友管理等，同时确保所有通信内容和用户数据的安全性。
+本项目是一个**安全加密的即时通讯聊天室系统**，使用 RSA 会话密钥交换、AES-GCM 正文加密和 HMAC-SHA256 完整报文认证，提供私聊、群聊、好友及群组管理。服务端会解密并保存聊天正文；数据库中的聊天记录为明文，这属于客户端与服务端之间的加密，不是端到端加密。
 
 ### ✨ 核心优势
 
-- **🔒 端到端加密**：RSA-3072 密钥交换 + AES-GCM 消息加密
+- **🔒 通信保护**：RSA-3072 密钥交换 + AES-GCM 正文加密 + 完整报文认证
 - **🛡️ 密码安全**：Argon2id + 随机盐哈希算法存储用户密码
-- **🔐 防中间人攻击**：服务端公钥指纹（SHA-256）强制校验
+- **🔐 服务器身份校验**：远程连接必须校验服务端公钥指纹（SHA-256）
 - **💬 丰富功能**：支持私聊、群聊、好友管理、群组管理
 - **💾 数据持久化**：SQLite 数据库存储聊天记录和用户信息
 - **🚀 双服务端**：Python 和 Go 两种实现，满足不同需求
@@ -65,7 +65,7 @@ cd go-server
 start.bat
 ```
 
-> 也可直接运行预编译的可执行文件 `go-server/chatroom-server.exe`。
+> 也可从 Releases 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译二进制。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -104,7 +104,8 @@ python client.py
 | 功能 | 说明 |
 |------|------|
 | RSA-3072 密钥交换 | 安全的会话密钥协商机制 |
-| AES-GCM 加密 | 所有消息内容加密传输 |
+| AES-GCM 加密 | 聊天正文及登录凭据加密传输 |
+| 完整报文认证 | HMAC-SHA256 校验正文、收件人、群 ID 和管理命令；独立方向密钥和序号拒绝重放 |
 | Argon2id 哈希 | 密码哈希 + 随机盐安全存储 |
 | 会话密钥管理 | 动态密钥更新机制 |
 | 公钥指纹校验 | 防止中间人攻击（MITM） |
@@ -138,7 +139,6 @@ chatroom/
 ├── go-server/                         # Go 服务端实现
 │   ├── README.md                      # Go 服务端文档
 │   ├── go.mod / go.sum                # Go 模块定义与校验和
-│   ├── chatroom-server.exe            # 预编译 Windows 可执行文件
 │   ├── start.bat                      # Windows 启动脚本
 │   ├── cmd/server/main.go             # 服务端入口
 │   └── internal/
@@ -150,12 +150,13 @@ chatroom/
 │       ├── server/                    # 服务端核心
 │       └── types/                     # 类型定义
 ├── images/                            # 界面截图
-├── tests/                             # 测试与漏洞验证脚本
-│   ├── test_python_fixes.py           # Python 安全修复单元测试
-│   ├── verify_recv_msg_len.py         # 消息长度限制漏洞验证脚本
-│   ├── e2e_verify.py                  # 端到端漏洞验证脚本（mock 加密依赖）
-│   ├── protocol_test.go               # Go 协议消息长度限制测试
-│   └── mocks/                         # 测试用 mock（Crypto / argon2）
+├── transport.py                       # 协议 v2 完整报文认证
+├── history_store.py                   # Python 历史分页查询
+├── pending_store.py                   # Python 申请与邀请持久化
+├── tests/
+│   ├── test_regressions.py            # Python 服务端、客户端和 Tk 回归测试
+│   ├── test_transport.py              # 报文篡改、重放、并发及跨语言向量
+│   └── test_go_interop.py             # 与真实 Go 服务端的网络互操作测试
 ├── .github/workflows/                 # GitHub Actions 构建工作流
 │   └── build-executables.yml          # 跨平台自动构建
 ├── README.md                          # 中文文档
@@ -167,31 +168,28 @@ chatroom/
 
 ## 🧪 测试
 
-### Python 测试
+### Python 与互操作测试
+
+先安装 `requirements.txt`。Linux 的 Tk 测试需要 `python3-tk`、`xvfb` 和 `xauth`。
 
 ```bash
-# 安全修复单元测试（客户端指纹 / 好友请求锁）
-python tests/test_python_fixes.py
+# Windows：包含真实 Tk 窗口测试
+python -m unittest discover -s tests -v
 
-# 消息长度限制漏洞验证脚本（无需外部依赖）
-python tests/verify_recv_msg_len.py
-
-# 端到端漏洞验证（使用 tests/mocks 中的 mock 加密依赖，自动启动真实 server.py）
-python tests/e2e_verify.py
+# Linux 无显示环境
+xvfb-run -a python -m unittest discover -s tests -v
 ```
 
-> `tests/mocks/` 提供了 `Crypto` 与 `argon2` 的轻量 mock，使安全验证脚本在未安装
-> 加密依赖的环境中也能运行。功能测试请先执行 `pip install -r requirements.txt`。
+未设置 `CHATROOM_GO_SERVER_EXE` 时，Go 互操作测试会明确跳过。要运行全部测试，先在 `go-server` 中编译 `go build -o ../go-interop-server ./cmd/server`，然后将该环境变量设为二进制的绝对路径（Windows 使用 `.exe`）。
 
 ### Go 测试
 
 ```bash
 cd go-server
-go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈希测试）
+go vet ./...
+go test ./...
+go test -race ./...  # 需要支持 CGO 的 C 编译器
 ```
-
-> `tests/protocol_test.go` 为独立包测试（消息长度限制 / 头部解析 / 并发处理），
-> 在 `tests/` 目录下初始化临时 Go module 后即可运行。
 
 ---
 
@@ -217,8 +215,8 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 | chat_type | TEXT | 聊天类型（private/group） |
 | from_user | TEXT | 发送者 |
 | to_user | TEXT | 接收者（私聊） |
-| gid | INTEGER | 群组 ID（群聊） |
-| message | TEXT | 加密消息内容 |
+| gid | TEXT | UUID 群组 ID（群聊） |
+| message | TEXT | 服务端解密后的明文正文 |
 | timestamp | DATETIME | 时间戳 |
 
 #### 3. friends（好友表）
@@ -232,7 +230,7 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| gid | INTEGER | 群组 ID（主键） |
+| gid | TEXT | UUID 群组 ID（主键） |
 | group_name | TEXT | 群组名称 |
 | owner | TEXT | 群主 |
 | members | TEXT | 成员列表（JSON） |
@@ -241,6 +239,12 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 ---
 
 ## ⚙️ 配置说明
+
+### 持久化申请与分页
+
+`pending_friend_requests` 和 `pending_group_invites` 保存待处理申请与邀请，服务器启动时恢复，24 小时后过期。接受或拒绝后删除记录；好友接受和入群会在同一数据库事务中消费申请。旧数据库在启动时自动增加这两张表及消息查询索引。
+
+登录时加载最近 100 条有权访问的消息。选中会话后点击“加载更早的消息”，按消息 ID 向前读取最多 100 条；每页再次校验访问权限。
 
 ### 默认端口
 
@@ -256,7 +260,9 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | RSA 密钥长度 | 3072 位 | 服务端密钥对 |
-| 单条消息上限 | 1 MB | 超过上限直接断开连接 |
+| 单条消息上限 | 1 MiB | 包含 40 字节序号和认证标签，超限断开 |
+| 同时连接上限 | 128 | Python / Go 均限制连接数 |
+| 同时认证上限 | 4 | 限制昂贵的密码哈希并发 |
 | 认证阶段超时 | 30 秒 | 未完成认证的连接将被关闭 |
 | 会话空闲超时 | 30 分钟 | 登录后空闲连接自动断开 |
 | 登录速率限制 | 5 次 / 60 秒 | 防止暴力破解 |
@@ -266,7 +272,7 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 
 ### 重要规则
 
-- 🔐 所有消息均经过 AES-GCM 加密
+- 🔐 聊天正文和凭据经 AES-GCM 加密；建立会话密钥后的所有报文均认证，元数据可见但不可被未持有密钥者篡改
 - 🔑 用户密码使用 Argon2id + 随机盐哈希存储
 - 👥 好友关系为双向绑定
 - 👑 群主不能直接退出群聊，需先解散或转让
@@ -277,7 +283,7 @@ go test ./...          # 运行 Go 服务端全部测试（含 Argon2 密码哈�
 
 ## 🚀 CI / CD
 
-项目通过 GitHub Actions（`.github/workflows/build-executables.yml`）自动构建跨平台可执行文件：
+日常提交、Pull Request 和 Release 共用 `.github/workflows/tests.yml`：Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。测试通过后，`.github/workflows/build-executables.yml` 构建跨平台可执行文件：
 
 - **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
 - **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
@@ -359,9 +365,13 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ## 🆕 版本特性
 
+### 当前开发版本兼容性
+
+本分支采用协议 v2，必须同时升级客户端和 Python / Go 服务端；不接受旧版未认证报文或明文登录。数据库自动增加表和索引，已有消息与账号保留。请完整下载源码压缩包，Python 运行需要 `transport.py`、`history_store.py`、`pending_store.py` 与入口脚本同目录。
+
 ### 最新功能
 
-- ✅ 端到端加密通信（AES-GCM + RSA-3072）
+- ✅ 客户端/服务端通信保护（AES-GCM + RSA-3072 + 完整报文认证）
 - ✅ 服务端公钥指纹校验（防中间人攻击）
 - ✅ Argon2id 密码哈希存储（随机盐）
 - ✅ 完整群组功能（创建/邀请/踢人/解散/转让/重命名）
@@ -389,3 +399,4 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 ## 📧 联系方式
 
 如有问题或建议，请通过 Issue 反馈。
+

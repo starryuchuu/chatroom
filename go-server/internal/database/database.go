@@ -28,6 +28,10 @@ func InitDB(dataSourceName string) {
 // createTables 创建所有需要的表
 func createTables() {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS pending_friend_requests (requester TEXT NOT NULL,target TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(requester,target))`,
+		`CREATE TABLE IF NOT EXISTS pending_group_invites (gid TEXT NOT NULL,target TEXT NOT NULL,inviter TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(gid,target))`,
+		`CREATE INDEX IF NOT EXISTS pending_friends_target ON pending_friend_requests(target)`,
+		`CREATE INDEX IF NOT EXISTS pending_invites_target ON pending_group_invites(target)`,
 		`CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -60,6 +64,15 @@ func createTables() {
 		_, err := DB.Exec(stmt)
 		if err != nil {
 			log.Fatalf("无法创建表: %v", err)
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS messages_private_from ON messages(chat_type,from_user,id)",
+		"CREATE INDEX IF NOT EXISTS messages_private_to ON messages(chat_type,to_user,id)",
+		"CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)",
+	} {
+		if _, err := DB.Exec(stmt); err != nil {
+			log.Fatalf("创建消息索引失败: %v", err)
 		}
 	}
 	log.Println("数据库表已成功初始化。")

@@ -21,6 +21,9 @@ var clientManager types.ClientManager // 全局客户端管理器 (现在是接�
 
 // Start 启动TCP服务器并开始接受客户端连接
 func Start(address string) {
+	if err := handlers.RestorePendingRequests(); err != nil {
+		log.Fatalf("无法恢复待处理申请: %v", err)
+	}
 	privateKey, publicKeyPEM = crypto.EnsureRSAKeys()
 	clientManager = NewClientManager() // 初始化客户端管理器
 
@@ -31,6 +34,7 @@ func Start(address string) {
 	defer listener.Close()
 	log.Printf("服务器正在监听 %s", address)
 
+	connections := make(chan struct{}, 128)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -38,7 +42,12 @@ func Start(address string) {
 			continue
 		}
 		log.Printf("接受来自 %s 的新连接", conn.RemoteAddr().String())
-		go handleConnection(conn)
+		select {
+		case connections <- struct{}{}:
+			go func() { defer func() { <-connections }(); handleConnection(conn) }()
+		default:
+			conn.Close()
+		}
 	}
 }
 
@@ -74,9 +83,10 @@ func handleConnection(conn net.Conn) {
 	}()
 
 	// 1. 发送公钥
-	pubKeyMsg := map[string]string{
-		"type": "public_key",
-		"key":  string(publicKeyPEM),
+	pubKeyMsg := map[string]interface{}{
+		"type":     "public_key",
+		"key":      string(publicKeyPEM),
+		"protocol": protocol.Version,
 	}
 	if err := protocol.SendMsg(conn, pubKeyMsg); err != nil {
 		log.Printf("发送公钥失败: %v", err)
@@ -96,6 +106,10 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
+	if version, ok := sessionKeyMsg["protocol"].(float64); !ok || version != protocol.Version {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "error", "message": "请升级客户端以使用受保护的协议"})
+		return
+	}
 	keyStr, ok := sessionKeyMsg["key"].(string)
 	if !ok {
 		log.Printf("会话密钥字段格式错误")
@@ -117,6 +131,7 @@ func handleConnection(conn net.Conn) {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "error", "message": "无效的会话密钥"})
 		return
 	}
+	protocol.EnableAuthentication(conn, sessionKey, true)
 	log.Printf("与 %s 的会话密钥已成功建立", conn.RemoteAddr().String())
 
 	// 3. 处理认证
@@ -175,21 +190,9 @@ func handleConnection(conn net.Conn) {
 	})
 
 	// 发送用户所属的群组列表
-	userGroups, err := database.GetUserGroups(username)
-	if err != nil {
-		log.Printf("无法为用户 %s 获取群组列表: %v", username, err)
+	if err := handlers.SendUserGroups(conn, username); err != nil {
 		protocol.SendMsgWait(conn, map[string]interface{}{"type": "error", "message": "群组列表加载失败，请重新登录"})
 		return
-	} else if len(userGroups) > 0 {
-		groupsMsg := map[string]interface{}{
-			"type":   "user_groups_list",
-			"groups": userGroups,
-		}
-		if err := protocol.SendMsg(conn, groupsMsg); err != nil {
-			log.Printf("发送群组列表给 %s 失败: %v", username, err)
-		} else {
-			log.Printf("已成功发送 %d 个群组给用户 %s", len(userGroups), username)
-		}
 	}
 
 	if err := sendHistory(conn, username, sessionKey); err != nil {

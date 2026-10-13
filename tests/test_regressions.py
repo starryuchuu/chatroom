@@ -37,6 +37,8 @@ class ClientTests(unittest.TestCase):
         app.group_info_requests = set()
         app.request_windows = {}
         app.history_syncing = False
+        app.history_exhausted = set()
+        app.history_page_pending = False
         return app
 
     def test_server_error_survives_disconnect(self):
@@ -198,6 +200,32 @@ class ClientTests(unittest.TestCase):
         app.handle_group_invite('bob', 'gid')
         app.queue_send.assert_called_once_with({'type': 'group_invite_response', 'gid': 'gid', 'accepted': False})
 
+    def test_failed_history_page_resumes_live_message_display(self):
+        app=self.app()
+        app.history_syncing=True;app.history_page_pending=True
+        app.current_group=None;app.current_friend='bob'
+        app.switch_chat_frame=Mock();app.update_chat_target=Mock();app.notify=Mock()
+        app.handle_server_message({'type':'history_error','error':'retry'})
+        self.assertFalse(app.history_syncing)
+        self.assertFalse(app.history_page_pending)
+        app.switch_chat_frame.assert_called_once_with('bob')
+
+    def test_rejoin_restores_history_after_group_cache_removal(self):
+        app=self.app()
+        app.username='alice';app.session_key=os.urandom(16)
+        app.current_group=app.current_friend=None
+        app.groups={'g':{'owner':'bob','group_name':'Team','members':['alice','bob']}}
+        app.refresh_group_listbox=Mock();app.notify=Mock()
+        msg={'type':'group_chat','gid':'g','from':'bob','message_id':101,
+             'content':client.encrypt_message('old message',app.session_key)}
+        app.handle_server_message(msg)
+        app.handle_server_message({'type':'group_leave_result','gid':'g','success':True})
+        app.handle_server_message({'type':'group_join_result','gid':'g','success':True,'group_name':'Team','owner':'bob','members':['alice','bob']})
+        app.handle_server_message(msg)
+        self.assertEqual(len(app.group_messages_g),1)
+        self.assertIn('old message',app.group_messages_g[0][0][0])
+        self.assertEqual(app.message_order['g'],[101])
+
 class TkClientTests(unittest.TestCase):
     """Exercise real Tk widgets without showing windows or contacting a server."""
     def setUp(self):
@@ -306,6 +334,25 @@ class TkClientTests(unittest.TestCase):
             sock.shutdown.assert_called_once()
             release.set()
 
+    def test_history_button_requests_earlier_page_and_disables_at_end(self):
+        self.chat()
+        app=self.app
+        app.message_order['g']=[101]
+        app.seen_message_ids={101}
+        app.group_messages_g=[(('alice(群聊): newest','now'),True)]
+        app.load_history_button.invoke()
+        app.queue_send.assert_called_once_with({'type':'history_request','chat_type':'group','target':'g','before_id':101})
+        self.assertEqual(app.load_history_button.cget('state'),'disabled')
+        app.handle_server_message({'type':'history_begin'})
+        for message_id in (99,100):
+            app.handle_server_message({'type':'group_chat','gid':'g','from':'bob','message_id':message_id,
+                                       'content':client.encrypt_message(str(message_id),app.session_key)})
+        app.handle_server_message({'type':'history_end','history_kind':'group','history_target':'g','has_more':False})
+        self.assertEqual(app.message_order['g'],[99,100,101])
+        self.assertEqual(len(app.group_messages_g),3)
+        self.assertFalse(app.history_page_pending)
+        self.assertEqual(app.load_history_button.cget('state'),'disabled')
+
 class ServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -352,7 +399,8 @@ class ServerTests(unittest.TestCase):
         key = os.urandom(16)
         rsa = client.RSA.import_key(public['key'])
         encrypted = client.PKCS1_OAEP.new(rsa).encrypt(key)
-        client.send_msg(peer, {'type': 'session_key', 'key': base64.b64encode(encrypted).decode()})
+        client.send_msg(peer, {'type': 'session_key', 'protocol': client.transport.VERSION, 'key': base64.b64encode(encrypted).decode()})
+        client.transport.configure(peer, key)
         import json
         client.send_msg(peer, {'type': 'encrypted_register' if register else 'encrypted_login',
                                'data': client.encrypt_message(json.dumps({'from': user, 'password': password}), key)})
@@ -608,8 +656,10 @@ class ServerTests(unittest.TestCase):
             time.sleep(.01)
         bob, bk, result = self.connect('bob')
         self.assertTrue(result['success'])
-        self.assertEqual(client.decrypt_message(self.read_type(bob, 'group_chat')['content'], bk), '群消息')
-        self.assertEqual(client.decrypt_message(self.read_type(bob, 'private_chat')['content'], bk), '你好 Bob')
+        self.read_type(bob, 'history_begin')
+        history = [client.recv_msg(bob), client.recv_msg(bob)]
+        self.assertEqual([msg['message_id'] for msg in history], sorted(msg['message_id'] for msg in history))
+        self.assertEqual({msg['type']:client.decrypt_message(msg['content'],bk) for msg in history}, {'private_chat':'你好 Bob','group_chat':'群消息'})
         client.send_msg(alice, {'type': 'group_rename', 'gid': gid, 'new_name': 'Renamed'})
         self.assertTrue(self.read_type(alice, 'group_rename_result')['success'])
         client.send_msg(alice, {'type': 'group_transfer', 'gid': gid, 'new_owner': 'bob'})
@@ -729,7 +779,7 @@ class ServerTests(unittest.TestCase):
         remote.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
         bob.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
         # Raw transport stress: exceed OS buffering while this peer stops reading.
-        packet = b'x' * (1024 * 1024)
+        packet = b'\x00' * 4 + b'x' * s.MAX_MESSAGE_LEN
         for _ in range(128):
             s.enqueue_packet(remote, packet)
         time.sleep(.2)
@@ -813,6 +863,86 @@ class ServerTests(unittest.TestCase):
         group = s.get_group_db(gid)
         self.assertEqual(group['owner'], 'bob')
         self.assertIn('bob', group['members'])
+
+    def test_tampered_recipient_is_rejected_before_persistence(self):
+        import json,struct
+        s=self.server
+        s.save_friend_relationship('alice','bob');s.save_friend_relationship('alice','carol')
+        peer,key,result=self.connect('alice');self.assertTrue(result['success'])
+        self.read_type(peer,'online_users')
+        class Capture:
+            def sendall(self,data):self.packet=data
+        capture=Capture();client.transport.configure(capture,key)
+        client.transport.state_for(capture).send_seq=client.transport.state_for(peer).send_seq
+        client.send_msg(capture,{'type':'private_chat','to':'bob','content':client.encrypt_message('secret',key)})
+        packet=capture.packet
+        data=packet[4:].replace(b'"to": "bob"',b'"to": "carol"')
+        peer.sendall(struct.pack('!I',len(data))+data)
+        self.threads[-1].join(2)
+        self.assertFalse(self.threads[-1].is_alive())
+        with s.sqlite3.connect('chat.db') as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM messages').fetchone()[0],0)
+
+    def test_plain_control_frame_cannot_disband_group(self):
+        import json,struct
+        s=self.server;gid=s.create_group_db('alice','Team',['alice'])
+        peer,key,_=self.connect('alice');self.read_type(peer,'online_users')
+        data=json.dumps({'type':'group_disband','gid':gid}).encode()
+        peer.sendall(struct.pack('!I',len(data))+data)
+        self.threads[-1].join(2)
+        self.assertFalse(self.threads[-1].is_alive())
+        self.assertIsNotNone(s.get_group_db(gid))
+
+    def test_pending_requests_restore_and_decline_durably(self):
+        s=self.server;peer,key,_=self.connect('alice');self.read_type(peer,'online_users')
+        client.send_msg(peer,{'type':'friend_request','to':'bob'})
+        self.assertTrue(self.read_type(peer,'friend_request_result')['success'])
+        s.pending_friend_requests.clear();s.restore_pending_requests()
+        self.assertIn(('alice','bob'),s.pending_friend_requests)
+        bob,bk,_=self.connect('bob');self.assertEqual(self.read_type(bob,'friend_request')['from'],'alice')
+        client.send_msg(bob,{'type':'friend_response','to':'alice','accepted':False})
+        self.read_type(peer,'friend_response')
+        s.restore_pending_requests()
+        self.assertNotIn(('alice','bob'),s.pending_friend_requests)
+
+    def test_pending_invite_restore_and_consumption(self):
+        s=self.server;gid=s.create_group_db('alice','Team',['alice'])
+        s.save_friend_relationship('alice','bob')
+        peer,key,_=self.connect('alice');self.read_type(peer,'online_users')
+        client.send_msg(peer,{'type':'group_invite','to':'bob','gid':gid})
+        self.assertTrue(self.read_type(peer,'group_invite_result')['success'])
+        s.group_pending_joins.clear();s.restore_pending_requests()
+        self.assertEqual(s.group_pending_joins[gid]['bob'][0],'alice')
+        bob,bk,_=self.connect('bob');self.read_type(bob,'group_invite')
+        client.send_msg(bob,{'type':'group_join','gid':gid})
+        self.assertTrue(self.read_type(bob,'group_join_result')['success'])
+        self.read_type(bob,'history_end')
+        s.restore_pending_requests()
+        self.assertNotIn('bob',s.group_pending_joins.get(gid,{}))
+
+    def test_history_pagination_bounded_complete_and_authorized(self):
+        s=self.server;s.save_friend_relationship('alice','bob')
+        with s.sqlite3.connect('chat.db') as db:
+            db.executemany("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice',?,'now')",[(str(i),) for i in range(205)])
+            db.execute("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','carol','alice','hidden','now')")
+        peer,key,_=self.connect('alice');self.read_type(peer,'history_begin')
+        seen=[]
+        for size in (100,100,5):
+            page=[]
+            while True:
+                msg=client.recv_msg(peer)
+                if msg['type']=='history_end':end=msg;break
+                if msg['type']=='private_chat':page.append(msg['message_id']);seen.append(msg['message_id'])
+            self.assertEqual(len(page),size)
+            self.assertEqual(page,sorted(page))
+            self.assertEqual(end.get('has_more',False),size==100)
+            if size!=5:
+                client.send_msg(peer,{'type':'history_request','chat_type':'private','target':'bob','before_id':min(page)})
+                self.read_type(peer,'history_begin')
+        self.assertEqual(sorted(seen),list(range(1,206)))
+        client.send_msg(peer,{'type':'history_request','chat_type':'private','target':'carol','before_id':206})
+        self.assertIn('无权',self.read_type(peer,'history_error')['error'])
+
 
 if __name__ == '__main__':
     unittest.main()

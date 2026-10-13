@@ -1,0 +1,64 @@
+name: Regression tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: .exe
+          - os: ubuntu-latest
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5'
+          cache-dependency-path: go-server/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Go static checks
+        working-directory: go-server
+        run: go vet ./...
+      - name: Go regression tests on Windows
+        if: runner.os == 'Windows'
+        working-directory: go-server
+        run: go test -count=1 ./...
+      - name: Go regression and race tests on Linux
+        if: runner.os == 'Linux'
+        working-directory: go-server
+        run: go test -race -count=1 ./...
+      - name: Build interoperability test server
+        working-directory: go-server
+        shell: bash
+        run: go build -o "${{ github.workspace }}/go-interop-server${{ matrix.suffix }}" ./cmd/server
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth python3-tk
+      - name: Python and Go interoperability tests on Windows
+        if: runner.os == 'Windows'
+        env:
+          CHATROOM_GO_SERVER_EXE: ${{ github.workspace }}/go-interop-server${{ matrix.suffix }}
+          PYTHONIOENCODING: utf-8
+        run: python -m unittest discover -s tests -v
+      - name: Python and Go interoperability tests on Linux
+        if: runner.os == 'Linux'
+        env:
+          CHATROOM_GO_SERVER_EXE: ${{ github.workspace }}/go-interop-server${{ matrix.suffix }}
+          PYTHONIOENCODING: utf-8
+        run: xvfb-run -a python -m unittest discover -s tests -v

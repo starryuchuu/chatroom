@@ -4,13 +4,13 @@
 
 ## Project Overview
 
-This project is a secure encrypted chat room system implemented in both Python and Go, featuring end-to-end encryption using modern cryptographic techniques (RSA+AES-GCM). The system supports multiple features including user registration, login, group chat, private chat, friend management, and group management. All messages are persisted in SQLite database, and sensitive information (such as passwords) is securely stored using the Argon2 hashing algorithm.
+This project is a secure encrypted chat room system implemented in both Python and Go, using RSA session-key exchange, AES-GCM content encryption and HMAC-SHA256 authentication of complete frames. The system supports multiple features including user registration, login, group chat, private chat, friend management, and group management. All messages are persisted in SQLite database, and sensitive information (such as passwords) is securely stored using the Argon2 hashing algorithm.
 
 ## Key Features
 
 - 🔒 **Security**
-  - End-to-end encrypted communication using RSA-3072 for key exchange
-  - AES-GCM mode encryption for all messages
+  - Client/server communication using RSA-3072 for key exchange
+  - AES-GCM encryption for message bodies and credentials; HMAC-SHA256 authenticates routing and control fields
   - Argon2id password hashing with random salt
   - Secure session key management
   - Server public key fingerprint verification (anti-MITM)
@@ -51,9 +51,17 @@ This project is a secure encrypted chat room system implemented in both Python a
   - SQLite3 (Data storage)
   - Built-in modules (socket, threading, datetime, logging, etc.)
 
+## Current development protocol
+
+Upgrade the Python client and either server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies and stores plaintext in SQLite.
+
+Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
+
+Run Python scripts with `transport.py`, `history_store.py`, and `pending_store.py` available in the same directory. Download the complete source archive rather than an isolated entry script.
+
 ## Security Design
 
-- All messages are encrypted with AES-GCM, session key is dynamically generated per login
+- Message bodies and credentials are encrypted with AES-GCM; all post-key-exchange frames are authenticated, with independent keys and counters per direction
 - Session key is securely exchanged using RSA public key encryption between client and server
 - User passwords are stored using Argon2 hash algorithm
 - All user, message, friend, and group info are persisted in SQLite database
@@ -86,7 +94,6 @@ chatroom/
 ├── go-server/                         # Go language implementation of the server
 │   ├── README.md                      # Go server documentation
 │   ├── go.mod / go.sum                # Go module definition and checksums
-│   ├── chatroom-server.exe            # Precompiled Windows executable
 │   ├── start.bat                      # Windows startup script
 │   ├── cmd/server/main.go             # Server main program entry point
 │   └── internal/
@@ -98,12 +105,13 @@ chatroom/
 │       ├── server/                    # Server core logic
 │       └── types/                     # Type definitions
 ├── images/                            # Interface screenshots
-├── tests/                             # Tests and vulnerability verification scripts
-│   ├── test_python_fixes.py           # Python security fix unit tests
-│   ├── verify_recv_msg_len.py         # Message length limit verification script
-│   ├── e2e_verify.py                  # End-to-end verification (mocked crypto deps)
-│   ├── protocol_test.go               # Go protocol message length limit tests
-│   └── mocks/                         # Test mocks (Crypto / argon2)
+├── transport.py                       # Protocol v2 frame authentication
+├── history_store.py                   # Bounded history pagination
+├── pending_store.py                   # Durable requests and invitations
+├── tests/
+│   ├── test_regressions.py            # Python and Tk regression tests
+│   ├── test_transport.py              # Frame authentication and replay tests
+│   └── test_go_interop.py             # Real Go server interoperability
 ├── .github/workflows/                 # GitHub Actions workflows
 │   └── build-executables.yml          # Cross-platform auto build
 ├── README.md                          # Chinese documentation
@@ -114,28 +122,14 @@ chatroom/
 
 ## Testing
 
-### Python Tests
+Install `requirements.txt` first. Windows: `python -m unittest discover -s tests -v`.
+On headless Linux, install `python3-tk`, `xvfb`, and `xauth`, then run `xvfb-run -a python -m unittest discover -s tests -v`.
 
-```bash
-# Security fix unit tests (client fingerprint / friend request lock)
-python tests/test_python_fixes.py
+Go interoperability tests are skipped unless `CHATROOM_GO_SERVER_EXE` points to a built server binary. Build it from `go-server` with `go build -o ../go-interop-server ./cmd/server` and set the variable to its absolute path (`.exe` on Windows).
 
-# Message length limit vulnerability verification (no external deps required)
-python tests/verify_recv_msg_len.py
+From `go-server`, run `go vet ./...`, `go test ./...`, and `go test -race ./...` (the race detector needs a C compiler).
 
-# End-to-end verification (uses mock crypto deps in tests/mocks, starts real server.py)
-python tests/e2e_verify.py
-```
-
-> `tests/mocks/` provides lightweight mocks for `Crypto` and `argon2`, allowing the
-> security verification scripts to run without installing the crypto dependencies.
-
-### Go Tests
-
-```bash
-cd go-server
-go test ./...          # Run all Go server tests (incl. Argon2 password hashing)
-```
+Pull requests, ordinary commits and releases share the Windows/Linux regression workflow before binaries are built.
 
 ## Database Information
 
@@ -247,7 +241,7 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 - Group chat issues: Ensure group members are correct, owner cannot leave group directly
 
 ## Highlights
-- End-to-end encryption: AES-GCM for messages, session key exchanged via RSA-3072 public key
+- Client/server protection: AES-GCM message bodies, RSA-3072 session keys, HMAC-SHA256 authenticated frames
 - Password security: Argon2id + random salt hash for user passwords
 - Anti-MITM: server public key fingerprint verification
 - Encrypted login: credentials transmitted via AES-GCM
@@ -259,3 +253,4 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 - Bilingual support (Chinese/English)
 - Dual server implementation (Python/Go)
 - GitHub Actions cross-platform automated builds
+

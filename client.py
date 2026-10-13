@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import simpledialog, messagebox, scrolledtext
 import socket
+import transport
 import threading
 import queue
 from Crypto.Cipher import AES, PKCS1_OAEP
@@ -33,7 +34,7 @@ EXPECTED_SERVER_KEY_FINGERPRINT = None  # 示例：'a1b2c3d4...' 填入实际的
 # EXPECTED_SERVER_KEY_FINGERPRINT = '<从日志中获取的实际指纹>'
 
 # 单条消息最大长度（字节），防止恶意服务器声明超大长度导致客户端阻塞/内存耗尽
-MAX_RECV_MSG_LEN = 1 * 1024 * 1024
+MAX_RECV_MSG_LEN = transport.MAX_PAYLOAD_LEN
 authenticated_sockets = set()
 
 # 接收指定字节数的数据
@@ -74,7 +75,7 @@ def send_msg(sock, msg):
     if len(data) > MAX_RECV_MSG_LEN:
         raise ValueError('消息包超过 1 MiB，请缩短内容')
     header = struct.pack('!I', len(data))
-    sock.sendall(header + data)
+    transport.send_packet(sock, header + data)
 
 # 接收消息，读取消息长度头部并接收完整消息
 def recv_msg(sock):
@@ -89,12 +90,13 @@ def recv_msg(sock):
     if not header:
         return None
     msg_len = struct.unpack('!I', header)[0]
-    if msg_len > MAX_RECV_MSG_LEN:
+    if msg_len > transport.MAX_WIRE_LEN:
         logging.warning(f"收到超大消息长度 {msg_len} 字节（上限 {MAX_RECV_MSG_LEN}），视为异常连接")
         return None
     data = recvall(sock, msg_len)
     if not data:
         return None
+    data = transport.decode(sock, data)
     try:
         return json.loads(data.decode('utf-8'))
     except Exception:
@@ -143,6 +145,8 @@ def check_server_public_key(public_key_data):
     if not isinstance(public_key_data, dict) or public_key_data.get("type") != "public_key":
         return None, "未能从服务器获取公钥"
 
+    if public_key_data.get("protocol") != transport.VERSION:
+        return None, "服务器协议版本不兼容，请同时升级客户端和服务端"
     public_key = RSA.import_key(public_key_data["key"])
 
     # 验证服务器公钥指纹（防止中间人攻击）
@@ -197,6 +201,8 @@ class ChatClient:
         self.request_windows = {}
         self.group_info_requests = set()
         self.history_syncing = False
+        self.history_exhausted = set()
+        self.history_page_pending = False
         threading.Thread(target=self.send_worker, daemon=True).start()
         self.server_port = int(SERVER_PORT)  # 连接端口（可在登录界面修改）
         self.build_login()
@@ -277,6 +283,8 @@ class ChatClient:
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.chat_title = tk.Label(right_frame, text="请选择好友或群组")
         self.chat_title.pack(fill=tk.X)
+        self.load_history_button = tk.Button(right_frame, text="加载更早的消息", command=self.load_older_history, state=tk.DISABLED)
+        self.load_history_button.pack(fill=tk.X)
         self.status_label = tk.Label(right_frame, text="", anchor="w", wraplength=450)
         self.status_label.pack(fill=tk.X)
         chat_display_frame = tk.Frame(right_frame)
@@ -322,6 +330,8 @@ class ChatClient:
         self.pending_messages = {}
         self.seen_message_ids = set()
         self.message_order = {}
+        self.history_exhausted = set()
+        self.history_page_pending = False
         if self.sock:
             authenticated_sockets.discard(self.sock)
             try:
@@ -332,6 +342,7 @@ class ChatClient:
                 self.sock.close()
             except OSError:
                 pass
+            transport.forget(self.sock)
             self.sock = None
             
         self.session_key = None
@@ -685,7 +696,8 @@ class ChatClient:
                     raise ValueError(key_error)
                 key = get_random_bytes(16)
                 encrypted_key = PKCS1_OAEP.new(public_key).encrypt(key)
-                send_msg(sock, {"type": "session_key", "key": base64.b64encode(encrypted_key).decode('utf-8')})
+                send_msg(sock, {"type": "session_key", "protocol": transport.VERSION, "key": base64.b64encode(encrypted_key).decode('utf-8')})
+                transport.configure(sock, key)
                 send_msg(sock, {"type": "encrypted_register" if register else "encrypted_login",
                                 "data": encrypt_message(json.dumps({"from": username, "password": password}), key)})
                 response = recv_msg(sock)
@@ -697,6 +709,7 @@ class ChatClient:
                 error = str(exc)
             finally:
                 if not keep:
+                    transport.forget(sock)
                     sock.close()
                 def finish():
                     if generation != self.auth_generation:
@@ -1055,8 +1068,7 @@ class ChatClient:
                     gid = msg.get("gid")
                     if gid in self.groups:
                         del self.groups[gid]
-                    if hasattr(self, f'group_messages_{gid}'):
-                        delattr(self, f'group_messages_{gid}')
+                    self.clear_group_history(gid)
                     self.run_ui(lambda: self.refresh_group_listbox())
                     self.run_ui(lambda g=gid: self.notify("退出群聊", f"成功退出群聊: {g}"))
                     if self.current_group == gid and not self.history_syncing:
@@ -1076,8 +1088,7 @@ class ChatClient:
                     if kicked_user == self.username: # 自己被踢出：移除群组并清空选中聊天
                         if gid in self.groups:
                             del self.groups[gid]
-                        if hasattr(self, f'group_messages_{gid}'):
-                            delattr(self, f'group_messages_{gid}')
+                        self.clear_group_history(gid)
                         if self.current_group == gid and not self.history_syncing:
                             self.run_ui(self.clear_chat_selection)
                     self.run_ui(lambda: self.refresh_group_listbox())
@@ -1092,8 +1103,7 @@ class ChatClient:
                 self.run_ui(lambda gn=group_name: self.notify("群聊通知", f"您已被从群聊 {gn} 移除"))
                 if gid in self.groups:
                     del self.groups[gid]
-                if hasattr(self, f'group_messages_{gid}'):
-                    delattr(self, f'group_messages_{gid}')
+                self.clear_group_history(gid)
                 self.run_ui(lambda: self.refresh_group_listbox())
                 if self.current_group == gid and not self.history_syncing:
                     self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
@@ -1139,8 +1149,7 @@ class ChatClient:
                     gid = msg.get("gid")
                     if gid in self.groups:
                         del self.groups[gid]
-                    if hasattr(self, f'group_messages_{gid}'):
-                        delattr(self, f'group_messages_{gid}')
+                    self.clear_group_history(gid)
                     self.run_ui(lambda: self.refresh_group_listbox())
                     self.run_ui(lambda: self.notify("解散群聊", "群聊已成功解散"))
                     if self.current_group == gid and not self.history_syncing:
@@ -1156,8 +1165,7 @@ class ChatClient:
                 self.run_ui(lambda gn=group_name: self.notify("群聊通知", f"群聊 {gn} 已被解散"))
                 if gid in self.groups:
                     del self.groups[gid]
-                if hasattr(self, f'group_messages_{gid}'):
-                    delattr(self, f'group_messages_{gid}')
+                self.clear_group_history(gid)
                 self.run_ui(lambda: self.refresh_group_listbox())
                 if self.current_group == gid and not self.history_syncing:
                     self.run_ui(self.clear_chat_selection) # 清空当前选中聊天
@@ -1238,11 +1246,25 @@ class ChatClient:
 
             elif mtype == 'history_begin':
                 self.history_syncing = True
-            elif mtype == 'history_end':
+            elif mtype == 'history_error':
                 self.history_syncing = False
+                self.history_page_pending = False
                 target = self.current_group or self.current_friend
                 if target:
                     self.switch_chat_frame(target)
+                self.notify("历史记录",msg.get('error','历史加载失败'))
+                self.update_chat_target()
+            elif mtype == 'history_end':
+                self.history_syncing = False
+                self.history_page_pending = False
+                if msg.get('history_target') is not None and not msg.get('has_more',False):
+                    self.history_exhausted.add((msg.get('history_kind'),msg['history_target']))
+                target = self.current_group or self.current_friend
+                if target:
+                    self.switch_chat_frame(target)
+                    if msg.get('history_target') == target and hasattr(self,'chat_canvas'):
+                        self.chat_canvas.yview_moveto(0.0)
+                self.update_chat_target()
             elif mtype in ("group_invite_response_result", "send_failed"):
                 pass
             else:
@@ -1484,6 +1506,32 @@ class ChatClient:
         if gid in self.groups and window.winfo_exists():
             self.show_group_info_after_update(gid)
 
+    def load_older_history(self):
+        target = self.current_group or self.current_friend
+        if not target or self.history_page_pending:
+            return
+        ids = self.message_order.get(target, [])
+        before = min(ids) if ids else 9223372036854775807
+        try:
+            self.queue_send({'type':'history_request', 'chat_type':'group' if self.current_group else 'private',
+                             'target':target, 'before_id':before})
+        except Exception as error:
+            self.notify('历史记录',str(error))
+            return
+        self.history_page_pending = True
+        self.update_chat_target()
+
+    def clear_group_history(self, gid):
+        self.seen_message_ids.difference_update(self.message_order.pop(gid, []))
+        getattr(self,"history_exhausted",set()).discard(("group",gid))
+        if hasattr(self, f'group_messages_{gid}'):
+            delattr(self, f'group_messages_{gid}')
+        frame = self.chat_frames.pop(gid, None) if hasattr(self, 'chat_frames') else None
+        if frame is not None:
+            if self.current_chat_frame is frame:
+                self.current_chat_frame = None
+            frame.destroy()
+
     def store_chat_message(self, chat_id, messages, entry, message_id):
         import bisect
         order = self.message_order.setdefault(chat_id, [])
@@ -1500,6 +1548,10 @@ class ChatClient:
         if hasattr(self, 'chat_title'):
             self.chat_title.configure(text=f"当前会话：{title}" if title else "请选择好友或群组")
             self.send_button.configure(state=tk.NORMAL if title and not self.pending_messages else tk.DISABLED)
+        if hasattr(self,'load_history_button'):
+            kind = 'group' if gid else 'private'
+            exhausted = (kind,gid or friend) in getattr(self,'history_exhausted',set())
+            self.load_history_button.configure(state=tk.NORMAL if title and not exhausted and not getattr(self,'history_page_pending',False) else tk.DISABLED)
 
     def on_chat_wheel(self, event):
         if self.running and self.chat_canvas.winfo_exists():
@@ -1528,3 +1580,4 @@ if __name__ == '__main__':
         print("客户端启动异常:", e)
         traceback.print_exc()
         sys.exit(1)
+

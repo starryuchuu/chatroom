@@ -1,8 +1,12 @@
 import socket
+import transport
+import pending_store
+import history_store
 import threading
 import time
 import datetime
 import sqlite3
+from contextlib import closing
 import hashlib
 from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
@@ -29,7 +33,7 @@ PRIVATE_KEY_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (
 DB_FILE_PERMISSIONS = stat.S_IRUSR | stat.S_IWUSR  # 仅所有者可读写 (600)
 
 # 安全加固配置
-MAX_MESSAGE_LEN = 1 * 1024 * 1024  # 单条消息最大长度（字节），防止内存耗尽攻击
+MAX_MESSAGE_LEN = transport.MAX_PAYLOAD_LEN  # 单条消息最大长度（字节），防止内存耗尽攻击
 AUTH_TIMEOUT_SECONDS = 30  # 认证阶段套接字超时（秒）
 GROUP_NAME_MAX_LEN = 128
 USERNAME_MIN_LEN = 2  # 用户名最小长度
@@ -67,6 +71,8 @@ usernames_lock = threading.Lock()
 session_keys_lock = threading.Lock()
 user_friends_lock = threading.Lock()
 groups_data_lock = threading.Lock()
+authentication_slots = threading.BoundedSemaphore(4)
+connection_slots = threading.BoundedSemaphore(128)
 # 群成员读-改-写串行化锁：并发 join/leave/kick 同一群组时防止互相覆盖
 class GroupOperationLock:
     """Stage immutable notifications in commit order; no network I/O in the lock."""
@@ -278,7 +284,7 @@ def send_worker(sock, outbox):
             if ready is not None:
                 ready.wait()
             with get_send_lock(sock):
-                sock.sendall(packet)
+                transport.send_packet(sock, packet)
     except Exception:
         logging.exception("发送超时或连接关闭")
         close_connection(sock)
@@ -324,7 +330,7 @@ def send_msg(sock, msg):
         enqueue_packet(sock, packet)
     else:
         with get_send_lock(sock):
-            sock.sendall(packet)
+            transport.send_packet(sock, packet)
 
 # 接收消息，读取消息长度头部并接收完整消息
 def recv_msg(sock, deadline=None):
@@ -340,12 +346,13 @@ def recv_msg(sock, deadline=None):
         if not header:
             return None
         msg_len = struct.unpack('!I', header)[0]
-        if msg_len > MAX_MESSAGE_LEN:
+        if msg_len > transport.MAX_WIRE_LEN:
             logging.warning(f"Message too large: {msg_len} bytes (max: {MAX_MESSAGE_LEN}), closing connection")
             return None
         data = recvall(sock, msg_len, deadline)
         if data is None:
             return None
+        data = transport.decode(sock, data)
         try:
             return json.loads(data.decode('utf-8'))
         except json.JSONDecodeError:
@@ -426,11 +433,26 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    cursor.executescript(pending_store.SCHEMA)
+    cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_from ON messages(chat_type,from_user,id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_to ON messages(chat_type,to_user,id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)")
     conn.commit()
     conn.close()
+    restore_pending_requests()
     # 设置数据库文件权限为仅所有者可读写 (600)
     if os.path.exists("chat.db"):
         os.chmod("chat.db", DB_FILE_PERMISSIONS)
+
+def restore_pending_requests():
+    friends, invites = pending_store.load()
+    with pending_friend_requests_lock:
+        pending_friend_requests.clear()
+        pending_friend_requests.update({(sender, target): created for sender, target, created in friends})
+    with group_pending_joins_lock:
+        group_pending_joins.clear()
+        for gid, target, inviter, created in invites:
+            group_pending_joins.setdefault(gid, {})[target] = (inviter, created)
 
 # 加载用户的好友列表
 def load_friends(username):
@@ -461,6 +483,7 @@ def save_friend_relationship(user1, user2):
     try:
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user1, user2))
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user2, user1))
+        cursor.execute("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", (user2,user1))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -617,91 +640,41 @@ def send_user_groups(client_sock, username):
 
 
 # 发送聊天历史记录给客户端
-def send_history(client_sock, username, only_gid=None):
-    """
-    发送群聊和私聊历史记录给客户端。
-    参数:
-        client_sock: 客户端套接字
-        username: 用户名
-    """
-    send_msg(client_sock, {"type": "history_begin"})
+def send_history(client_sock, username, only_gid=None, *, kind=None, target=None, before=None):
     session_key = session_keys.get(client_sock)
     if not session_key:
-        logging.warning(f"No session key found for user '{username}' when sending history.")
         return
-
-    conn = None
+    if only_gid is not None:
+        kind, target = 'group', only_gid
     try:
-        conn = sqlite3.connect("chat.db")
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages")
-        boundary = cursor.fetchone()[0]
-        # 发送群聊历史 - 只发送用户所在群组的
-        cursor.execute("SELECT gid, members FROM groups")
-        all_groups = cursor.fetchall()
-        user_gids = [gid for gid, members_json in all_groups if username in json.loads(members_json)]
-        
-        if only_gid is not None:
-            user_gids = [gid for gid in user_gids if gid == only_gid]
-        if user_gids:
-            # 使用参数化查询来避免 SQL 注入 - 修复 f-string 拼接问题
-            placeholders = ','.join('?' * len(user_gids))
-            query = "SELECT id, from_user, gid, message, timestamp FROM messages WHERE chat_type='group' AND id<=? AND gid IN ({}) ORDER BY id ASC".format(placeholders)
-            cursor.execute(query, [boundary] + user_gids)
-            rows = cursor.fetchall()
-            for row in rows:
-                message_id, from_user, gid, message, timestamp = row
-                encrypted_msg = encrypt_message(message, session_key)
-                hist_msg = {
-                    "type": "group_chat",
-                    "from": from_user,
-                    "gid": gid,
-                    "content": encrypted_msg,
-                    "timestamp": timestamp,
-                    "message_id": message_id
-                }
+        with closing(sqlite3.connect("chat.db")) as conn:
+            boundary = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
+        send_msg(client_sock, {"type":"history_begin"})
+        rows, has_more = history_store.page(username, boundary, before=before, kind=kind, target=target)
+        for message_id, chat_type, sender, recipient, gid, message, timestamp in rows:
+            payload = {"type":chat_type+"_chat", "from":sender, "content":encrypt_message(message,session_key),
+                       "timestamp":timestamp, "message_id":message_id}
+            payload['gid' if chat_type=='group' else 'to'] = gid if chat_type=='group' else recipient
+            if chat_type == 'group':
                 group_ops_lock.acquire()
                 try:
-                    current_group = get_group_db(gid)
-                    if current_group and username in current_group["members"]:
-                        send_msg(client_sock, hist_msg)
+                    group = get_group_db(gid)
+                    if group and username in group['members']:
+                        send_msg(client_sock,payload)
                 finally:
                     group_ops_lock.release()
-        
-        # 发送私聊历史 - 仅发送双方仍是好友的消息，避免向已解除关系的好友泄露历史
-        with user_friends_lock:
-            friends_set = user_friends.get(username, set())
-        cursor.execute("""
-            SELECT id, from_user, to_user, message, timestamp FROM messages
-            WHERE id<=? AND chat_type='private' AND (from_user=? OR to_user=?)
-            ORDER BY id ASC
-        """, (boundary, username, username))
-        rows = cursor.fetchall()
-        for row in ([] if only_gid is not None else rows):
-            message_id, from_user, to_user, message, timestamp = row
-            # 计算聊天对象；若已不是好友，则跳过该历史消息
-            chat_partner = to_user if from_user == username else from_user
-            if chat_partner not in friends_set:
-                continue
-            encrypted_msg = encrypt_message(message, session_key)
-            hist_msg = {
-                "type": "private_chat", # 使用private_chat类型，客户端可以统一处理
-                "from": from_user,
-                "to": to_user,
-                "content": encrypted_msg,
-                "timestamp": timestamp,
-                "message_id": message_id
-            }
-            send_msg(client_sock, hist_msg)
-        conn.close()
-        send_msg(client_sock, {"type": "history_end", "boundary": boundary})
-        logging.info(f"Successfully sent history to user '{username}'.")
-    except Exception as e:
-        send_msg(client_sock, {"type": "error", "message": "历史同步失败，请重新登录"})
-        logging.error(f"Error sending history to user '{username}': {e}")
-        if conn:
-            conn.close()
+            else:
+                send_msg(client_sock,payload)
+        end = {"type":"history_end", "boundary":boundary}
+        if kind is not None:
+            end.update(history_kind=kind, history_target=target, has_more=has_more,
+                       before_id=rows[0][0] if rows else before or boundary)
+        elif has_more:
+            end['has_more'] = True
+        send_msg(client_sock,end)
+    except Exception:
+        logging.exception("历史同步失败")
+        send_msg(client_sock,{"type":"error", "message":"历史同步失败，请重新登录"})
 
 # 检查用户是否存在
 def user_exists(username):
@@ -811,11 +784,13 @@ def get_group_db(gid):
         }
     return None
 
-def update_group_members_db(gid, members):
+def update_group_members_db(gid, members, joined_user=None):
     conn = sqlite3.connect("chat.db")
     cursor = conn.cursor()
     try:
         cursor.execute("UPDATE groups SET members=? WHERE gid=?", (json.dumps(members), gid))
+        if joined_user is not None:
+            cursor.execute("DELETE FROM pending_group_invites WHERE gid=? AND target=?", (gid,joined_user))
         conn.commit()
         return True
     except Exception as e:
@@ -830,6 +805,7 @@ def delete_group_db(gid):
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM groups WHERE gid=?", (gid,))
+        cursor.execute("DELETE FROM pending_group_invites WHERE gid=?", (gid,))
         conn.commit()
         return True
     except Exception as e:
@@ -885,13 +861,21 @@ def handle_client(client_sock, addr):
         return
     
     current_username = None
+    auth_reserved = authentication_slots.acquire(blocking=False)
+    if not auth_reserved:
+        send_msg(client_sock,{"type":"error","message":"认证繁忙，请稍后再试"})
+        client_sock.close()
+        remove_send_lock(client_sock)
+        with clients_lock:
+            if client_sock in clients:clients.remove(client_sock)
+        return
     try:
         # 认证阶段设置套接字超时，防止未认证连接无限挂起线程（DoS）
         auth_deadline = time.monotonic() + AUTH_TIMEOUT_SECONDS
         client_sock.settimeout(AUTH_TIMEOUT_SECONDS)
 
         # 1. 发送公钥
-        send_msg(client_sock, {"type": "public_key", "key": public_key_pem.decode('utf-8')})
+        send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION, "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
         encrypted_session_key_data = recv_msg(client_sock, auth_deadline)
@@ -899,6 +883,9 @@ def handle_client(client_sock, addr):
             logging.error(f"Failed to receive session key from {addr}")
             return
         
+        if encrypted_session_key_data.get("protocol") != transport.VERSION:
+            send_msg(client_sock, {"type": "error", "message": "请升级客户端以使用受保护的协议"})
+            return
         encrypted_session_key = base64.b64decode(encrypted_session_key_data["key"])
         session_key = cipher_rsa_decrypt.decrypt(encrypted_session_key)
         # 会话密钥必须是合法的 AES 密钥长度，防止畸形密钥导致后续解密行为混乱
@@ -906,6 +893,7 @@ def handle_client(client_sock, addr):
             send_msg(client_sock, {"type": "error", "message": "无效的会话密钥"})
             logging.error(f"Invalid session key length ({len(session_key)}) from {addr}")
             return
+        transport.configure(client_sock, session_key, server=True)
         with session_keys_lock:
             session_keys[client_sock] = session_key
         logging.info(f"Session key established with {addr}")
@@ -944,7 +932,7 @@ def handle_client(client_sock, addr):
                 send_msg(client_sock, {"type": "register_result", "success": False, "error": "注册处理失败"})
             return
 
-        elif auth_data.get("type") in ("login", "encrypted_login"):
+        elif auth_data.get("type") == "encrypted_login":
             try:
                 if auth_data.get("type") == "encrypted_login":
                     # 加密登录：使用会话密钥解密用户名/密码，避免明文传输
@@ -993,6 +981,8 @@ def handle_client(client_sock, addr):
             client_sock.settimeout(SEND_TIMEOUT_SECONDS)
             # 记录会话时间戳用于过期检查
             session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+            authentication_slots.release()
+            auth_reserved = False
             logging.info(f"User {username} logged in from {addr}")
 
             # 发送好友列表
@@ -1036,7 +1026,23 @@ def handle_client(client_sock, addr):
             logging.debug(f"Message from {current_username}: {msg}")
             mtype = msg.get("type")
             
-            if mtype == "friend_request":
+            if mtype == "history_request":
+                kind, target, before = msg.get('chat_type'), msg.get('target'), msg.get('before_id')
+                if kind not in ('private','group') or not isinstance(target,str) or not target or type(before) is not int or not 0<before<=9223372036854775807:
+                    send_msg(client_sock,{'type':'history_error','error':'历史查询参数错误'})
+                    continue
+                if kind == 'private':
+                    with user_friends_lock:
+                        allowed = target in user_friends.get(current_username,set())
+                else:
+                    group = get_group_db(target)
+                    allowed = bool(group and current_username in group['members'])
+                if not allowed:
+                    send_msg(client_sock,{'type':'history_error','error':'无权读取该会话历史'})
+                    continue
+                send_history(client_sock,current_username,kind=kind,target=target,before=before)
+
+            elif mtype == "friend_request":
                 try:
                     to_user = msg.get("to")
                     sender = current_username
@@ -1071,7 +1077,9 @@ def handle_client(client_sock, addr):
                         if ts is not None and time.time() - ts <= PENDING_REQUEST_TIMEOUT_SECONDS:
                             send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": "已发送过好友申请，请等待对方处理"})
                             continue
-                        pending_friend_requests[(sender, to_user)] = time.time()
+                        created = time.time()
+                        pending_store.save_friend(sender, to_user, created)
+                        pending_friend_requests[(sender, to_user)] = created
                     to_sock = get_sock_by_username(to_user)
                     if to_sock and sender:
                         send_msg(to_sock, {"type": "friend_request", "from": sender})
@@ -1083,6 +1091,7 @@ def handle_client(client_sock, addr):
                         logging.warning(f"Friend request from '{sender}' to '{to_user}' stored: User not online.")
                 except Exception as e:
                     logging.error(f"Error processing friend_request from {current_username}: {e}")
+                    send_msg(client_sock, {"type":"friend_request_result", "success":False, "error":"好友申请保存失败，请重试"})
                 
             elif mtype == "friend_response":
                 try:
@@ -1103,6 +1112,8 @@ def handle_client(client_sock, addr):
                             continue
                         if accepted:
                             save_friend_relationship(responder, from_user)
+                        else:
+                            pending_store.decline_friend(from_user, responder)
                         del pending_friend_requests[(from_user, responder)]
 
                     from_sock = get_sock_by_username(from_user)
@@ -1397,7 +1408,9 @@ def handle_client(client_sock, addr):
                     with group_pending_joins_lock:
                         if gid not in group_pending_joins:
                             group_pending_joins[gid] = {}
-                        group_pending_joins[gid][to_user] = (inviter, time.time())
+                        created = time.time()
+                        pending_store.save_invite(gid, to_user, inviter, created)
+                        group_pending_joins[gid][to_user] = (inviter, created)
 
                     to_sock = get_sock_by_username(to_user)
                     if to_sock:
@@ -1417,9 +1430,15 @@ def handle_client(client_sock, addr):
                 group_ops_lock.acquire()
                 try:
                     gid = msg.get("gid")
+                    if not isinstance(gid, str) or msg.get("accepted") is not False:
+                        send_msg(client_sock, {"type":"group_invite_response_result", "success":False, "error":"邀请响应格式错误"})
+                        continue
                     with group_pending_joins_lock:
+                        pending_store.decline_invite(gid, current_username)
                         group_pending_joins.get(gid, {}).pop(current_username, None)
                     send_msg(client_sock, {"type": "group_invite_response_result", "success": True, "gid": gid})
+                except Exception:
+                    send_msg(client_sock, {"type":"group_invite_response_result", "success":False, "error":"邀请处理失败，请重试"})
                 finally:
                     group_ops_lock.release()
 
@@ -1455,7 +1474,7 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "group_join_result", "success": False, "error": "邀请已过期"})
                         continue
                     group["members"].append(user_to_join)
-                    if update_group_members_db(gid, group["members"]):
+                    if update_group_members_db(gid, group["members"], joined_user=user_to_join):
                         with group_pending_joins_lock:
                             group_pending_joins.get(gid, {}).pop(user_to_join, None)
                         with groups_data_lock:
@@ -1776,6 +1795,8 @@ def handle_client(client_sock, addr):
     except Exception as e:
         logging.exception(f"Exception in handle_client for {addr} (User: {current_username})")
     finally:
+        if auth_reserved:
+            authentication_slots.release()
         with clients_lock:
             if client_sock in clients:
                 clients.remove(client_sock)
@@ -1796,6 +1817,7 @@ def handle_client(client_sock, addr):
         remove_send_lock(client_sock)
         broadcast_online_users()
         client_sock.close()
+        transport.forget(client_sock)
 
 def broadcast_online_users():
     """
@@ -1836,13 +1858,22 @@ def main():
     while True:
         try:
             client_sock, addr = server.accept()
+            if not connection_slots.acquire(blocking=False):
+                client_sock.close()
+                continue
             with clients_lock:
                 clients.append(client_sock)
             logging.info(f"Accepted connection from {addr}")
-            threading.Thread(target=handle_client, args=(client_sock, addr), daemon=True).start()
+            def run_connection(sock, address):
+                try:
+                    handle_client(sock,address)
+                finally:
+                    connection_slots.release()
+            threading.Thread(target=run_connection, args=(client_sock, addr), daemon=True).start()
         except Exception as e:
             logging.exception(f"Error accepting new connection: {e}")
 
 # 程序入口
 if __name__ == '__main__':
     main()
+

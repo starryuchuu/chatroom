@@ -115,44 +115,48 @@ func CreateGroup(groupName, owner string, members []string) (*models.Group, erro
 
 // UpdateGroupMembers 更新群组成员列表
 func UpdateGroupMembers(gid string, members []string) error {
+	return updateGroupMembers(gid, members, "")
+}
+
+func UpdateGroupMembersAndConsumeInvite(gid string, members []string, joinedUser string) error {
+	return updateGroupMembers(gid, members, joinedUser)
+}
+
+func updateGroupMembers(gid string, members []string, joinedUser string) error {
 	membersJSON, err := json.Marshal(members)
 	if err != nil {
-		log.Printf("序列化群组成员失败: %v", err)
 		return err
 	}
-
-	stmt, err := DB.Prepare("UPDATE groups SET members=? WHERE gid=?")
+	tx, err := DB.Begin()
 	if err != nil {
-		log.Printf("准备更新群组成员语句失败: %v", err)
 		return err
 	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(string(membersJSON), gid)
-	if err != nil {
-		log.Printf("执行更新群组成员失败: %v", err)
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE groups SET members=? WHERE gid=?", string(membersJSON), gid); err != nil {
 		return err
 	}
-
-	return nil
+	if joinedUser != "" {
+		if _, err = tx.Exec("DELETE FROM pending_group_invites WHERE gid=? AND target=?", gid, joinedUser); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // DeleteGroup 从数据库中删除群组
 func DeleteGroup(gid string) error {
-	stmt, err := DB.Prepare("DELETE FROM groups WHERE gid=?")
+	tx, err := DB.Begin()
 	if err != nil {
-		log.Printf("准备删除群组语句失败: %v", err)
 		return err
 	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(gid)
-	if err != nil {
-		log.Printf("执行删除群组失败: %v", err)
+	defer tx.Rollback()
+	if _, err = tx.Exec("DELETE FROM groups WHERE gid=?", gid); err != nil {
 		return err
 	}
-
-	return nil
+	if _, err = tx.Exec("DELETE FROM pending_group_invites WHERE gid=?", gid); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateGroupOwner 更新群组所有者

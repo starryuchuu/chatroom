@@ -32,6 +32,9 @@ func SaveFriendRelationship(user1, user2 string) error {
 		return err
 	}
 
+	if _, err := tx.Exec("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", user2, user1); err != nil {
+		return err
+	}
 	return tx.Commit() // 提交事务
 }
 
