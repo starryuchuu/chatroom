@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -41,7 +42,7 @@ func hashPassword(password string) (string, error) {
 func verifyPassword(password, encoded string, legacyUsername string) (bool, error) {
 	if strings.HasPrefix(encoded, "$argon2id$") {
 		parts := strings.Split(encoded, "$")
-		if len(parts) != 6 {
+		if len(parts) != 6 || parts[2] != "v=19" {
 			return false, nil
 		}
 		salt, err := base64.RawStdEncoding.DecodeString(parts[4])
@@ -52,7 +53,27 @@ func verifyPassword(password, encoded string, legacyUsername string) (bool, erro
 		if err != nil {
 			return false, nil
 		}
-		hash := argon2.IDKey([]byte(password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+		params := strings.Split(parts[3], ",")
+		if len(params) != 3 {
+			return false, nil
+		}
+		values := make([]uint64, 3)
+		for i, label := range []string{"m=", "t=", "p="} {
+			if !strings.HasPrefix(params[i], label) {
+				return false, nil
+			}
+			n, err := strconv.ParseUint(strings.TrimPrefix(params[i], label), 10, 32)
+			if err != nil {
+				return false, nil
+			}
+			values[i] = n
+		}
+		memory, iterations, threads := values[0], values[1], values[2]
+		// Read self-described Python/Go hashes, with resource bounds for damaged input.
+		if threads < 1 || threads > 8 || memory < 8*threads || memory > 256*1024 || iterations < 1 || iterations > 10 || len(salt) < 8 || len(salt) > 64 || len(expected) < 16 || len(expected) > 64 {
+			return false, nil
+		}
+		hash := argon2.IDKey([]byte(password), salt, uint32(iterations), uint32(memory), uint8(threads), uint32(len(expected)))
 		return subtle.ConstantTimeCompare(hash, expected) == 1, nil
 	}
 	// 旧版兼容：username 作为盐（仅用于迁移期，新注册一律使用随机盐）
@@ -84,23 +105,29 @@ func RegisterUser(username, password string) error {
 		return err
 	}
 
-	stmt, err := DB.Prepare("INSERT INTO users (username, password) VALUES (?, ?)")
+	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(username, hashedPassword)
+	defer tx.Rollback()
+	token, err := storage.putName(tx, username)
 	if err != nil {
 		return err
 	}
-	return nil
+	encoded, err := storage.seal(hashedPassword, "users", "password", token)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec("INSERT INTO users(username,password) VALUES(?,?)", token, encoded); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ValidateUser 验证用户名和密码
 func ValidateUser(username, password string) (bool, error) {
 	var storedPassword string
-	err := DB.QueryRow("SELECT password FROM users WHERE username = ?", username).Scan(&storedPassword)
+	err := DB.QueryRow("SELECT password FROM users WHERE username = ?", storage.token(username)).Scan(&storedPassword)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil // 用户不存在
@@ -108,13 +135,17 @@ func ValidateUser(username, password string) (bool, error) {
 		return false, err
 	}
 
+	storedPassword, err = storage.open(storedPassword, "users", "password", storage.token(username))
+	if err != nil {
+		return false, err
+	}
 	return verifyPassword(password, storedPassword, username)
 }
 
 // UserExists 检查用户是否存在
 func UserExists(username string) (bool, error) {
 	var id int
-	err := DB.QueryRow("SELECT id FROM users WHERE username = ?", username).Scan(&id)
+	err := DB.QueryRow("SELECT id FROM users WHERE username = ?", storage.token(username)).Scan(&id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return false, nil

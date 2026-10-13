@@ -27,6 +27,11 @@ func GetUserGroups(username string) ([]models.Group, error) {
 			continue
 		}
 
+		var decodeErr error
+		g.GroupName, g.Owner, membersJSON, decodeErr = decodeGroupFields(g.GID, g.GroupName, g.Owner, membersJSON)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
 		var members []string
 		if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
 			log.Printf("解析群组成员JSON失败 (gid: %s): %v", g.GID, err)
@@ -68,6 +73,11 @@ func GetGroup(gid string) (*models.Group, error) {
 		return nil, err // 包括 sql.ErrNoRows
 	}
 
+	var decodeErr error
+	g.GroupName, g.Owner, membersJSON, decodeErr = decodeGroupFields(gid, g.GroupName, g.Owner, membersJSON)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
 	var members []string
 	if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
 		log.Printf("解析群组成员JSON失败 (gid: %s): %v", gid, err)
@@ -98,7 +108,23 @@ func CreateGroup(groupName, owner string, members []string) (*models.Group, erro
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(gid, groupName, owner, string(membersJSON), now)
+	encodedName, err := storage.seal(groupName, "groups", "group_name", gid)
+	if err != nil {
+		return nil, err
+	}
+	encodedOwner, err := storage.seal(owner, "groups", "owner", gid)
+	if err != nil {
+		return nil, err
+	}
+	encodedMembers, err := storage.seal(string(membersJSON), "groups", "members", gid)
+	if err != nil {
+		return nil, err
+	}
+	encodedAt, err := storage.seal(now, "groups", "created_at", gid)
+	if err != nil {
+		return nil, err
+	}
+	_, err = stmt.Exec(gid, encodedName, encodedOwner, encodedMembers, encodedAt)
 	if err != nil {
 		log.Printf("执行创建群组失败: %v", err)
 		return nil, err
@@ -127,16 +153,20 @@ func updateGroupMembers(gid string, members []string, joinedUser string) error {
 	if err != nil {
 		return err
 	}
+	encodedMembers, err := storage.seal(string(membersJSON), "groups", "members", gid)
+	if err != nil {
+		return err
+	}
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("UPDATE groups SET members=? WHERE gid=?", string(membersJSON), gid); err != nil {
+	if _, err = tx.Exec("UPDATE groups SET members=? WHERE gid=?", encodedMembers, gid); err != nil {
 		return err
 	}
 	if joinedUser != "" {
-		if _, err = tx.Exec("DELETE FROM pending_group_invites WHERE gid=? AND target=?", gid, joinedUser); err != nil {
+		if _, err = tx.Exec("DELETE FROM pending_group_invites WHERE gid=? AND target=?", gid, storage.token(joinedUser)); err != nil {
 			return err
 		}
 	}
@@ -168,7 +198,11 @@ func UpdateGroupOwner(gid, newOwner string) error {
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(newOwner, gid)
+	encoded, err := storage.seal(newOwner, "groups", "owner", gid)
+	if err != nil {
+		return err
+	}
+	_, err = stmt.Exec(encoded, gid)
 	if err != nil {
 		log.Printf("执行更新群组所有者失败: %v", err)
 		return err
@@ -186,11 +220,28 @@ func UpdateGroupName(gid, newName string) error {
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(newName, gid)
+	encoded, err := storage.seal(newName, "groups", "group_name", gid)
+	if err != nil {
+		return err
+	}
+	_, err = stmt.Exec(encoded, gid)
 	if err != nil {
 		log.Printf("执行更新群组名称失败: %v", err)
 		return err
 	}
 
 	return nil
+}
+
+func decodeGroupFields(gid, name, owner, members string) (string, string, string, error) {
+	name, err := storage.open(name, "groups", "group_name", gid)
+	if err != nil {
+		return "", "", "", err
+	}
+	owner, err = storage.open(owner, "groups", "owner", gid)
+	if err != nil {
+		return "", "", "", err
+	}
+	members, err = storage.open(members, "groups", "members", gid)
+	return name, owner, members, err
 }

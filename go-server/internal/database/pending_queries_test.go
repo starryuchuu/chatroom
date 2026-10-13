@@ -50,16 +50,11 @@ func TestHistoryPagesAreBoundedCompleteAndFiltered(t *testing.T) {
 	DB.SetMaxOpenConns(1)
 	t.Cleanup(func() { DB.Close() })
 	SaveFriendRelationship("alice", "bob")
-	tx, err := DB.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
 	for i := 0; i < 205; i++ {
-		if _, err = tx.Exec("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice','body','now')"); err != nil {
+		if err := SaveMessage("private", "bob", "alice", "", "body", "now"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tx.Commit()
 	SaveMessage("private", "stranger", "alice", "", "hidden", "now")
 	boundary, err := HistoryBoundary()
 	if err != nil {

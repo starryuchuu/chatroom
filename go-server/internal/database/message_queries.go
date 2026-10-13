@@ -3,6 +3,7 @@ package database
 import (
 	"chatroom/internal/models"
 	"database/sql"
+	"strconv"
 	"strings"
 )
 
@@ -13,11 +14,44 @@ func SaveMessage(chatType, fromUser, toUser, gid, message, timestamp string) err
 	return err
 }
 func SaveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string) (int64, error) {
-	result, err := DB.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp) VALUES(?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, message, timestamp)
+	tx, err := DB.Begin()
 	if err != nil {
 		return 0, err
 	}
-	return result.LastInsertId()
+	defer tx.Rollback()
+	fromUser, err = storage.putName(tx, fromUser)
+	if err != nil {
+		return 0, err
+	}
+	if toUser != "" {
+		toUser, err = storage.putName(tx, toUser)
+		if err != nil {
+			return 0, err
+		}
+	}
+	result, err := tx.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp) VALUES(?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, "", "")
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	body, err := storage.seal(message, messageStorageContext(id, chatType, fromUser, toUser, gid)...)
+	if err != nil {
+		return 0, err
+	}
+	at, err := storage.seal(timestamp, "messages", "timestamp", strconv.FormatInt(id, 10))
+	if err != nil {
+		return 0, err
+	}
+	if _, err = tx.Exec("UPDATE messages SET message=?,timestamp=? WHERE id=?", body, at, id); err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 func HistoryBoundary() (int64, error) {
 	var boundary int64
@@ -54,10 +88,11 @@ func GetHistoryPage(username string, boundary, before int64, kind, target string
 	private := "0"
 	if kind != "group" {
 		private = `(chat_type='private' AND (from_user=? OR to_user=?) AND EXISTS (SELECT 1 FROM friends WHERE user=? AND friend=CASE WHEN from_user=? THEN to_user ELSE from_user END))`
-		args = append(args, username, username, username, username)
+		token := storage.token(username)
+		args = append(args, token, token, token, token)
 		if kind == "private" {
 			private += " AND (from_user=? OR to_user=?)"
-			args = append(args, target, target)
+			args = append(args, storage.token(target), storage.token(target))
 		}
 	}
 	var gids []string
@@ -99,6 +134,26 @@ func GetHistoryPage(username string, boundary, before int64, kind, target string
 	more := len(history) > HistoryPageSize
 	if more {
 		history = history[:HistoryPageSize]
+	}
+	rows.Close()
+	for i := range history {
+		m := &history[i]
+		m.Content, err = storage.open(m.Content, messageStorageContext(m.ID, m.ChatType, m.FromUser, m.ToUser, m.GID)...)
+		if err != nil {
+			return nil, false, err
+		}
+		m.Timestamp, err = storage.open(m.Timestamp, "messages", "timestamp", strconv.FormatInt(m.ID, 10))
+		if err != nil {
+			return nil, false, err
+		}
+		m.FromUser, err = storage.name(m.FromUser)
+		if err != nil {
+			return nil, false, err
+		}
+		m.ToUser, err = storage.name(m.ToUser)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
 		history[i], history[j] = history[j], history[i]

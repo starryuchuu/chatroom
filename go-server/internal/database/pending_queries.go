@@ -12,19 +12,49 @@ type PendingInvite struct {
 }
 
 func SavePendingFriend(from, to string, created time.Time) error {
-	_, err := DB.Exec("INSERT OR REPLACE INTO pending_friend_requests VALUES(?,?,?)", from, to, float64(created.UnixNano())/1e9)
-	return err
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	from, err = storage.putName(tx, from)
+	if err != nil {
+		return err
+	}
+	to, err = storage.putName(tx, to)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec("INSERT OR REPLACE INTO pending_friend_requests VALUES(?,?,?)", from, to, float64(created.UnixNano())/1e9); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func DeletePendingFriend(from, to string) error {
-	_, err := DB.Exec("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", from, to)
+	_, err := DB.Exec("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", storage.token(from), storage.token(to))
 	return err
 }
 func SavePendingInvite(gid, to, from string, created time.Time) error {
-	_, err := DB.Exec("INSERT OR REPLACE INTO pending_group_invites VALUES(?,?,?,?)", gid, to, from, float64(created.UnixNano())/1e9)
-	return err
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	from, err = storage.putName(tx, from)
+	if err != nil {
+		return err
+	}
+	to, err = storage.putName(tx, to)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec("INSERT OR REPLACE INTO pending_group_invites VALUES(?,?,?,?)", gid, to, from, float64(created.UnixNano())/1e9); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func DeletePendingInvite(gid, to string) error {
-	_, err := DB.Exec("DELETE FROM pending_group_invites WHERE gid=? AND target=?", gid, to)
+	_, err := DB.Exec("DELETE FROM pending_group_invites WHERE gid=? AND target=?", gid, storage.token(to))
 	return err
 }
 func LoadPendingRequests() ([]PendingFriend, []PendingInvite, error) {
@@ -72,5 +102,28 @@ func LoadPendingRequests() ([]PendingFriend, []PendingInvite, error) {
 	}
 	err = rows.Err()
 	rows.Close()
-	return friends, invites, err
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range friends {
+		friends[i].Requester, err = storage.name(friends[i].Requester)
+		if err != nil {
+			return nil, nil, err
+		}
+		friends[i].Target, err = storage.name(friends[i].Target)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	for i := range invites {
+		invites[i].Inviter, err = storage.name(invites[i].Inviter)
+		if err != nil {
+			return nil, nil, err
+		}
+		invites[i].Target, err = storage.name(invites[i].Target)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return friends, invites, nil
 }

@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"log"
+	"os"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,10 +13,17 @@ var DB *sql.DB
 
 // InitDB 初始化数据库连接并创建表
 func InitDB(dataSourceName string) {
+	if err := OpenDB(dataSourceName); err != nil {
+		log.Fatalf("无法初始化数据库: %v", err)
+	}
+}
+
+// OpenDB returns startup/migration failures without rotating a missing encryption key.
+func OpenDB(dataSourceName string) error {
 	var err error
 	DB, err = sql.Open("sqlite", dataSourceName)
 	if err != nil {
-		log.Fatalf("无法打开数据库: %v", err)
+		return err
 	}
 
 	// SQLite serializes writes. One reusable connection avoids SQLITE_BUSY
@@ -23,17 +31,35 @@ func InitDB(dataSourceName string) {
 	DB.SetMaxOpenConns(1)
 	DB.SetMaxIdleConns(1)
 	if _, err = DB.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		log.Fatalf("无法配置数据库等待时间: %v", err)
+		DB.Close()
+		return err
 	}
 	if err = DB.Ping(); err != nil {
-		log.Fatalf("无法连接到数据库: %v", err)
+		DB.Close()
+		return err
 	}
 
-	createTables()
+	if err = os.Chmod(dataSourceName, 0600); err != nil {
+		DB.Close()
+		return err
+	}
+	for _, pragma := range []string{"PRAGMA secure_delete=ON", "PRAGMA temp_store=MEMORY"} {
+		if _, err = DB.Exec(pragma); err != nil {
+			DB.Close()
+			return err
+		}
+	}
+	if err = createTables(); err == nil {
+		err = initializeStorage(dataSourceName)
+	}
+	if err != nil {
+		DB.Close()
+	}
+	return err
 }
 
 // createTables 创建所有需要的表
-func createTables() {
+func createTables() error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS pending_friend_requests (requester TEXT NOT NULL,target TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(requester,target))`,
 		`CREATE TABLE IF NOT EXISTS pending_group_invites (gid TEXT NOT NULL,target TEXT NOT NULL,inviter TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(gid,target))`,
@@ -70,7 +96,7 @@ func createTables() {
 	for _, stmt := range statements {
 		_, err := DB.Exec(stmt)
 		if err != nil {
-			log.Fatalf("无法创建表: %v", err)
+			return err
 		}
 	}
 	for _, stmt := range []string{
@@ -79,8 +105,9 @@ func createTables() {
 		"CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)",
 	} {
 		if _, err := DB.Exec(stmt); err != nil {
-			log.Fatalf("创建消息索引失败: %v", err)
+			return err
 		}
 	}
 	log.Println("数据库表已成功初始化。")
+	return nil
 }

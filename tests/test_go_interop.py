@@ -295,9 +295,17 @@ class GoInteropTests(unittest.TestCase):
         import sqlite3
         for name in ('alice','bob'):
             self.assertTrue(self.connect(name,register=True)[2]['success'])
-        with closing(sqlite3.connect(Path(self.tmp.name)/'chat.db')) as db, db:
-            db.executemany('INSERT INTO friends(user,friend) VALUES(?,?)',[('alice','bob'),('bob','alice')])
-            db.executemany("INSERT INTO messages(chat_type,from_user,to_user,message,timestamp) VALUES('private','bob','alice',?,'now')",[(str(i),) for i in range(205)])
+        import storage
+        old_store = storage._store
+        try:
+            with closing(storage.connect(Path(self.tmp.name)/'chat.db')) as db, db:
+                storage.initialize(db, Path(self.tmp.name)/'chat.db')
+                db.executemany('INSERT INTO friends(user,friend) VALUES(?,?)',
+                               [(storage.token('alice'),storage.token('bob')),(storage.token('bob'),storage.token('alice'))])
+                for i in range(205):
+                    storage.save_message(db,'private','bob','alice',None,str(i),'now')
+        finally:
+            storage._store = old_store
         alice,key,_=self.connect('alice');self.read_type(alice,'history_begin')
         seen=[]
         for size in (100,100,5):
@@ -312,6 +320,53 @@ class GoInteropTests(unittest.TestCase):
                 client.send_msg(alice,{'type':'history_request','chat_type':'private','target':'bob','before_id':min(page)})
                 self.read_type(alice,'history_begin')
         self.assertEqual(sorted(seen),list(range(1,206)))
+
+    def test_legacy_migration_and_python_go_encrypted_database_compatibility(self):
+        import storage
+        from test_storage import legacy_fixture
+        path=Path(self.tmp.name)/'chat.db'
+        old_store=storage._store
+        try:
+            for python_migrates_first in (True,False):
+                with self.subTest(python_migrates_first=python_migrates_first):
+                    for peer in self.peers:peer.close()
+                    self.peers.clear()
+                    self.process.terminate();self.process.wait(timeout=10)
+                    for suffix in ('','.key','-wal','-shm','-journal'):
+                        Path(str(path)+suffix).unlink(missing_ok=True)
+                    with closing(storage.connect(path)) as db:
+                        legacy_fixture(db)
+                        if python_migrates_first:storage.initialize(db,path)
+                    self.process=subprocess.Popen([str(Path(os.environ['CHATROOM_GO_SERVER_EXE']).resolve())],cwd=self.tmp.name,stdout=self.log,stderr=self.log)
+                    deadline=time.monotonic()+20
+                    while time.monotonic()<deadline:
+                        if self.process.poll() is not None:self.fail('Go migration startup failed')
+                        try:
+                            with socket.create_connection(('127.0.0.1',12346),timeout=.1):break
+                        except OSError:time.sleep(.05)
+                    alice,ak,result=self.connect('alice-private-name','legacy password')
+                    self.assertTrue(result['success'])
+                    groups=self.read_type(alice,'user_groups_list')['groups']
+                    self.assertEqual(groups[0]['group_name'],'保密群名称 uniquely-secret-group')
+                    self.read_type(alice,'history_begin')
+                    replay=self.read_type(alice,'private_chat')
+                    self.assertEqual(client.decrypt_message(replay['content'],ak),'保密聊天正文 uniquely-secret-message')
+                    self.read_type(alice,'history_end')
+                    bob,bk,result=self.connect('bob-private-name','legacy password')
+                    self.assertTrue(result['success']);self.read_type(bob,'history_end')
+                    client.send_msg(bob,{'type':'private_chat','to':'alice-private-name','content':client.encrypt_message('Go 写入 Python 读取',bk)})
+                    self.read_type(bob,'private_chat')
+                    with closing(storage.connect(path)) as db:
+                        storage.initialize(db,path)
+                        rows=db.execute('SELECT id,chat_type,from_user,to_user,gid,message,timestamp FROM messages ORDER BY id').fetchall()
+                        self.assertEqual(storage.decode_message(db,rows[-1])[5],'Go 写入 Python 读取')
+                        token=storage.token('bob-private-name')
+                        encoded=db.execute('SELECT password FROM users WHERE username=?',(token,)).fetchone()[0]
+                        from argon2 import PasswordHasher
+                        self.assertTrue(PasswordHasher().verify(storage.open_field(encoded,'users','password',token),'legacy password'))
+                    self.assertNotIn(b'uniquely-secret-message',path.read_bytes())
+        finally:
+            storage._store=old_store
 
 
 if __name__ == '__main__':

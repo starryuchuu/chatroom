@@ -53,11 +53,11 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ## Current development protocol
 
-Upgrade the Python client and either server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies and stores plaintext in SQLite.
+Upgrade the Python client and either server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies for delivery and encrypts sensitive fields at rest in SQLite.
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
 
-Run Python scripts with `transport.py`, `history_store.py`, and `pending_store.py` available in the same directory. Download the complete source archive rather than an isolated entry script.
+Run Python scripts with `transport.py`, `history_store.py`, `pending_store.py`, and `storage.py` available in the same directory. Download the complete source archive rather than an isolated entry script.
 
 ## Security Design
 
@@ -254,3 +254,13 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 - Dual server implementation (Python/Go)
 - GitHub Actions cross-platform automated builds
 
+
+## Encrypted server storage
+
+Both servers use storage v1: randomized AES-256-GCM encrypts message bodies and timestamps, username mappings, Argon2 password hashes, and group names, owners, members and creation times. HMAC-SHA256 username indexes replace readable identities in message routing, friendships and pending requests.
+
+The independent 32-byte key defaults to `chat.db.key` beside the database. Set `CHATROOM_STORAGE_KEY_FILE` to keep it outside the database directory. Back up the key securely and separately; a lost key cannot be replaced to recover the database. POSIX file permissions default to 0600; protect the key with account permissions on Windows.
+
+Stop the old server before upgrading. Startup transactionally migrates legacy data and removes old free pages/WAL before listening. Failed migrations roll back; interrupted cleanup resumes on restart. Missing, corrupt or mismatched keys stop startup. Do not open migrated databases with older servers. Wire protocol v2 is unchanged; v1.0.10 clients remain compatible.
+
+This encrypts sensitive fields rather than the entire SQLite file: table structure, IDs, group IDs, chat types, relationships between opaque indexes, request expiry times and counts remain visible. The running server can decrypt records. Old backups, logs and deleted underlying storage blocks are outside the migration scope. See [storage format and recovery](STORAGE_ENCRYPTION.md).
