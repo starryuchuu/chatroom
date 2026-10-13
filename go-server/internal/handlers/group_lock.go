@@ -7,6 +7,7 @@ type groupOperationLock struct {
 	refs int
 }
 
+var groupCatalogMu sync.RWMutex
 var groupLocksMu sync.Mutex
 var groupLocks = make(map[string]*groupOperationLock)
 
@@ -14,9 +15,10 @@ var groupLocks = make(map[string]*groupOperationLock)
 // operation for each group, without serializing unrelated groups. References
 // include waiters; the last release removes the lock to avoid leaking group IDs.
 func lockGroupOperation(msg map[string]interface{}) func() {
+	groupCatalogMu.RLock()
 	gid, ok := msg["gid"].(string)
 	if !ok || gid == "" {
-		return func() {}
+		return func() { groupCatalogMu.RUnlock() }
 	}
 	groupLocksMu.Lock()
 	lock := groupLocks[gid]
@@ -28,6 +30,7 @@ func lockGroupOperation(msg map[string]interface{}) func() {
 	groupLocksMu.Unlock()
 	lock.mu.Lock()
 	return func() {
+		defer groupCatalogMu.RUnlock()
 		lock.mu.Unlock()
 		groupLocksMu.Lock()
 		lock.refs--
@@ -36,4 +39,9 @@ func lockGroupOperation(msg map[string]interface{}) func() {
 		}
 		groupLocksMu.Unlock()
 	}
+}
+
+// LockGroup is shared with history authorization and group snapshot publication.
+func LockGroup(gid string) func() {
+	return lockGroupOperation(map[string]interface{}{"gid": gid})
 }

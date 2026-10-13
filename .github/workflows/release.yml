@@ -14,60 +14,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - os: windows-latest
-          suffix: .exe
-        - os: ubuntu-latest
-          suffix: ''
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    env:
-      GOTOOLCHAIN: local
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-go@v5
-      with:
-        go-version: 1.24.5
-        cache-dependency-path: go-server/go.sum
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        cache: pip
-    - name: Install Python client dependencies
-      run: python -m pip install -r requirements.txt
-    - name: Static checks
-      working-directory: go-server
-      run: go vet ./...
-    - name: Windows Go regression tests
-      if: runner.os == 'Windows'
-      working-directory: go-server
-      run: go test -count=1 ./...
-    - name: Linux Go regression and race tests
-      if: runner.os == 'Linux'
-      working-directory: go-server
-      run: go test -race -count=1 ./...
-    - name: Build native interoperability test server
-      working-directory: go-server
-      shell: bash
-      run: go build -o "${{ github.workspace }}/go-interop-server${{ matrix.suffix }}" ./cmd/server
-    - name: Install Linux GUI test dependencies
-      if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y xvfb xauth python3-tk
-    - name: Run Python regression and Go interoperability tests
-      if: runner.os == 'Windows'
-      env:
-        CHATROOM_GO_SERVER_EXE: ${{ github.workspace }}/go-interop-server${{ matrix.suffix }}
-        PYTHONIOENCODING: utf-8
-      run: python -m unittest discover -s tests -v
-    - name: Run Python regression and Go interoperability tests
-      if: runner.os == 'Linux'
-      env:
-        CHATROOM_GO_SERVER_EXE: ${{ github.workspace }}/go-interop-server${{ matrix.suffix }}
-        PYTHONIOENCODING: utf-8
-      run: xvfb-run -a python -m unittest discover -s tests -v
+    uses: ./.github/workflows/tests.yml
   build-python:
     strategy:
       fail-fast: false
@@ -185,8 +132,9 @@ jobs:
           test -s "release-assets/$binary"
         done
         git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
-        cp client.py server.py requirements.txt release-assets/
-        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" client.py server.py requirements.txt > SHA256SUMS)
+        cp client.py server.py transport.py history_store.py pending_store.py requirements.txt release-assets/
+        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" client.py server.py transport.py history_store.py pending_store.py requirements.txt > SHA256SUMS)
         gh release create "$tag" release-assets/* \
           --target "$GITHUB_SHA" --title "$tag — Python 客户端与双服务端" \
           --notes-file RELEASE_NOTES.md --latest
+

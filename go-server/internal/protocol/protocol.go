@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -10,8 +11,13 @@ import (
 	"time"
 )
 
-const MaxMessageLen = 1024 * 1024
+const MaxWireLen = 1024 * 1024
+const FrameOverhead = 40
+const MaxMessageLen = MaxWireLen - FrameOverhead
+const Version = 2
 const WriteTimeout = 5 * time.Second
+
+var ErrQueueFull = errors.New("outgoing queue full")
 
 // Conn serializes complete frames sent by concurrent handlers and broadcasts.
 // Its lock belongs to the connection, so closed sessions need no global cleanup.
@@ -23,6 +29,7 @@ type Conn struct {
 	done      chan struct{}
 	closeOnce sync.Once
 	closeErr  error
+	auth      *frameAuth
 }
 
 func WrapConn(conn net.Conn) *Conn {
@@ -82,15 +89,21 @@ func ValidateMessage(msg interface{}) error {
 // SendMsg sends one length-prefixed JSON frame. Shared server connections must
 // be wrapped once with WrapConn before being published to other goroutines.
 func SendMsg(conn net.Conn, msg interface{}) error {
-	return sendMsg(conn, msg, false)
+	return sendMsg(conn, msg, false, true)
 }
 
 // SendMsgWait provides bounded backpressure for history, outside mutation locks.
 func SendMsgWait(conn net.Conn, msg interface{}) error {
-	return sendMsg(conn, msg, true)
+	return sendMsg(conn, msg, true, true)
 }
 
-func sendMsg(conn net.Conn, msg interface{}, wait bool) error {
+// TrySendMsg leaves a congested connection open so a permission-aware caller
+// can wait outside its mutation lock, recheck authorization, and try again.
+func TrySendMsg(conn net.Conn, msg interface{}) error {
+	return sendMsg(conn, msg, false, false)
+}
+
+func sendMsg(conn net.Conn, msg interface{}, wait, closeOnFull bool) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -130,8 +143,10 @@ func sendMsg(conn net.Conn, msg interface{}, wait bool) error {
 			case outbox <- frame:
 				return nil
 			default:
-				c.Close()
-				return fmt.Errorf("outgoing queue full")
+				if closeOnFull {
+					c.Close()
+				}
+				return ErrQueueFull
 			}
 		}
 	}
@@ -142,6 +157,20 @@ func writeFrame(conn net.Conn, frame []byte) error {
 	if wrapped, ok := conn.(*Conn); ok {
 		wrapped.writeMu.Lock()
 		defer wrapped.writeMu.Unlock()
+	}
+	if wrapped, ok := conn.(*Conn); ok {
+		wrapped.stateMu.RLock()
+		auth := wrapped.auth
+		wrapped.stateMu.RUnlock()
+		if auth != nil {
+			body, err := auth.encode(frame[4:])
+			if err != nil {
+				return err
+			}
+			frame = make([]byte, 4+len(body))
+			binary.BigEndian.PutUint32(frame, uint32(len(body)))
+			copy(frame[4:], body)
+		}
 	}
 	// Refresh inside the frame lock; a deadline set at connection establishment
 	// expires even when a session remains active.
@@ -170,7 +199,7 @@ func RecvMsg(conn net.Conn) (map[string]interface{}, error) {
 	}
 	msgLen := binary.BigEndian.Uint32(header[:])
 	// Validate BEFORE allocating memory, including lengths near uint32's limit.
-	if msgLen > MaxMessageLen {
+	if msgLen > MaxWireLen {
 		return nil, fmt.Errorf("message too large: %d bytes (max: %d)", msgLen, MaxMessageLen)
 	}
 	if msgLen == 0 {
@@ -179,6 +208,18 @@ func RecvMsg(conn net.Conn) (map[string]interface{}, error) {
 	data := make([]byte, msgLen)
 	if _, err := io.ReadFull(conn, data); err != nil {
 		return nil, err
+	}
+	if wrapped, ok := conn.(*Conn); ok {
+		wrapped.stateMu.RLock()
+		auth := wrapped.auth
+		wrapped.stateMu.RUnlock()
+		if auth != nil {
+			var err error
+			data, err = auth.decode(data)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	var msg map[string]interface{}
 	if err := json.Unmarshal(data, &msg); err != nil {

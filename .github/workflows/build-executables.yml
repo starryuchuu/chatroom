@@ -15,8 +15,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   # ==================== Python ====================
   build-python-windows:
+    needs: tests
     name: Build Python (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
@@ -56,6 +60,7 @@ jobs:
           if-no-files-found: error
 
   build-python-linux:
+    needs: tests
     name: Build Python (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -96,6 +101,7 @@ jobs:
 
   # ==================== Go ====================
   build-go-windows:
+    needs: tests
     name: Build Go Server (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
@@ -127,6 +133,7 @@ jobs:
           if-no-files-found: error
 
   build-go-cross-platform:
+    needs: tests
     name: Build Go Server (Cross-platform)
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -178,3 +185,4 @@ jobs:
             go-server/server-linux-arm64
             go-server/server-darwin-arm64
           if-no-files-found: error
+

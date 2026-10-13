@@ -42,7 +42,8 @@ func setupServer(t *testing.T) {
 
 func startPeer(t *testing.T, key []byte) (net.Conn, <-chan struct{}) {
 	t.Helper()
-	peer, remote := net.Pipe()
+	rawPeer, remote := net.Pipe()
+	peer := protocol.WrapConn(rawPeer)
 	peer.SetDeadline(time.Now().Add(5 * time.Second))
 	done := make(chan struct{})
 	go func() { defer close(done); handleConnection(remote) }()
@@ -62,8 +63,11 @@ func startPeer(t *testing.T, key []byte) (net.Conn, <-chan struct{}) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.SendMsg(peer, map[string]string{"type": "session_key", "key": base64.StdEncoding.EncodeToString(encrypted)}); err != nil {
+	if err := protocol.SendMsg(peer, map[string]interface{}{"type": "session_key", "protocol": protocol.Version, "key": base64.StdEncoding.EncodeToString(encrypted)}); err != nil {
 		t.Fatal(err)
+	}
+	if len(key) == 16 || len(key) == 24 || len(key) == 32 {
+		protocol.EnableAuthentication(peer, key, false)
 	}
 	return peer, done
 }

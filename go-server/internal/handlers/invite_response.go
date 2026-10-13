@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"chatroom/internal/database"
 	"chatroom/internal/protocol"
 	"net"
 	"time"
@@ -18,6 +19,11 @@ func handleGroupInviteResponse(conn net.Conn, username string, msg map[string]in
 	defer unlock()
 	pendingGroupJoinsMu.Lock()
 	pruneGroupInvitesLocked(time.Now())
+	if err := database.DeletePendingInvite(gid, username); err != nil {
+		pendingGroupJoinsMu.Unlock()
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_response_result", "success": false, "error": "邀请处理失败，请重试"})
+		return
+	}
 	delete(pendingGroupJoins[gid], username)
 	if len(pendingGroupJoins[gid]) == 0 {
 		delete(pendingGroupJoins, gid)

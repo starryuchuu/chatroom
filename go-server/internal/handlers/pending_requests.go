@@ -70,3 +70,31 @@ func SendPendingNotifications(conn net.Conn, username string) {
 		}
 	}
 }
+
+// RestorePendingRequests is called before accepting connections. SQLite is the
+// durable source; in-memory maps only support live request coordination.
+func RestorePendingRequests() error {
+	friends, invites, err := database.LoadPendingRequests()
+	if err != nil {
+		return err
+	}
+	pendingFriendRequestsMu.Lock()
+	pendingFriendRequests = make(map[string]map[string]time.Time)
+	for _, request := range friends {
+		if pendingFriendRequests[request.Requester] == nil {
+			pendingFriendRequests[request.Requester] = make(map[string]time.Time)
+		}
+		pendingFriendRequests[request.Requester][request.Target] = request.Created
+	}
+	pendingFriendRequestsMu.Unlock()
+	pendingGroupJoinsMu.Lock()
+	pendingGroupJoins = make(map[string]map[string]groupInvitation)
+	for _, invite := range invites {
+		if pendingGroupJoins[invite.GID] == nil {
+			pendingGroupJoins[invite.GID] = make(map[string]groupInvitation)
+		}
+		pendingGroupJoins[invite.GID][invite.Target] = groupInvitation{Inviter: invite.Inviter, CreatedAt: invite.Created}
+	}
+	pendingGroupJoinsMu.Unlock()
+	return nil
+}

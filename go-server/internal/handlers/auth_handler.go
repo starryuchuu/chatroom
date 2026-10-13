@@ -9,11 +9,20 @@ import (
 	"errors"
 	"log"
 	"net"
+	"time"
 )
 
 // HandleAuth 处理用户的认证请求（登录或注册）
 // 成功后返回用户名，否则返回空字符串
-func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientManager) (string, error) {
+var errRegistered = errors.New("注册成功，请重新登录")
+
+func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientManager) (username string, resultErr error) {
+	ip := authIP(conn)
+	if !reserveAuth(ip, time.Now()) {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "请求过于频繁，请稍后再试"})
+		return "", errors.New("authentication rate/concurrency limit")
+	}
+	defer func() { releaseAuth(ip, resultErr != nil && !errors.Is(resultErr, errRegistered)) }()
 	// 循环以处理认证消息
 	for {
 		msg, err := protocol.RecvMsg(conn)
@@ -31,7 +40,8 @@ func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientMana
 		case "encrypted_register":
 			return handleRegister(conn, sessionKey, msg)
 		case "login":
-			return handleLogin(conn, clientManager, msg)
+			protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "不再支持明文登录，请升级客户端"})
+			return "", errors.New("plaintext login rejected")
 		case "encrypted_login":
 			return handleEncryptedLogin(conn, sessionKey, clientManager, msg)
 		default:
@@ -88,7 +98,7 @@ func handleRegister(conn net.Conn, sessionKey []byte, msg map[string]interface{}
 	protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": true})
 	log.Printf("用户 %s 注册成功", username)
 	// 注册后，客户端会断开连接，所以这里返回错误以便上层关闭连接
-	return "", errors.New("注册成功，请重新登录")
+	return "", errRegistered
 }
 
 func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[string]interface{}) (string, error) {
