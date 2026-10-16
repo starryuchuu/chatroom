@@ -163,25 +163,12 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 	protocol.EnableQueuedWrites(conn)
-	if !clientManager.ActivateClient(username, conn) {
+	if err := handlers.SendFriendsAndActivate(conn, username, clientManager); err != nil {
+		log.Printf("初始化用户 %s 的好友列表失败: %v", username, err)
+		protocol.SendMsgWait(conn, map[string]interface{}{"type": "error", "message": "好友列表加载失败，请重新登录"})
 		return
 	}
 	conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
-
-	// 发送好友列表给客户端
-	friendList := make([]string, 0, len(friends))
-	for friend := range friends {
-		friendList = append(friendList, friend)
-	}
-	friendListMsg := map[string]interface{}{
-		"type":    "friends_list",
-		"friends": friendList,
-	}
-	if err := protocol.SendMsg(conn, friendListMsg); err != nil {
-		log.Printf("发送好友列表给 %s 失败: %v", username, err)
-	} else {
-		log.Printf("已成功发送 %d 个好友给用户 %s", len(friendList), username)
-	}
 
 	// 广播在线用户列表更新
 	clientManager.BroadcastMessage(map[string]interface{}{

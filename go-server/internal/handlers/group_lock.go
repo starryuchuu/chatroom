@@ -16,9 +16,19 @@ var groupLocks = make(map[string]*groupOperationLock)
 // include waiters; the last release removes the lock to avoid leaking group IDs.
 func lockGroupOperation(msg map[string]interface{}) func() {
 	groupCatalogMu.RLock()
-	gid, ok := msg["gid"].(string)
-	if !ok || gid == "" {
-		return func() { groupCatalogMu.RUnlock() }
+	gid, _ := msg["gid"].(string)
+	unlock := lockGroup(gid)
+	return func() {
+		defer groupCatalogMu.RUnlock()
+		unlock()
+	}
+}
+
+// lockGroup requires an existing catalog read lock, held until release. Taking
+// that read lock twice would deadlock if a login snapshot has queued a writer.
+func lockGroup(gid string) func() {
+	if gid == "" {
+		return func() {}
 	}
 	groupLocksMu.Lock()
 	lock := groupLocks[gid]
@@ -30,7 +40,6 @@ func lockGroupOperation(msg map[string]interface{}) func() {
 	groupLocksMu.Unlock()
 	lock.mu.Lock()
 	return func() {
-		defer groupCatalogMu.RUnlock()
 		lock.mu.Unlock()
 		groupLocksMu.Lock()
 		lock.refs--

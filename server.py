@@ -101,40 +101,44 @@ group_ops_lock = GroupOperationLock()
 # 检查并生成/加载RSA密钥
 def ensure_rsa_keys():
     """
-    检查并生成RSA密钥对文件，确保密钥可用。
+    加载服务器身份；仅首次启动生成私钥，公钥可从现有私钥恢复。
     返回: (private_key, public_key_pem)
     """
-    def is_key_valid():
-        try:
-            with open("private_key.pem", "rb") as f:
-                priv = RSA.import_key(f.read())
-            with open("public_key.pem", "rb") as f:
-                pub = RSA.import_key(f.read())
-            # 简单验证公钥和私钥匹配（加解密测试）
-            test = b"test"
-            cipher = PKCS1_OAEP.new(pub)
-            enc = cipher.encrypt(test)
-            cipher2 = PKCS1_OAEP.new(priv)
-            dec = cipher2.decrypt(enc)
-            return dec == test
-        except Exception:
-            return False
+    if not os.path.exists("private_key.pem"):
+        if os.path.exists("public_key.pem"):
+            raise RuntimeError("私钥文件丢失；请恢复原私钥，拒绝自动更换服务器身份")
+        generated = RSA.generate(RSA_KEY_SIZE)
+        # 独占创建，避免并发启动覆盖另一进程刚生成的服务器身份。
+        fd = os.open("private_key.pem", os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                     PRIVATE_KEY_PERMISSIONS)
+        with os.fdopen(fd, "wb") as f:
+            f.write(generated.export_key())
+        logging.info("RSA private key 'private_key.pem' generated.")
 
-    if not (os.path.exists("private_key.pem") and os.path.exists("public_key.pem")) or not is_key_valid():
-        key = RSA.generate(RSA_KEY_SIZE)
-        private_key = key.export_key()
-        with open('private_key.pem', 'wb') as f:
-            f.write(private_key)
-        # 设置私钥文件权限为仅所有者可读写 (600)
-        os.chmod('private_key.pem', PRIVATE_KEY_PERMISSIONS)
-        public_key = key.publickey().export_key()
-        with open('public_key.pem', 'wb') as f:
-            f.write(public_key)
-        logging.info("RSA key pair 'private_key.pem' and 'public_key.pem' generated.")
-    with open("private_key.pem", "rb") as f:
-        private_key = RSA.import_key(f.read())
-    with open("public_key.pem", "rb") as f:
-        public_key_pem = f.read()
+    try:
+        with open("private_key.pem", "rb") as f:
+            private_key = RSA.import_key(f.read())
+        if not private_key.has_private():
+            raise ValueError("文件不包含RSA私钥")
+    except (OSError, ValueError, IndexError, TypeError) as exc:
+        raise RuntimeError("无法加载RSA私钥；保留原文件，请恢复有效私钥") from exc
+
+    try:
+        with open("public_key.pem", "rb") as f:
+            public_key_pem = f.read()
+    except FileNotFoundError:
+        public_key_pem = b""
+    try:
+        public_key = RSA.import_key(public_key_pem)
+        matches = (not public_key.has_private() and
+                   public_key.n == private_key.n and public_key.e == private_key.e)
+    except (ValueError, IndexError, TypeError):
+        matches = False
+    if not matches:
+        public_key_pem = private_key.publickey().export_key()
+        with open("public_key.pem", "wb") as f:
+            f.write(public_key_pem)
+        logging.info("RSA public key repaired from the existing private key.")
     return private_key, public_key_pem
 
 # 速率限制检查函数（只统计"认证失败"次数，连接数与成功登录不计入，
@@ -304,7 +308,7 @@ def enqueue_packet(sock, packet, ready=None):
             send_queues[sock] = outbox
             threading.Thread(target=send_worker, args=(sock, outbox), daemon=True).start()
     try:
-        if getattr(group_ops_lock.local, 'notifications', None) is not None:
+        if ready is not None or getattr(group_ops_lock.local, 'notifications', None) is not None:
             outbox.put_nowait((packet, ready))
         else:
             outbox.put((packet, ready), timeout=SEND_TIMEOUT_SECONDS)
@@ -319,7 +323,7 @@ def validate_chat_packet(kind, sender, recipient, gid, content, timestamp):
     if len(json.dumps(payload).encode('utf-8')) > MAX_MESSAGE_LEN:
         raise ValueError('消息内容过长，无法转发')
 
-def send_msg(sock, msg):
+def send_msg(sock, msg, *, ready=None):
     data = json.dumps(msg).encode('utf-8') if isinstance(msg, dict) else str(msg).encode('utf-8')
     if len(data) > MAX_MESSAGE_LEN:
         raise ValueError("消息包超过大小限制")
@@ -327,8 +331,8 @@ def send_msg(sock, msg):
     staged = getattr(group_ops_lock.local, 'notifications', None)
     if staged is not None:
         staged.append((sock, packet))
-    elif sock in session_timestamps:
-        enqueue_packet(sock, packet)
+    elif ready is not None or sock in session_timestamps:
+        enqueue_packet(sock, packet, ready=ready)
     else:
         with get_send_lock(sock):
             transport.send_packet(sock, packet)
@@ -962,33 +966,36 @@ def handle_client(client_sock, addr):
                 logging.error(f"Login failed for {username} from {addr}: 用户名或密码错误")
                 return
 
-            # 检查是否已登录与登记在线必须在同一临界区内完成，消除 TOCTOU 竞态：
-            # 两个线程同时用同一账号登录时只有一个能通过检查。
-            # 同时必须先发送 login_result 再登记在线，否则并发登录/断开时，
-            # 其他线程的 online_users 广播可能抢先到达该连接，
-            # 客户端会把 online_users 误当作登录响应而导致登录失败。
-            with usernames_lock:
-                if username in usernames.values():
-                    send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
-                    logging.warning(f"Login failed for {username} from {addr}: 用户已登录")
-                    return
-                current_username = username # 记录当前连接的用户名
-                send_msg(client_sock, {"type": "login_result", "success": True})
-                usernames[client_sock] = username
-            with user_friends_lock:
-                user_friends[username] = load_friends(username)
             # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
             client_sock.settimeout(SEND_TIMEOUT_SECONDS)
-            # 记录会话时间戳用于过期检查
-            session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+            # 接受好友的数据库提交也持有 pending_friend_requests_lock。
+            # 先加载并入队好友快照，再发布在线连接，增量通知必定排在快照后。
+            # ready 在全局锁释放后才放行发送线程，锁内只做有界队列的非阻塞入队。
+            ready = threading.Event()
+            duplicate_login = False
+            try:
+                with pending_friend_requests_lock:
+                    with usernames_lock:
+                        if username in usernames.values():
+                            duplicate_login = True
+                        else:
+                            friends = load_friends(username)
+                            session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+                            send_msg(client_sock, {"type": "login_result", "success": True}, ready=ready)
+                            send_msg(client_sock, {"type": "friends_list", "friends": list(friends)}, ready=ready)
+                            with user_friends_lock:
+                                user_friends[username] = friends
+                            current_username = username
+                            usernames[client_sock] = username
+            finally:
+                ready.set()
+            if duplicate_login:
+                send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
+                logging.warning(f"Login failed for {username} from {addr}: 用户已登录")
+                return
             authentication_slots.release()
             auth_reserved = False
             logging.info(f"User {username} logged in from {addr}")
-
-            # 发送好友列表
-            with user_friends_lock:
-                friends_list = list(user_friends[username])
-            send_msg(client_sock, {"type": "friends_list", "friends": friends_list})
 
             # 发送用户所属的群组列表
             send_user_groups(client_sock, username)

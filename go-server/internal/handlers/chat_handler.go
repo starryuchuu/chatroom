@@ -9,9 +9,27 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"chatroom/internal/types" // 导入 types 包以访问 ClientManager 接口
 )
+
+const groupNameMaxLen = 128
+
+func validGroupName(name string) bool {
+	return strings.TrimSpace(name) != "" && utf8.RuneCountInString(name) <= groupNameMaxLen
+}
+
+func groupNameForNotification(name string) string {
+	count := 0
+	for index := range name {
+		if count == groupNameMaxLen {
+			return name[:index]
+		}
+		count++
+	}
+	return name
+}
 
 // 待处理的好友请求：{requester: set(target)}，仅真实收到请求者可响应，防止伪造好友关系
 var (
@@ -687,8 +705,8 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 		return
 	}
 	newName, ok := msg["new_name"].(string)
-	if !ok || newName == "" {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "群聊名称不能为空"})
+	if !ok || !validGroupName(newName) {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "群聊名称须为1至128个字符，且不能全为空白"})
 		return
 	}
 
@@ -709,7 +727,7 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 	}
 
 	// 保存旧名称用于通知
-	oldName := group.GroupName
+	oldName := groupNameForNotification(group.GroupName)
 
 	// 更新数据库中的群组名称
 	err = database.UpdateGroupName(gid, newName)
@@ -938,8 +956,8 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 	groupCatalogMu.RLock()
 	defer groupCatalogMu.RUnlock()
 	groupName, ok := msg["group_name"].(string)
-	if !ok || strings.TrimSpace(groupName) == "" {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "群组名称无效"})
+	if !ok || !validGroupName(groupName) {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "群聊名称须为1至128个字符，且不能全为空白"})
 		return
 	}
 
@@ -987,7 +1005,7 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "创建群组失败"})
 		return
 	}
-	unlock := lockGroupOperation(map[string]interface{}{"gid": newGroup.GID})
+	unlock := lockGroup(newGroup.GID)
 	defer unlock()
 
 	log.Printf("用户 '%s' 创建了新群组 '%s' (GID: %s)", owner, groupName, newGroup.GID)

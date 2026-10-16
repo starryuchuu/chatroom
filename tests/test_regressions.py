@@ -312,7 +312,7 @@ class TkClientTests(unittest.TestCase):
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
         app.msg_entry.insert('1.0', 'draft')
         app.disconnect()
-        self.assertEqual(app.saved_draft, ('alice', 'draft'))
+        self.assertEqual(app.saved_drafts[(client.SERVER_HOST, app.server_port, 'alice')], 'draft')
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
 
     def test_login_runs_off_thread_and_can_be_cancelled(self):

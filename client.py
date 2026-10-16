@@ -194,6 +194,8 @@ class ChatClient:
         self.auth_busy = False
         self.auth_sock = None
         self.auth_lock = threading.Lock()
+        self.connection_endpoint = None
+        self.saved_drafts = {}
         self.pending_messages = {}
         self.seen_message_ids = set()
         self.message_order = {}
@@ -304,10 +306,9 @@ class ChatClient:
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         self.msg_entry = tk.Text(input_frame, height=2)
         self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        draft = getattr(self, 'saved_draft', None)
-        if draft and draft[0] == self.username:
-            self.msg_entry.insert('1.0', draft[1])
-            self.saved_draft = None
+        draft = getattr(self, 'saved_drafts', {}).pop(self.draft_key(), None)
+        if draft:
+            self.msg_entry.insert('1.0', draft)
         self.send_button = tk.Button(input_frame, text="发送", command=self.send_msg, state=tk.DISABLED)
         self.send_button.pack(side=tk.LEFT, padx=5)
         self.msg_entry.bind("<Return>", self.on_message_entry_key)
@@ -320,12 +321,25 @@ class ChatClient:
         self.group_chat = []
         self.groups = {}  # gid: {group_name, members}
 
+    def draft_key(self):
+        """Keep drafts separate for each account on each server endpoint."""
+        endpoint = getattr(self, 'connection_endpoint', None)
+        if endpoint is None:
+            endpoint = (SERVER_HOST, getattr(self, 'server_port', SERVER_PORT))
+        return (*endpoint, self.username)
+
     def disconnect(self):
         """断开连接并返回登录界面"""
         if not self.running: # 防止重复调用
             return
         if hasattr(self, 'msg_entry') and self.msg_entry.winfo_exists():
-            self.saved_draft = (self.username, self.msg_entry.get('1.0', 'end-1c'))
+            if not hasattr(self, 'saved_drafts'):
+                self.saved_drafts = {}
+            draft = self.msg_entry.get('1.0', 'end-1c')
+            if draft:
+                self.saved_drafts[self.draft_key()] = draft
+            else:
+                self.saved_drafts.pop(self.draft_key(), None)
         self.running = False
         self.pending_messages = {}
         self.seen_message_ids = set()
@@ -347,6 +361,7 @@ class ChatClient:
             
         self.session_key = None
         self.username = None
+        self.connection_endpoint = None
         for name in list(vars(self)):
             if name.startswith("group_messages_"):
                 delattr(self, name)
@@ -677,7 +692,7 @@ class ChatClient:
             return
         self.auth_generation += 1
         generation = self.auth_generation
-        port = self.server_port
+        endpoint = (SERVER_HOST, self.server_port)
         self.set_auth_busy(True, "正在注册…" if register else "正在连接…")
         def worker():
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -690,7 +705,7 @@ class ChatClient:
                         return
                     self.auth_sock = sock
                 sock.settimeout(10)
-                sock.connect((SERVER_HOST, port))
+                sock.connect(endpoint)
                 public_key, key_error = check_server_public_key(recv_msg(sock))
                 if key_error:
                     raise ValueError(key_error)
@@ -725,6 +740,7 @@ class ChatClient:
                             window.destroy()
                     else:
                         self.sock, self.session_key, self.username = sock, key, username
+                        self.connection_endpoint = endpoint
                         authenticated_sockets.add(sock)
                         self.running = True
                         self.seen_message_ids = set()
