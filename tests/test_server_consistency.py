@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_regressions as regressions
 
@@ -34,6 +34,124 @@ class ServerConsistencyTests(unittest.TestCase):
         thread = threading.Thread(target=connect, daemon=True)
         thread.start()
         return thread, results, errors
+
+    def assert_group_info_precedes_mutation(self, action, saver, notification):
+        s, wire = self.server, regressions.client
+        gid = s.create_group_db('alice', 'Team', ['alice', 'bob'])
+        alice, _, _ = self.connect('alice')
+        self.read_type(alice, 'online_users')
+        alice_thread = self.threads[-1]
+        bob, _, _ = self.connect('bob')
+        self.read_type(bob, 'online_users')
+        self.read_type(alice, 'online_users')
+        bob_thread = self.threads[-1]
+        queried, release_query = threading.Event(), threading.Event()
+        requested, mutated = threading.Event(), threading.Event()
+        original_query, original_acquire = s.get_group_db, s.group_ops_lock.acquire
+        original_save = getattr(s, saver)
+
+        def query(group_id):
+            group = original_query(group_id)
+            if threading.current_thread() is bob_thread and not queried.is_set():
+                queried.set()
+                if not release_query.wait(5):
+                    raise TimeoutError('test did not release the group snapshot')
+            return group
+
+        def acquire():
+            if threading.current_thread() is alice_thread:
+                requested.set()
+            return original_acquire()
+
+        def save(*args, **kwargs):
+            mutated.set()
+            return original_save(*args, **kwargs)
+
+        with patch.object(s, 'get_group_db', side_effect=query), \
+                patch.object(s.group_ops_lock, 'acquire', side_effect=acquire), \
+                patch.object(s, saver, side_effect=save):
+            try:
+                wire.send_msg(bob, {'type': 'group_info', 'gid': gid})
+                self.assertTrue(queried.wait(3))
+                wire.send_msg(alice, dict(action, gid=gid))
+                self.assertTrue(requested.wait(3))
+                self.assertFalse(mutated.wait(0.1), 'group mutation bypassed the info snapshot')
+            finally:
+                release_query.set()
+            result = self.read_type(alice, action['type'] + '_result')
+            self.assertTrue(result['success'])
+            snapshot = wire.recv_msg(bob)
+            changed = wire.recv_msg(bob)
+            self.assertEqual(snapshot['type'], 'group_info')
+            self.assertEqual(snapshot['members'], ['alice', 'bob'])
+            self.assertEqual(changed['type'], notification)
+
+        app = regressions.ClientTests().app()
+        app.username = 'bob'
+        app.current_group = app.current_friend = None
+        app.groups = {gid: snapshot}
+        app.notify = app.refresh_group_listbox = Mock()
+        app.handle_server_message(snapshot)
+        app.handle_server_message(changed)
+        group = original_query(gid)
+        if group is None or 'bob' not in group['members']:
+            self.assertNotIn(gid, app.groups)
+        else:
+            self.assertEqual(app.groups[gid]['owner'], group['owner'])
+            self.assertEqual(app.groups[gid]['group_name'], group['group_name'])
+
+        # A subsequent request observes the committed state and also proves
+        # that the info handler released its lock after sending the snapshot.
+        wire.send_msg(bob, {'type': 'group_info', 'gid': gid})
+        latest = self.read_type(bob, 'group_info')
+        if group is None or 'bob' not in group['members']:
+            self.assertIn('error', latest)
+        else:
+            self.assertEqual(latest['owner'], group['owner'])
+            self.assertEqual(latest['group_name'], group['group_name'])
+
+    def test_group_info_precedes_concurrent_kick(self):
+        self.assert_group_info_precedes_mutation(
+            {'type': 'group_kick', 'kick': 'bob'}, 'update_group_members_db', 'group_kick_notification')
+
+    def test_group_info_precedes_concurrent_disband(self):
+        self.assert_group_info_precedes_mutation(
+            {'type': 'group_disband'}, 'delete_group_db', 'group_disband_notification')
+
+    def test_group_info_precedes_concurrent_rename(self):
+        self.assert_group_info_precedes_mutation(
+            {'type': 'group_rename', 'new_name': 'Updated'}, 'update_group_name_db', 'group_rename_notification')
+
+    def test_group_info_precedes_concurrent_transfer(self):
+        self.assert_group_info_precedes_mutation(
+            {'type': 'group_transfer', 'new_owner': 'bob'}, 'transfer_group_ownership_db', 'group_transfer_notification')
+
+    def test_group_info_error_paths_release_operation_lock(self):
+        s, wire = self.server, regressions.client
+        gid = s.create_group_db('alice', 'Team', ['alice'])
+        alice, _, _ = self.connect('alice')
+        self.read_type(alice, 'online_users')
+        bob, _, _ = self.connect('bob')
+        self.read_type(bob, 'online_users')
+        self.read_type(alice, 'online_users')
+        for denied_gid in (gid, 'missing', []):
+            with self.subTest(gid=denied_gid):
+                wire.send_msg(bob, {'type': 'group_info', 'gid': denied_gid})
+                self.assertIn('error', self.read_type(bob, 'group_info'))
+                wire.send_msg(alice, {'type': 'group_rename', 'gid': gid, 'new_name': 'Updated'})
+                self.assertTrue(self.read_type(alice, 'group_rename_result')['success'])
+
+    def test_failed_group_lookup_closes_database_connection(self):
+        s = self.server
+        connection = s.storage.connect('chat.db')
+        try:
+            with patch.object(s.storage, 'connect', return_value=connection):
+                with self.assertRaises(s.sqlite3.ProgrammingError):
+                    s.get_group_db([])
+            with self.assertRaisesRegex(s.sqlite3.ProgrammingError, 'closed'):
+                connection.execute('SELECT 1')
+        finally:
+            connection.close()
 
     def test_login_snapshot_precedes_concurrent_friend_update(self):
         s = self.server

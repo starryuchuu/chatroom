@@ -316,6 +316,47 @@ class TkClientTests(unittest.TestCase):
         self.assertEqual(app.saved_drafts[(client.SERVER_HOST, app.server_port, 'alice')], 'draft')
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
 
+    def scrollable_chat(self):
+        self.chat()
+        app = self.app
+        app.group_messages_g = [((f'bob: message {i}', 'now'), False) for i in range(80)]
+        app.switch_chat_frame('g')
+        self.root.deiconify()
+        self.root.update()
+        frame = app.chat_frames['g']
+        bubble = frame.winfo_children()[0]
+        return [app.chat_canvas, app.chat_container, frame, bubble, *bubble.winfo_children()]
+
+    def test_x11_wheel_scrolls_every_chat_surface_without_global_bindings(self):
+        if self.root.tk.call('tk', 'windowingsystem') != 'x11':
+            self.skipTest('X11 mouse buttons are specific to the X11 Tk backend')
+        widgets = self.scrollable_chat()
+        app = self.app
+        for widget in widgets:
+            for event, direction in (('<Button-4>', -1), ('<Button-5>', 1)):
+                with self.subTest(widget=widget.winfo_class(), event=event):
+                    app.chat_canvas.yview_moveto(0.5)
+                    before = app.chat_canvas.yview()[0]
+                    widget.event_generate(event, x=5, y=5)
+                    self.root.update()
+                    after = app.chat_canvas.yview()[0]
+                    self.assertGreater((after - before) * direction, 0)
+        for event in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            self.assertFalse(self.root.bind_all(event))
+            self.assertFalse(app.msg_entry.bind(event))
+
+    def test_mousewheel_keeps_both_directions_on_every_chat_surface(self):
+        widgets = self.scrollable_chat()
+        app = self.app
+        for widget in widgets:
+            for delta, direction in ((120, -1), (-120, 1)):
+                with self.subTest(widget=widget.winfo_class(), delta=delta):
+                    app.chat_canvas.yview_moveto(0.5)
+                    before = app.chat_canvas.yview()[0]
+                    widget.event_generate('<MouseWheel>', delta=delta, x=5, y=5)
+                    self.root.update()
+                    self.assertGreater((app.chat_canvas.yview()[0] - before) * direction, 0)
+
     def test_login_runs_off_thread_and_can_be_cancelled(self):
         app = self.app
         entered, release = threading.Event(), threading.Event()

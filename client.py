@@ -299,8 +299,8 @@ class ChatClient(HistoryMixin):
         self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_container, anchor="nw")
         self.chat_container.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
         self.chat_canvas.bind("<Configure>", lambda e: self.chat_canvas.itemconfig(self.chat_window, width=e.width))
-        self.chat_canvas.bind("<MouseWheel>", self.on_chat_wheel)
-        self.chat_container.bind("<MouseWheel>", self.on_chat_wheel)
+        self.bind_chat_wheel(self.chat_canvas)
+        self.bind_chat_wheel(self.chat_container)
         input_frame = tk.Frame(right_frame)
         input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
         self.msg_entry = tk.Text(input_frame, height=2)
@@ -492,9 +492,9 @@ class ChatClient(HistoryMixin):
                 time_label.pack(side=tk.BOTTOM, anchor="e" if is_self else "w", padx=8)
             
             bubble_frame.pack(fill=tk.X, anchor="e" if is_self else "w")
-            bubble_frame.bind('<MouseWheel>', self.on_chat_wheel)
+            self.bind_chat_wheel(bubble_frame)
             for child in bubble_frame.winfo_children():
-                child.bind('<MouseWheel>', self.on_chat_wheel)
+                self.bind_chat_wheel(child)
             
             # 强制更新UI并滚动到底部
             if not self.is_loading_messages:
@@ -554,8 +554,8 @@ class ChatClient(HistoryMixin):
         
         if chat_id not in self.chat_frames:
             self.chat_frames[chat_id] = tk.Frame(self.chat_container, bg="#f5f5f5")
+            self.bind_chat_wheel(self.chat_frames[chat_id])
         
-        self.chat_frames[chat_id].bind("<MouseWheel>", self.on_chat_wheel)
         self.chat_frames[chat_id].pack(fill=tk.BOTH, expand=True)
         self.current_chat_frame = self.chat_frames[chat_id]
         
@@ -1541,9 +1541,19 @@ class ChatClient(HistoryMixin):
             exhausted = (kind,gid or friend) in getattr(self,'history_exhausted',set())
             self.load_history_button.configure(state=tk.NORMAL if title and not exhausted and not getattr(self,'history_page_pending',False) else tk.DISABLED)
 
-    def on_chat_wheel(self, event):
+    def bind_chat_wheel(self, widget):
+        """Keep Windows/Tk wheel and standard X11 button events local to chat."""
+        widget.bind('<MouseWheel>', self.on_chat_wheel)
+        # Tk 9 renumbers event.num for these bindings. Use the known binding's
+        # direction rather than interpreting the backend's button number.
+        for sequence, units in (('<Button-4>', -1), ('<Button-5>', 1)):
+            widget.bind(sequence, lambda event, units=units: self.on_chat_wheel(event, units))
+
+    def on_chat_wheel(self, event, units=None):
         if self.running and self.chat_canvas.winfo_exists():
-            self.chat_canvas.yview_scroll(int(-event.delta / 120), 'units')
+            if units is None:
+                units = int(-event.delta / 120)
+            self.chat_canvas.yview_scroll(units, 'units')
             return 'break'
 
     def update_friends_listbox(self):

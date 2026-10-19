@@ -776,11 +776,8 @@ def create_group_db(owner, group_name, members):
         conn.close()
 
 def get_group_db(gid):
-    conn = storage.connect("chat.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT gid, group_name, owner, members, created_at FROM groups WHERE gid=?", (gid,))
-    row = cursor.fetchone()
-    conn.close()
+    with closing(storage.connect("chat.db")) as conn:
+        row = conn.execute("SELECT gid, group_name, owner, members, created_at FROM groups WHERE gid=?", (gid,)).fetchone()
     if row:
         row = storage.decode_group(row)
         return {
@@ -1613,6 +1610,9 @@ def handle_client(client_sock, addr):
                     group_ops_lock.release()
 
             elif mtype == "group_info":
+                # Order the read, permission check and response snapshot with
+                # membership/owner/name changes, so stale info cannot follow them.
+                group_ops_lock.acquire()
                 try:
                     gid = msg.get("gid")
                     logging.info(f"Processing group_info request for gid '{gid}' from '{current_username}'.")
@@ -1631,6 +1631,8 @@ def handle_client(client_sock, addr):
                 except Exception as e:
                     logging.error(f"Error processing group_info from {current_username}: {e}")
                     send_msg(client_sock, {"type": "group_info", "gid": msg.get("gid"), "error": "操作处理失败，请重试"})
+                finally:
+                    group_ops_lock.release()
             
             elif mtype == "group_disband":
                 try:
