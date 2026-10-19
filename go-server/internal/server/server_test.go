@@ -86,6 +86,7 @@ type concurrentAuthManager struct {
 	types.ClientManager
 	arrivals atomic.Int32
 	gate     chan struct{}
+	activate chan struct{}
 }
 
 func (m *concurrentAuthManager) IsUserOnline(string) bool {
@@ -96,9 +97,17 @@ func (m *concurrentAuthManager) IsUserOnline(string) bool {
 	return false // Force both connections past the early, non-atomic precheck.
 }
 
+func (m *concurrentAuthManager) ActivateClient(username string, conn net.Conn) bool {
+	<-m.activate
+	return m.ClientManager.ActivateClient(username, conn)
+}
+
 func TestConcurrentLoginOneSuccessPreservesFirstSession(t *testing.T) {
 	setupServer(t)
-	manager := &concurrentAuthManager{ClientManager: NewClientManager(), gate: make(chan struct{})}
+	manager := &concurrentAuthManager{ClientManager: NewClientManager(), gate: make(chan struct{}), activate: make(chan struct{})}
+	var activationOnce sync.Once
+	activate := func() { activationOnce.Do(func() { close(manager.activate) }) }
+	defer activate()
 	clientManager = manager
 	key := make([]byte, 16)
 	first, firstDone := startPeer(t, key)
@@ -121,6 +130,7 @@ func TestConcurrentLoginOneSuccessPreservesFirstSession(t *testing.T) {
 		}(item)
 	}
 	successes := 0
+	var winner net.Conn
 	for i := 0; i < 2; i++ {
 		item := <-outcomes
 		if item.err != nil || item.msg["type"] != "login_result" {
@@ -128,6 +138,7 @@ func TestConcurrentLoginOneSuccessPreservesFirstSession(t *testing.T) {
 		}
 		if item.msg["success"] == true {
 			successes++
+			winner = item.peer
 		} else {
 			select {
 			case <-item.done:
@@ -138,6 +149,22 @@ func TestConcurrentLoginOneSuccessPreservesFirstSession(t *testing.T) {
 	}
 	if successes != 1 {
 		t.Fatalf("got %d successful logins", successes)
+	}
+	if !manager.ClientManager.IsUserOnline("alice") {
+		t.Fatal("rejected duplicate removed winning reservation")
+	}
+	// The successful login response precedes activation and initial snapshots.
+	// Keep activation gated above to exercise this boundary deterministically,
+	// then wait for initialization before checking the public ready-session API.
+	activate()
+	for {
+		msg, err := protocol.RecvMsg(winner)
+		if err != nil {
+			t.Fatalf("winning session did not initialize: %v", err)
+		}
+		if msg["type"] == "history_end" {
+			break
+		}
 	}
 	if _, ok := manager.GetClient("alice"); !ok {
 		t.Fatal("rejected duplicate removed winning session")
