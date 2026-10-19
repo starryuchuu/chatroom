@@ -134,7 +134,17 @@ python client.py
 
 ```
 chatroom/
-├── client.py                          # Python 客户端（GUI/加密/群聊）
+├── client.py                          # 客户端入口及服务器配置
+├── chatroom_client/                   # Python 客户端组件
+│   ├── app.py                        # 应用操作、事件泵及退出协调
+│   ├── models.py                     # 会话、消息与账号状态
+│   ├── connection.py                 # 认证、收发线程和连接生命周期
+│   ├── protocol.py                   # TCP 分帧、正文加密及身份校验
+│   ├── events.py                     # 服务器事件处理表
+│   ├── history.py                    # 历史分页与失败重试
+│   ├── view.py                       # Tk 界面与消息渲染
+│   └── group_view.py                 # 群创建及信息窗口
+├── CLIENT_ARCHITECTURE.md              # 客户端结构及维护约定
 ├── server.py                          # Python 服务端（数据库/加密/群聊）
 ├── requirements.txt                   # Python 依赖包
 ├── go-server/                         # Go 服务端实现
@@ -154,7 +164,6 @@ chatroom/
 ├── storage.py                         # 数据库敏感字段加密及迁移
 ├── STORAGE_ENCRYPTION.md              # 存储格式、备份和恢复
 ├── transport.py                       # 协议 v2 完整报文认证
-├── client_history.py                  # 客户端历史状态、分页重试与消息排序
 ├── history_store.py                   # Python 历史分页查询
 ├── pending_store.py                   # Python 申请与邀请持久化
 ├── tests/
@@ -371,7 +380,9 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前开发版本兼容性
 
-本分支采用协议 v2，必须同时升级客户端和 Python / Go 服务端；不接受旧版未认证报文或明文登录。数据库自动增加表和索引，已有消息与账号保留。请完整下载源码压缩包，Python 运行需要 `client_history.py`、`transport.py`、`history_store.py`、`pending_store.py`、`storage.py` 与入口脚本同目录。
+本分支采用协议 v2，不接受旧版未认证报文或明文登录。v1.0.16 客户端兼容 v1.0.10 至 v1.0.15 服务端；本次重构无需迁移数据库。源码运行客户端需要 `client.py`、完整的 `chatroom_client/` 目录和 `transport.py`，可直接下载 `chatroom-v1.0.16-client.zip`。完整项目请下载源码压缩包；Python 服务端还需要 `history_store.py`、`pending_store.py` 和 `storage.py`。
+
+客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](CLIENT_ARCHITECTURE.md)。配置仍在 `client.py` 顶部，启动命令仍为 `python client.py`。
 
 ### 最新功能
 

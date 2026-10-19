@@ -53,11 +53,11 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ## Current development protocol
 
-Upgrade the Python client and either server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies for delivery and encrypts sensitive fields at rest in SQLite.
+When upgrading from an unauthenticated protocol version, upgrade the Python client and the chosen server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies for delivery and encrypts sensitive fields at rest in SQLite.
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
 
-Run Python scripts with `client_history.py`, `transport.py`, `history_store.py`, `pending_store.py`, and `storage.py` available in the same directory. Download the complete source archive rather than an isolated entry script.
+The client requires `client.py`, the complete `chatroom_client/` package, and `transport.py`. Download `chatroom-v1.0.16-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `history_store.py`, `pending_store.py`, and `storage.py`. The v1.0.16 client remains compatible with v1.0.10–v1.0.15 servers; this refactor does not change the protocol or storage format.
 
 ## Security Design
 
@@ -88,7 +88,17 @@ Run Python scripts with `client_history.py`, `transport.py`, `history_store.py`,
 
 ```
 chatroom/
-├── client.py                          # Python client code (group chat/session key/group management/GUI)
+├── client.py                          # Client entry point and server configuration
+├── chatroom_client/                   # Composed desktop client
+│   ├── app.py                        # Application actions and event pump
+│   ├── models.py                     # Session, conversation and message data
+│   ├── connection.py                 # Authentication, socket workers and shutdown
+│   ├── protocol.py                   # TCP framing, encryption and identity checks
+│   ├── events.py                     # Server event dispatch and handlers
+│   ├── history.py                    # Retry-safe history pagination
+│   ├── view.py                       # Tk widgets and rendering
+│   └── group_view.py                 # Group windows
+├── CLIENT_ARCHITECTURE.md              # Client architecture and ownership rules
 ├── server.py                          # Python server code (group chat/session key/group management/database persistence)
 ├── requirements.txt                   # Python dependency list
 ├── go-server/                         # Go language implementation of the server
@@ -106,7 +116,6 @@ chatroom/
 │       └── types/                     # Type definitions
 ├── images/                            # Interface screenshots
 ├── transport.py                       # Protocol v2 frame authentication
-├── client_history.py                  # Client history state, retry cursors and ordering
 ├── history_store.py                   # Bounded history pagination
 ├── pending_store.py                   # Durable requests and invitations
 ├── tests/

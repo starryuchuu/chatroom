@@ -24,142 +24,148 @@ def load(name, path):
 
 client = load('chat_client', ROOT / 'client.py')
 
+from chatroom_client.app import ChatApplication
+from chatroom_client.connection import ClientSettings, ConnectionManager, ServerEvent
+from chatroom_client.models import ChatKey, Message
+from chatroom_client.view import TkClientView
+
+
+def headless_client(testcase):
+    view = Mock()
+    view.input_text.return_value = ''
+    connection = ConnectionManager(ClientSettings())
+    app = ChatApplication(view, connection)
+    connection.sock = Mock()
+    connection.running = True
+    connection.send = Mock()
+    view.reset_mock()
+    testcase.addCleanup(app.close)
+    return app
+
+
 class ClientTests(unittest.TestCase):
     def app(self):
-        app = client.ChatClient.__new__(client.ChatClient)
-        app.master = Mock()
-        app.sock = Mock()
-        app.running = True
-        app.incoming = queue.Queue()
-        app.ui_tasks = queue.Queue()
-        app.pending_messages = {}
-        app.reset_history()
-        app.group_windows = {}
-        app.group_info_requests = set()
-        app.request_windows = {}
-        return app
+        return headless_client(self)
 
     def test_server_error_survives_disconnect(self):
         app = self.app()
         order = []
         app.disconnect = lambda: order.append('disconnect')
-        app.notify = lambda title, text: order.append(text)
+        app.view.notify = lambda title, text: order.append(text)
         app.handle_server_message({'type': 'error', 'message': 'expired'})
         self.assertEqual(order, ['disconnect', 'expired'])
 
     def test_group_snapshot_chunks_are_applied_only_when_complete(self):
         import json
         app = self.app()
-        app.groups = {'old': {}}
-        app.refresh_group_listbox = Mock()
+        app.state.groups = {'old': {}}
+        app.view.refresh_groups = Mock()
         data = json.dumps({'type': 'user_groups_list', 'groups': [{'gid': 'g', 'group_name': '名字'}]})
         app.handle_server_message({'type': 'user_groups_chunk', 'data': data[:20], 'first': True})
-        self.assertIn('old', app.groups)
+        self.assertIn('old', app.state.groups)
         app.handle_server_message({'type': 'user_groups_chunk', 'data': data[20:], 'last': True})
-        self.assertEqual(set(app.groups), {'g'})
+        self.assertEqual(set(app.state.groups), {'g'})
 
     def test_old_connection_events_do_not_disconnect_new_login(self):
         app = self.app()
         app.handle_server_message = Mock()
         app.disconnect = Mock()
-        app.incoming.put((object(), None))
-        app.incoming.put((object(), {'type': 'friends_list', 'friends': ['old']}))
-        app.incoming.put((app.sock, {'type': 'friends_list', 'friends': ['new']}))
+        app.connection.events.put(ServerEvent(object(), None))
+        app.connection.events.put(ServerEvent(object(), {'type': 'friends_list', 'friends': ['old']}))
+        app.connection.events.put(ServerEvent(app.connection.sock, {'type': 'friends_list', 'friends': ['new']}))
         app.drain_incoming()
         app.disconnect.assert_not_called()
         app.handle_server_message.assert_called_once_with({'type': 'friends_list', 'friends': ['new']})
 
     def test_receiver_does_not_call_tk_or_mutate_state(self):
         app = self.app()
-        sock = app.sock
+        sock = app.connection.sock
         app.handle_server_message = Mock()
-        with patch.object(client, 'recv_msg', side_effect=[{'type': 'online_users'}, None]):
-            worker = threading.Thread(target=app.receive_msg, args=(sock,))
+        with patch.object(client.protocol, 'recv_msg', side_effect=[{'type': 'online_users'}, None]):
+            worker = threading.Thread(target=app.connection._receive_loop, args=(sock,))
             worker.start(); worker.join(2)
         self.assertFalse(worker.is_alive())
-        app.master.assert_not_called()
-        self.assertEqual(app.master.mock_calls, [])
+        app.view.master.assert_not_called()
+        self.assertEqual(app.view.master.mock_calls, [])
         app.handle_server_message.assert_not_called()
-        self.assertEqual(app.incoming.get_nowait(), (sock, {'type': 'online_users'}))
-        self.assertEqual(app.incoming.get_nowait(), (sock, None))
+        self.assertEqual(app.connection.events.get_nowait(), ServerEvent(sock, {'type': 'online_users'}))
+        self.assertEqual(app.connection.events.get_nowait(), ServerEvent(sock, None))
 
     def test_disconnect_shutdown_and_clear_session_history(self):
         app = self.app()
-        sock = app.sock
-        app.session_key = b'secret'
-        app.username = 'alice'
-        app.group_messages_old = ['old account history']
-        app.build_login = Mock()
+        sock = app.connection.sock
+        app.connection.session_key = b'secret'
+        app.state.username = 'alice'
+        key = ChatKey('group', 'old')
+        app.state.conversation(key).add(Message('alice', 'old account history', message_id=1))
+        app.view.build_login = Mock()
         app.disconnect()
         sock.shutdown.assert_called_once_with(socket.SHUT_RDWR)
         sock.close.assert_called_once()
-        self.assertIsNone(app.session_key)
-        self.assertIsNone(app.username)
-        self.assertFalse(hasattr(app, 'group_messages_old'))
+        self.assertIsNone(app.connection.session_key)
+        self.assertIsNone(app.state.username)
+        self.assertNotIn(key, app.state.conversations)
 
     def test_friend_success_waits_for_server_ack(self):
         app = self.app()
-        app.friend_request_result = None
-        with patch.object(app, 'notify') as info:
+        with patch.object(app.view, 'notify') as info:
             app.handle_server_message({'type': 'friend_request_result', 'success': True, 'message': 'stored'})
         info.assert_called_once_with('好友申请', 'stored')
 
     def test_unrelated_group_removal_keeps_current_chat(self):
         for kind in ('group_kick_notification', 'group_disband_notification'):
             app = self.app()
-            app.groups = {'old': {'group_name': 'Old'}}
-            app.current_group = 'other'
-            app.refresh_group_listbox = Mock()
+            app.state.groups = {'old': {'group_name': 'Old'}}
+            app.state.current_chat = ChatKey('group', 'other')
+            app.view.refresh_groups = Mock()
             app.clear_chat_selection = Mock()
             with patch.object(client.messagebox, 'showinfo'):
                 app.handle_server_message({'type': kind, 'gid': 'old', 'group_name': 'Old'})
-            self.assertNotIn('old', app.groups)
+            self.assertNotIn('old', app.state.groups)
             app.clear_chat_selection.assert_not_called()
 
     def test_bad_message_does_not_prevent_next_event(self):
         app = self.app()
-        app.update_online_users = Mock()
-        app.incoming.put((app.sock, {'type': 'user_groups_list', 'groups': None}))
-        app.incoming.put((app.sock, {'type': 'online_users', 'users': ['alice']}))
+        app.view.update_online_users = Mock()
+        app.connection.events.put(ServerEvent(app.connection.sock, {'type': 'user_groups_list', 'groups': None}))
+        app.connection.events.put(ServerEvent(app.connection.sock, {'type': 'online_users', 'users': ['alice']}))
         app.drain_incoming()
-        app.update_online_users.assert_called_once_with(['alice'])
+        app.view.update_online_users.assert_called_once_with(['alice'])
 
     def test_clear_selection_preserves_cached_chat_frames(self):
         app = self.app()
-        app.current_friend = None
-        app.current_group = 'removed'
+        app.state.current_chat = ChatKey('group', 'removed')
         removed_frame, other_frame = Mock(), Mock()
-        app.chat_frames = {'removed': removed_frame, 'other': other_frame}
-        app.current_chat_frame = removed_frame
-        app.chat_container = Mock()
-        app.chat_container.winfo_children.return_value = [removed_frame, other_frame]
+        app.view.chat_frames = {ChatKey('group', 'removed'): removed_frame, ChatKey('group', 'other'): other_frame}
+        app.view.current_chat_frame = removed_frame
+        app.view.clear_selection = TkClientView.clear_selection.__get__(app.view)
+        app.view.chat_container = Mock()
+        app.view.chat_container.winfo_children.return_value = [removed_frame, other_frame]
         app.clear_chat_selection()
         removed_frame.pack_forget.assert_called_once()
         removed_frame.destroy.assert_not_called()
         other_frame.destroy.assert_not_called()
-        self.assertIsNone(app.current_chat_frame)
-        self.assertIsNone(app.current_group)
-        self.assertIsNone(app.current_friend)
+        self.assertIsNone(app.view.current_chat_frame)
+        self.assertIsNone(app.state.current_chat)
 
     def test_history_live_overlap_is_deduplicated_and_sorted(self):
         app = self.app()
-        app.username = 'alice'
-        app.session_key = os.urandom(16)
-        app.friends = ['bob']
-        app.private_chats = {}
-        app.current_friend = 'bob'
-        app.current_group = None
-        app.switch_chat_frame = Mock()
-        app.display_message_with_time = Mock()
+        app.state.username = 'alice'
+        app.connection.session_key = os.urandom(16)
+        app.state.friends = ['bob']
+        key = ChatKey('private', 'bob')
+        app.state.current_chat = key
+        app.view.render_conversation = Mock()
+        app.view.display_message_with_time = Mock()
         app.handle_server_message({'type': 'history_begin'})
         for message_id in (8, 3, 8, 5):
             app.handle_server_message({'type': 'private_chat', 'from': 'bob', 'to': 'alice',
                                        'message_id': message_id,
-                                       'content': client.encrypt_message(str(message_id), app.session_key)})
-        self.assertEqual([row[0][0] for row in app.private_chats['bob']], ['bob: 3', 'bob: 5', 'bob: 8'])
-        app.display_message_with_time.assert_not_called()
+                                       'content': client.encrypt_message(str(message_id), app.connection.session_key)})
+        self.assertEqual([message.content for message in app.state.conversation(key).messages], ['3', '5', '8'])
+        app.view.append_message.assert_not_called()
         app.handle_server_message({'type': 'history_end'})
-        app.switch_chat_frame.assert_called_once_with('bob')
+        app.view.render_conversation.assert_called_once_with(key, False)
 
     def test_serialized_size_check_never_writes_oversize(self):
         sock = Mock()
@@ -176,53 +182,53 @@ class ClientTests(unittest.TestCase):
         finally:
             client.authenticated_sockets.discard(sock)
 
-    def test_ack_preserves_edited_input_and_failure_supports_retry(self):
+    def test_ack_requests_conditional_clear_and_failure_supports_retry(self):
         app = self.app()
-        app.pending_messages = {'request': 'original'}
-        app.msg_entry = Mock()
-        app.msg_entry.get.return_value = 'edited'
-        app.notify = Mock()
-        app.update_chat_target = Mock()
+        app.state.pending_messages = {'request': 'original'}
+        app.view.msg_entry = Mock()
+        app.view.notify = Mock()
         app.finish_pending({'request_id': 'request', 'success': True})
-        app.msg_entry.delete.assert_not_called()
-        self.assertEqual(app.pending_messages, {})
-        app.pending_messages = {'retry': 'edited'}
+        app.view.clear_input_if_unchanged.assert_called_once_with('original')
+        self.assertEqual(app.state.pending_messages, {})
+        app.view.clear_input_if_unchanged.reset_mock()
+        app.state.pending_messages = {'retry': 'edited'}
         app.finish_pending({'request_id': 'retry', 'success': False, 'error': 'database locked'})
-        self.assertEqual(app.pending_messages, {})
-        app.msg_entry.delete.assert_not_called()
+        self.assertEqual(app.state.pending_messages, {})
+        app.view.clear_input_if_unchanged.assert_not_called()
 
     def test_rejected_invite_sends_response(self):
         app = self.app()
-        app.queue_send = Mock()
-        app.ask_request = Mock(side_effect=lambda key, title, text, callback: callback(False))
-        app.handle_group_invite('bob', 'gid')
-        app.queue_send.assert_called_once_with({'type': 'group_invite_response', 'gid': 'gid', 'accepted': False})
+        app.connection.send = Mock()
+        app.view.ask_request = Mock(side_effect=lambda key, title, text, callback: callback(False))
+        app.handle_server_message({'type': 'group_invite', 'from': 'bob', 'gid': 'gid'})
+        app.connection.send.assert_called_once_with({'type': 'group_invite_response', 'gid': 'gid', 'accepted': False})
 
     def test_failed_history_page_resumes_live_message_display(self):
         app=self.app()
-        app.history_syncing=True;app.history_page_pending=True
-        app.current_group=None;app.current_friend='bob'
-        app.switch_chat_frame=Mock();app.update_chat_target=Mock();app.notify=Mock()
+        app.state.current_chat = ChatKey('private', 'bob')
+        app.state.history_syncing=True;app.state.pending_history=app.state.current_chat
+        app.view.render_conversation=Mock();app.view.refresh_controls=Mock();app.view.notify=Mock()
         app.handle_server_message({'type':'history_error','error':'retry'})
-        self.assertFalse(app.history_syncing)
-        self.assertFalse(app.history_page_pending)
-        app.switch_chat_frame.assert_called_once_with('bob')
+        self.assertFalse(app.state.history_syncing)
+        self.assertIsNone(app.state.pending_history)
+        app.view.render_conversation.assert_called_once_with(ChatKey('private', 'bob'), False)
 
     def test_rejoin_restores_history_after_group_cache_removal(self):
         app=self.app()
-        app.username='alice';app.session_key=os.urandom(16)
-        app.current_group=app.current_friend=None
-        app.groups={'g':{'owner':'bob','group_name':'Team','members':['alice','bob']}}
-        app.refresh_group_listbox=Mock();app.notify=Mock()
+        app.state.username='alice';app.connection.session_key=os.urandom(16)
+        app.state.current_chat=None
+        app.state.groups={'g':{'owner':'bob','group_name':'Team','members':['alice','bob']}}
+        app.view.refresh_groups=Mock();app.view.notify=Mock()
         msg={'type':'group_chat','gid':'g','from':'bob','message_id':101,
-             'content':client.encrypt_message('old message',app.session_key)}
+             'content':client.encrypt_message('old message',app.connection.session_key)}
         app.handle_server_message(msg)
         app.handle_server_message({'type':'group_leave_result','gid':'g','success':True})
         app.handle_server_message({'type':'group_join_result','gid':'g','success':True,'group_name':'Team','owner':'bob','members':['alice','bob']})
         app.handle_server_message(msg)
-        self.assertEqual(len(app.group_messages_g),1)
-        self.assertIn('old message',app.group_messages_g[0][0][0])
-        self.assertEqual(app.message_order['g'],[101])
+        conversation = app.state.conversation(ChatKey('group', 'g'))
+        self.assertEqual(len(conversation.messages),1)
+        self.assertEqual(conversation.messages[0].content,'old message')
+        self.assertEqual(conversation.message_ids,[101])
 
 class TkClientTests(unittest.TestCase):
     """Exercise real Tk widgets without showing windows or contacting a server."""
@@ -232,9 +238,9 @@ class TkClientTests(unittest.TestCase):
         self.app = client.ChatClient(self.root)
 
     def tearDown(self):
-        if self.app.auth_busy:
+        if self.app.connection.auth_busy:
             self.app.cancel_auth()
-        if self.app.running:
+        if self.app.connection.running:
             self.app.disconnect()
         self.app.close()
         # Tests may replace methods with callbacks that capture the client.
@@ -243,22 +249,22 @@ class TkClientTests(unittest.TestCase):
         gc.collect()
 
     def chat(self):
-        self.app.running = True
-        self.app.username = 'alice'
-        self.app.sock = Mock()
-        self.app.session_key = os.urandom(16)
-        self.app.build_chat()
-        self.app.queue_send = Mock()
-        self.app.groups = {'g': {'group_name': 'Before', 'owner': 'alice', 'members': ['alice', 'bob']}}
-        self.app.current_group = 'g'
-        self.app.refresh_group_listbox()
-        self.app.switch_chat_frame('g')
+        self.app.connection.running = True
+        self.app.state.username = 'alice'
+        self.app.connection.sock = Mock()
+        self.app.connection.session_key = os.urandom(16)
+        self.app.view.build_chat()
+        self.app.connection.send = Mock()
+        self.app.state.groups = {'g': {'group_name': 'Before', 'owner': 'alice', 'members': ['alice', 'bob']}}
+        self.app.state.current_chat = ChatKey('group', 'g')
+        self.app.view.refresh_groups()
+        self.app.view.render_conversation(ChatKey('group', 'g'))
 
     def test_selection_title_send_state_and_live_group_window(self):
         self.chat()
         app = self.app
-        app.show_group_info_after_update('g')
-        window = app.group_windows['g']
+        app.view.groups_ui.show('g')
+        window = app.view.groups_ui.windows['g']
         def texts(widget):
             result = []
             for child in widget.winfo_children():
@@ -271,61 +277,63 @@ class TkClientTests(unittest.TestCase):
         self.assertIn('踢出成员', texts(window))
         app.handle_server_message({'type': 'group_update', 'gid': 'g', 'group_name': 'After',
                                    'owner': 'bob', 'members': ['alice', 'bob', 'carol']})
-        self.assertIs(app.group_windows['g'], window)
+        self.assertIs(app.view.groups_ui.windows['g'], window)
         self.assertIn('carol', texts(window))
         self.assertIn('群主: bob', texts(window))
         self.assertNotIn('踢出成员', texts(window))
-        self.assertEqual(app.group_listbox.curselection(), (0,))
-        self.assertIn('After', app.chat_title.cget('text'))
+        self.assertEqual(app.view.group_listbox.curselection(), (0,))
+        self.assertIn('After', app.view.chat_title.cget('text'))
         app.handle_server_message({'type': 'group_kick_notification', 'gid': 'g', 'group_name': 'After'})
         self.assertFalse(window.winfo_exists())
-        self.assertIsNone(app.current_group)
-        self.assertEqual(app.send_button.cget('state'), 'disabled')
+        self.assertIsNone(app.state.current_chat)
+        self.assertEqual(app.view.send_button.cget('state'), 'disabled')
 
     def test_input_remains_until_ack_and_oversize_stays_editable(self):
         self.chat()
         app = self.app
-        app.msg_entry.insert('1.0', 'hello')
-        app.send_msg()
-        app.send_msg()
-        app.queue_send.assert_called_once()
-        self.assertEqual(app.msg_entry.get('1.0', 'end-1c'), 'hello')
-        request_id = next(iter(app.pending_messages))
+        app.view.msg_entry.insert('1.0', 'hello')
+        app.send_message()
+        app.send_message()
+        app.connection.send.assert_called_once()
+        self.assertEqual(app.view.msg_entry.get('1.0', 'end-1c'), 'hello')
+        request_id = next(iter(app.state.pending_messages))
         app.handle_server_message({'type': 'group_chat_result', 'success': True, 'request_id': request_id})
-        self.assertEqual(app.msg_entry.get('1.0', 'end-1c'), '')
-        app.queue_send = client.ChatClient.queue_send.__get__(app)
+        self.assertEqual(app.view.msg_entry.get('1.0', 'end-1c'), '')
+        app.connection.send = ConnectionManager.send.__get__(app.connection)
         text = '中' * (client.MAX_RECV_MSG_LEN // 2)
-        app.msg_entry.insert('1.0', text)
-        app.send_msg()
-        self.assertEqual(app.msg_entry.get('1.0', 'end-1c'), text)
-        self.assertEqual(app.pending_messages, {})
-        self.assertIn('1 MiB', app.status_label.cget('text'))
+        app.view.msg_entry.insert('1.0', text)
+        app.send_message()
+        self.assertEqual(app.view.msg_entry.get('1.0', 'end-1c'), text)
+        self.assertEqual(app.state.pending_messages, {})
+        self.assertIn('1 MiB', app.view.status_label.cget('text'))
 
     def test_requests_do_not_pause_event_queue_and_wheel_is_local(self):
         self.chat()
         app = self.app
-        app.incoming.put((app.sock, {'type': 'group_invite', 'from': 'bob', 'gid': 'other'}))
-        app.incoming.put((app.sock, {'type': 'online_users', 'users': ['carol']}))
+        app.connection.events.put(ServerEvent(app.connection.sock, {'type': 'group_invite', 'from': 'bob', 'gid': 'other'}))
+        app.connection.events.put(ServerEvent(app.connection.sock, {'type': 'online_users', 'users': ['carol']}))
         app.drain_incoming()
-        self.assertEqual(app.online_listbox.get(0, client.tk.END), ('carol',))
+        self.assertEqual(app.view.online_listbox.get(0, client.tk.END), ('carol',))
         self.assertIsNone(self.root.grab_current())
-        self.assertTrue(app.request_windows[('group', 'other')].winfo_exists())
+        self.assertTrue(app.view.request_windows[('group', 'other')].winfo_exists())
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
-        app.msg_entry.insert('1.0', 'draft')
+        app.view.msg_entry.insert('1.0', 'draft')
         app.disconnect()
-        self.assertEqual(app.saved_drafts[(client.SERVER_HOST, app.server_port, 'alice')], 'draft')
+        self.assertEqual(app.state.drafts[(client.SERVER_HOST, app.connection.settings.port, 'alice')], 'draft')
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
 
     def scrollable_chat(self):
         self.chat()
         app = self.app
-        app.group_messages_g = [((f'bob: message {i}', 'now'), False) for i in range(80)]
-        app.switch_chat_frame('g')
+        key = ChatKey('group', 'g')
+        for index in range(80):
+            app.state.conversation(key).add(Message('bob', f'message {index}', 'now', index))
+        app.view.render_conversation(key)
         self.root.deiconify()
         self.root.update()
-        frame = app.chat_frames['g']
+        frame = app.view.chat_frames[key]
         bubble = frame.winfo_children()[0]
-        return [app.chat_canvas, app.chat_container, frame, bubble, *bubble.winfo_children()]
+        return [app.view.chat_canvas, app.view.chat_container, frame, bubble, *bubble.winfo_children()]
 
     def test_x11_wheel_scrolls_every_chat_surface_without_global_bindings(self):
         if self.root.tk.call('tk', 'windowingsystem') != 'x11':
@@ -335,15 +343,15 @@ class TkClientTests(unittest.TestCase):
         for widget in widgets:
             for event, direction in (('<Button-4>', -1), ('<Button-5>', 1)):
                 with self.subTest(widget=widget.winfo_class(), event=event):
-                    app.chat_canvas.yview_moveto(0.5)
-                    before = app.chat_canvas.yview()[0]
+                    app.view.chat_canvas.yview_moveto(0.5)
+                    before = app.view.chat_canvas.yview()[0]
                     widget.event_generate(event, x=5, y=5)
                     self.root.update()
-                    after = app.chat_canvas.yview()[0]
+                    after = app.view.chat_canvas.yview()[0]
                     self.assertGreater((after - before) * direction, 0)
         for event in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
             self.assertFalse(self.root.bind_all(event))
-            self.assertFalse(app.msg_entry.bind(event))
+            self.assertFalse(app.view.msg_entry.bind(event))
 
     def test_mousewheel_keeps_both_directions_on_every_chat_surface(self):
         widgets = self.scrollable_chat()
@@ -351,11 +359,11 @@ class TkClientTests(unittest.TestCase):
         for widget in widgets:
             for delta, direction in ((120, -1), (-120, 1)):
                 with self.subTest(widget=widget.winfo_class(), delta=delta):
-                    app.chat_canvas.yview_moveto(0.5)
-                    before = app.chat_canvas.yview()[0]
+                    app.view.chat_canvas.yview_moveto(0.5)
+                    before = app.view.chat_canvas.yview()[0]
                     widget.event_generate('<MouseWheel>', delta=delta, x=5, y=5)
                     self.root.update()
-                    self.assertGreater((app.chat_canvas.yview()[0] - before) * direction, 0)
+                    self.assertGreater((app.view.chat_canvas.yview()[0] - before) * direction, 0)
 
     def test_login_runs_off_thread_and_can_be_cancelled(self):
         app = self.app
@@ -371,9 +379,9 @@ class TkClientTests(unittest.TestCase):
             app.connect_server('alice', 'password')
             self.assertLess(time.monotonic() - started, .5)
             self.assertTrue(entered.wait(1))
-            self.assertEqual(app.login_button.cget('state'), 'disabled')
+            self.assertEqual(app.view.login_button.cget('state'), 'disabled')
             app.cancel_auth()
-            self.assertEqual(app.login_button.cget('state'), 'normal')
+            self.assertEqual(app.view.login_button.cget('state'), 'normal')
             sock.shutdown.assert_called_once()
             release.set()
 
@@ -390,10 +398,10 @@ class TkClientTests(unittest.TestCase):
         with patch.object(client.socket, 'socket', return_value=sock):
             app.connect_server('alice', 'password')
             self.assertTrue(entered.wait(1))
-            with patch.object(app.master, 'destroy', wraps=app.master.destroy) as destroy:
+            with patch.object(app.view.master, 'destroy', wraps=app.view.master.destroy) as destroy:
                 app.close()
-                self.assertTrue(all(not worker.is_alive() for worker in app.workers))
-                self.assertTrue(app.ui_tasks.empty())
+                self.assertTrue(all(not worker.is_alive() for worker in app.connection.workers))
+                self.assertTrue(app.connection.events.empty())
                 app.close()
                 destroy.assert_called_once()
 
@@ -403,47 +411,85 @@ class TkClientTests(unittest.TestCase):
         def slow_worker():
             entered.set()
             release.wait(2)
-        app.start_worker(slow_worker)
+        app.connection.start_worker(slow_worker)
         self.assertTrue(entered.wait(1))
         try:
-            with patch.object(app.master, 'destroy', wraps=app.master.destroy) as destroy:
+            with patch.object(app.view.master, 'destroy', wraps=app.view.master.destroy) as destroy:
                 started = time.monotonic()
                 app.close()
                 self.assertLess(time.monotonic() - started, 0.5)
                 destroy.assert_not_called()
-                self.assertTrue(app.master.winfo_exists())
-                workers = list(app.workers)
+                self.assertTrue(app.view.master.winfo_exists())
+                workers = list(app.connection.workers)
                 app.connect_server('alice', 'password')
-                self.assertEqual(app.workers, workers)
-                self.assertFalse(app.auth_busy)
+                self.assertEqual(app.connection.workers, workers)
+                self.assertFalse(app.connection.auth_busy)
                 release.set()
                 deadline = time.monotonic() + 2
                 while not destroy.called and time.monotonic() < deadline:
                     self.root.update()
                     time.sleep(0.01)
                 destroy.assert_called_once()
-                self.assertTrue(all(not worker.is_alive() for worker in app.workers))
+                self.assertTrue(all(not worker.is_alive() for worker in app.connection.workers))
         finally:
             release.set()
 
     def test_history_button_requests_earlier_page_and_disables_at_end(self):
         self.chat()
         app=self.app
-        app.message_order['g']=[101]
-        app.seen_message_ids={101}
-        app.group_messages_g=[(('alice(群聊): newest','now'),True)]
-        app.load_history_button.invoke()
-        app.queue_send.assert_called_once_with({'type':'history_request','chat_type':'group','target':'g','before_id':101})
-        self.assertEqual(app.load_history_button.cget('state'),'disabled')
+        conversation = app.state.conversation(ChatKey('group', 'g'))
+        conversation.add(Message('alice', 'newest', 'now', 101, True))
+        app.view.load_history_button.invoke()
+        app.connection.send.assert_called_once_with({'type':'history_request','chat_type':'group','target':'g','before_id':101})
+        self.assertEqual(app.view.load_history_button.cget('state'),'disabled')
         app.handle_server_message({'type':'history_begin'})
         for message_id in (99,100):
             app.handle_server_message({'type':'group_chat','gid':'g','from':'bob','message_id':message_id,
-                                       'content':client.encrypt_message(str(message_id),app.session_key)})
+                                       'content':client.encrypt_message(str(message_id),app.connection.session_key)})
         app.handle_server_message({'type':'history_end','history_kind':'group','history_target':'g','has_more':False})
-        self.assertEqual(app.message_order['g'],[99,100,101])
-        self.assertEqual(len(app.group_messages_g),3)
-        self.assertFalse(app.history_page_pending)
-        self.assertEqual(app.load_history_button.cget('state'),'disabled')
+        self.assertEqual(conversation.message_ids,[99,100,101])
+        self.assertEqual(len(conversation.messages),3)
+        self.assertIsNone(app.state.pending_history)
+        self.assertEqual(app.view.load_history_button.cget('state'),'disabled')
+
+    def test_ack_keeps_input_edited_while_send_is_pending(self):
+        self.chat()
+        app = self.app
+        app.view.msg_entry.insert('1.0', 'original')
+        app.send_message()
+        request_id = next(iter(app.state.pending_messages))
+        app.view.msg_entry.delete('1.0', client.tk.END)
+        app.view.msg_entry.insert('1.0', 'edited')
+        app.handle_server_message({'type': 'group_chat_result', 'success': True, 'request_id': request_id})
+        self.assertEqual(app.view.input_text(), 'edited')
+        self.assertFalse(app.state.pending_messages)
+
+    def test_disconnect_cancels_pending_scroll_before_destroying_chat_widgets(self):
+        self.chat()
+        app = self.app
+        errors = []
+        self.root.report_callback_exception = lambda kind, error, trace: errors.append(error)
+        app.handle_server_message({'type': 'group_chat', 'gid': 'g', 'from': 'bob', 'message_id': 1,
+                                   'content': client.encrypt_message('pending scroll', app.connection.session_key)})
+        app.disconnect()
+        self.root.update()
+        self.assertEqual(errors, [])
+        self.assertTrue(app.view.username_entry.winfo_exists())
+
+    def test_private_and_group_with_same_target_keep_separate_frames_and_history(self):
+        self.chat()
+        app = self.app
+        app.state.friends = ['g']
+        private, group = ChatKey('private', 'g'), ChatKey('group', 'g')
+        app.state.conversation(private).add(Message('g', 'private text', message_id=1))
+        app.state.conversation(group).add(Message('bob', 'group text', message_id=2))
+        for key, wanted, other in ((private, 'private text', 'group text'), (group, 'group text', 'private text')):
+            app.select_chat(key)
+            labels = [child.cget('text') for bubble in app.view.current_chat_frame.winfo_children()
+                      for child in bubble.winfo_children() if isinstance(child, client.tk.Label)]
+            self.assertTrue(any(wanted in label for label in labels))
+            self.assertFalse(any(other in label for label in labels))
+        self.assertIsNot(app.view.chat_frames[private], app.view.chat_frames[group])
 
 class ServerTests(unittest.TestCase):
     @classmethod

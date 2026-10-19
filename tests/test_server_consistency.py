@@ -86,19 +86,18 @@ class ServerConsistencyTests(unittest.TestCase):
             self.assertEqual(snapshot['members'], ['alice', 'bob'])
             self.assertEqual(changed['type'], notification)
 
-        app = regressions.ClientTests().app()
-        app.username = 'bob'
-        app.current_group = app.current_friend = None
-        app.groups = {gid: snapshot}
-        app.notify = app.refresh_group_listbox = Mock()
+        app = regressions.headless_client(self)
+        app.state.username = 'bob'
+        app.state.groups = {gid: snapshot}
+        app.view.notify = app.view.refresh_groups = Mock()
         app.handle_server_message(snapshot)
         app.handle_server_message(changed)
         group = original_query(gid)
         if group is None or 'bob' not in group['members']:
-            self.assertNotIn(gid, app.groups)
+            self.assertNotIn(gid, app.state.groups)
         else:
-            self.assertEqual(app.groups[gid]['owner'], group['owner'])
-            self.assertEqual(app.groups[gid]['group_name'], group['group_name'])
+            self.assertEqual(app.state.groups[gid]['owner'], group['owner'])
+            self.assertEqual(app.state.groups[gid]['group_name'], group['group_name'])
 
         # A subsequent request observes the committed state and also proves
         # that the info handler released its lock after sending the snapshot.

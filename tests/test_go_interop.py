@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('go_interop_client', ROOT / 'client.py')
 client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
+from chatroom_client.models import ChatKey
 
 
 @unittest.skipUnless(os.environ.get('CHATROOM_GO_SERVER_EXE'), 'Go binary not selected')
@@ -242,10 +243,10 @@ class GoInteropTests(unittest.TestCase):
         root.withdraw()
         app = client.ChatClient(root)
         try:
-            app.username_entry.insert(0, 'alice')
-            app.password_entry.insert(0, ' password ')
-            app.port_entry.delete(0, client.tk.END)
-            app.port_entry.insert(0, '12346')
+            app.view.username_entry.insert(0, 'alice')
+            app.view.password_entry.insert(0, ' password ')
+            app.view.port_entry.delete(0, client.tk.END)
+            app.view.port_entry.insert(0, '12346')
             app.login()
             def wait_ui(condition):
                 deadline = time.monotonic() + 5
@@ -255,22 +256,23 @@ class GoInteropTests(unittest.TestCase):
                         return
                     time.sleep(.01)
                 self.fail('Tk client did not receive expected Go event')
-            wait_ui(lambda: app.running)
-            app.handle_friend_request = lambda name: app.queue_send({'type': 'friend_response', 'to': name, 'accepted': True})
+            wait_ui(lambda: app.connection.running)
+            app.view.ask_request = lambda key, title, text, callback: callback(True)
             client.send_msg(bob, {'type': 'friend_request', 'to': 'alice'})
-            wait_ui(lambda: 'bob' in app.friends)
-            app.friends_listbox.selection_set(0)
-            app.select_friend(None)
-            app.msg_entry.insert('1.0', 'Tk to Go')
-            app.send_msg()
-            self.assertEqual(app.msg_entry.get('1.0', 'end-1c'), 'Tk to Go')
-            self.assertEqual(len(app.pending_messages), 1)
-            wait_ui(lambda: not app.pending_messages and len(app.private_chats.get('bob', [])) == 1)
-            self.assertEqual(app.msg_entry.get('1.0', 'end-1c'), '')
+            wait_ui(lambda: 'bob' in app.state.friends)
+            app.view.friends_listbox.selection_set(0)
+            app.view.select_friend(None)
+            app.view.msg_entry.insert('1.0', 'Tk to Go')
+            app.send_message()
+            self.assertEqual(app.view.msg_entry.get('1.0', 'end-1c'), 'Tk to Go')
+            self.assertEqual(len(app.state.pending_messages), 1)
+            conversation = app.state.conversation(ChatKey('private', 'bob'))
+            wait_ui(lambda: not app.state.pending_messages and len(conversation.messages) == 1)
+            self.assertEqual(app.view.msg_entry.get('1.0', 'end-1c'), '')
             forwarded = self.read_type(bob, 'private_chat')
             self.assertEqual(client.decrypt_message(forwarded['content'], bk), 'Tk to Go')
-            self.assertIn(forwarded['message_id'], app.seen_message_ids)
-            self.assertIn('服务器已保存', app.status_label.cget('text'))
+            self.assertIn(forwarded['message_id'], conversation.message_ids)
+            self.assertIn('服务器已保存', app.view.status_label.cget('text'))
         finally:
             app.close()
             # The overridden friend callback captures app; collect it on the

@@ -4,8 +4,12 @@
 
 | 文件 / 目录 | 职责 |
 | --- | --- |
-| `client.py` | Tk 界面、后台连接与发送、服务器事件分发 |
-| `client_history.py` | 客户端历史同步状态、分页游标、消息排序和群缓存清理 |
+| `client.py` | 客户端入口、服务器配置、供协议脚本使用的兼容导出 |
+| `chatroom_client/models.py` | 账号状态及统一的私聊 / 群聊会话模型 |
+| `chatroom_client/connection.py` / `protocol.py` | 无 Tk 依赖的认证、连接、线程与线协议 |
+| `chatroom_client/app.py` / `events.py` | 应用操作、主线程事件泵和服务器事件处理 |
+| `chatroom_client/history.py` | 会话分页游标、完成边界和重试 |
+| `chatroom_client/view.py` / `group_view.py` | Tk 控件、输入、消息渲染及群窗口 |
 | `server.py` | Python 服务端认证、会话与业务操作 |
 | `transport.py` | Python 协议 v2 报文认证、方向密钥与序号 |
 | `storage.py` | Python 加密存储及旧库迁移 |
@@ -13,9 +17,11 @@
 | `go-server/internal/` | Go 服务端的协议、存储、业务处理和连接管理 |
 | `tests/` | Python、真实 Tk 窗口及 Python / Go 互操作回归 |
 
-客户端后台线程统一通过 `start_worker()` 启动。关闭时先中断网络和发送队列，等待工作线程退出、清理 UI 回调后再由主线程销毁 Tk，避免 Tcl 对象在后台线程被回收。
+客户端后台线程由 `ConnectionManager` 创建和跟踪，线程目标不能捕获应用控制器或 Tk 对象。线程通过 `AuthResult` / `ServerEvent` 交付数据，由应用事件泵在主线程处理。关闭时中断网络和发送队列，等待线程退出、清理未消费认证结果后再销毁 Tk。视图在销毁聊天控件前取消排队的滚动回调。
 
-历史分页只在收到对应会话的 `history_end` 后推进游标。失败时保留原请求游标；已经收到的消息通过 ID 去重。登录快照或其他会话的完成事件不能清除当前分页请求。断线和登录都通过 `reset_history()` 重置会话历史状态。
+会话统一使用 `ChatKey(kind, target)`，私聊用户名与群 ID 属于不同命名空间。消息、顺序、去重集合和历史游标由 `Conversation` 一起管理。历史分页只在收到对应会话的 `history_end` 后推进游标，失败保留请求游标；登录快照或其他会话的完成事件不能清除当前分页请求。断线与登录通过 `ClientState.reset_session()` 重置账号数据并保留按服务器和账号隔离的草稿。视图创建函数不能初始化或清空业务数据。
+
+依赖方向、事件流和扩展方式见[客户端结构说明](CLIENT_ARCHITECTURE.md)。修改功能时测试可使用无 Tk 的模型或注入模拟视图；控件行为继续由真实 Tk 测试覆盖，不再绕过构造函数手动拼装 `ChatClient`。
 
 ## 本地验证
 
