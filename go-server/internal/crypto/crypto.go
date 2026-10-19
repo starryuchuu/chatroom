@@ -17,14 +17,26 @@ import (
 var privateKey *rsa.PrivateKey
 var publicKeyBytes []byte
 
-// EnsureRSAKeys 检查RSA密钥文件是否存在，如果不存在则生成
+// EnsureRSAKeys 加载已有身份；仅在两个密钥文件都不存在时生成新身份。
 func EnsureRSAKeys() (*rsa.PrivateKey, []byte) {
 	privateKeyFile := "private_key.pem"
 	publicKeyFile := "public_key.pem"
 
-	if _, err := os.Stat(privateKeyFile); os.IsNotExist(err) {
+	if info, err := os.Stat(privateKeyFile); os.IsNotExist(err) {
+		// An existing public key identifies an established server. Losing its
+		// private key requires recovery, not a silent change of pinned identity.
+		if _, publicErr := os.Stat(publicKeyFile); !os.IsNotExist(publicErr) {
+			log.Fatal("RSA私钥文件丢失；请恢复原私钥，保留现有公钥，不自动替换服务器身份")
+		}
 		log.Println("未找到RSA密钥，正在生成新的密钥对...")
 		generateRSAKeys(privateKeyFile, publicKeyFile)
+	} else if err != nil {
+		log.Fatalf("无法检查私钥文件: %v", err)
+	} else if !info.Mode().IsRegular() {
+		log.Fatal("私钥路径不是普通文件，请恢复有效RSA私钥")
+	}
+	if err := os.Chmod(privateKeyFile, 0600); err != nil {
+		log.Fatalf("无法限制私钥文件权限: %v", err)
 	}
 
 	// 加载私钥
@@ -85,7 +97,7 @@ func generateRSAKeys(privPath, pubPath string) {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
 	}
-	privFile, err := os.Create(privPath)
+	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		log.Fatalf("无法创建私钥文件: %v", err)
 	}
