@@ -1,4 +1,5 @@
 """Draft restoration across accounts and server endpoints, using real Tk widgets."""
+import gc
 import unittest
 from unittest.mock import Mock, patch
 
@@ -14,6 +15,8 @@ class ClientDraftTests(unittest.TestCase):
 
     def tearDown(self):
         self.app.close()
+        self.app = self.root = None
+        gc.collect()
 
     def login_as(self, username, *, host='127.0.0.1', port=12345):
         app = self.app

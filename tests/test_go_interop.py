@@ -1,6 +1,7 @@
 """Python wire-protocol interoperability against an isolated Go server binary."""
 from contextlib import closing
 import base64
+import gc
 import importlib.util
 import json
 import os
@@ -272,6 +273,10 @@ class GoInteropTests(unittest.TestCase):
             self.assertIn('服务器已保存', app.status_label.cget('text'))
         finally:
             app.close()
+            # The overridden friend callback captures app; collect it on the
+            # GUI thread before later socket workers can trigger cyclic GC.
+            del app, root
+            gc.collect()
 
 
     def test_requests_survive_actual_go_server_restart(self):

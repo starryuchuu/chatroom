@@ -677,7 +677,11 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
         send_msg(client_sock,end)
     except Exception:
         logging.exception("历史同步失败")
-        send_msg(client_sock,{"type":"error", "message":"历史同步失败，请重新登录"})
+        if kind is not None:
+            send_msg(client_sock, {"type": "history_error", "error": "历史加载失败，请重试",
+                                   "history_kind": kind, "history_target": target})
+        else:
+            send_msg(client_sock, {"type": "error", "message": "历史同步失败，请重新登录"})
 
 # 检查用户是否存在
 def user_exists(username):
@@ -938,16 +942,10 @@ def handle_client(client_sock, addr):
 
         elif auth_data.get("type") == "encrypted_login":
             try:
-                if auth_data.get("type") == "encrypted_login":
-                    # 加密登录：使用会话密钥解密用户名/密码，避免明文传输
-                    decrypted_login = decrypt_message(auth_data.get("data"), session_key)
-                    login_info = json.loads(decrypted_login)
-                    username = login_info.get("from")
-                    password = login_info.get("password")
-                else:
-                    # 兼容旧客户端（明文 login），同样进行类型校验
-                    username = auth_data.get("from")
-                    password = auth_data.get("password")
+                decrypted_login = decrypt_message(auth_data.get("data"), session_key)
+                login_info = json.loads(decrypted_login)
+                username = login_info.get("from")
+                password = login_info.get("password")
             except Exception as e:
                 logging.error(f"Error processing login data from {addr}: {e}")
                 record_auth_failure(ip_address)

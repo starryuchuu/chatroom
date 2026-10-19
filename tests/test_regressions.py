@@ -1,6 +1,7 @@
 """Regression tests using real RSA/AES/Argon2 and isolated SQLite state."""
 from contextlib import closing
 import base64
+import gc
 import importlib.util
 import io
 import os
@@ -32,14 +33,10 @@ class ClientTests(unittest.TestCase):
         app.incoming = queue.Queue()
         app.ui_tasks = queue.Queue()
         app.pending_messages = {}
-        app.seen_message_ids = set()
-        app.message_order = {}
+        app.reset_history()
         app.group_windows = {}
         app.group_info_requests = set()
         app.request_windows = {}
-        app.history_syncing = False
-        app.history_exhausted = set()
-        app.history_page_pending = False
         return app
 
     def test_server_error_survives_disconnect(self):
@@ -240,6 +237,10 @@ class TkClientTests(unittest.TestCase):
         if self.app.running:
             self.app.disconnect()
         self.app.close()
+        # Tests may replace methods with callbacks that capture the client.
+        # Reclaim these cycles on Tcl's owner thread before server tests start.
+        self.app = self.root = None
+        gc.collect()
 
     def chat(self):
         self.app.running = True
@@ -333,6 +334,55 @@ class TkClientTests(unittest.TestCase):
             app.cancel_auth()
             self.assertEqual(app.login_button.cget('state'), 'normal')
             sock.shutdown.assert_called_once()
+            release.set()
+
+    def test_close_stops_workers_before_destroying_tk_and_clears_callbacks(self):
+        app = self.app
+        entered, release = threading.Event(), threading.Event()
+        sock = Mock()
+        def connect(address):
+            entered.set()
+            release.wait(2)
+            raise OSError('cancelled')
+        sock.connect.side_effect = connect
+        sock.shutdown.side_effect = lambda how: release.set()
+        with patch.object(client.socket, 'socket', return_value=sock):
+            app.connect_server('alice', 'password')
+            self.assertTrue(entered.wait(1))
+            with patch.object(app.master, 'destroy', wraps=app.master.destroy) as destroy:
+                app.close()
+                self.assertTrue(all(not worker.is_alive() for worker in app.workers))
+                self.assertTrue(app.ui_tasks.empty())
+                app.close()
+                destroy.assert_called_once()
+
+    def test_close_keeps_tk_alive_until_slow_worker_finishes(self):
+        app = self.app
+        entered, release = threading.Event(), threading.Event()
+        def slow_worker():
+            entered.set()
+            release.wait(2)
+        app.start_worker(slow_worker)
+        self.assertTrue(entered.wait(1))
+        try:
+            with patch.object(app.master, 'destroy', wraps=app.master.destroy) as destroy:
+                started = time.monotonic()
+                app.close()
+                self.assertLess(time.monotonic() - started, 0.5)
+                destroy.assert_not_called()
+                self.assertTrue(app.master.winfo_exists())
+                workers = list(app.workers)
+                app.connect_server('alice', 'password')
+                self.assertEqual(app.workers, workers)
+                self.assertFalse(app.auth_busy)
+                release.set()
+                deadline = time.monotonic() + 2
+                while not destroy.called and time.monotonic() < deadline:
+                    self.root.update()
+                    time.sleep(0.01)
+                destroy.assert_called_once()
+                self.assertTrue(all(not worker.is_alive() for worker in app.workers))
+        finally:
             release.set()
 
     def test_history_button_requests_earlier_page_and_disables_at_end(self):
@@ -943,6 +993,44 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(sorted(seen),list(range(1,206)))
         client.send_msg(peer,{'type':'history_request','chat_type':'private','target':'carol','before_id':206})
         self.assertIn('无权',self.read_type(peer,'history_error')['error'])
+
+    def test_scoped_history_failure_allows_retry_on_same_connection(self):
+        s = self.server
+        s.save_friend_relationship('alice', 'bob')
+        s.save_message('private', 'bob', 'alice', None, 'saved', 'now')
+        peer, _, result = self.connect('alice')
+        self.assertTrue(result['success'])
+        self.read_type(peer, 'history_end')
+        request = {'type': 'history_request', 'chat_type': 'private', 'target': 'bob', 'before_id': 2}
+        with patch.object(s.history_store, 'page', side_effect=RuntimeError('database busy')):
+            client.send_msg(peer, request)
+            self.read_type(peer, 'history_begin')
+            response = client.recv_msg(peer)
+        self.assertEqual(response['type'], 'history_error')
+        client.send_msg(peer, request)
+        self.read_type(peer, 'history_begin')
+        self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 1)
+        self.read_type(peer, 'history_end')
+
+    def test_partial_history_failure_retries_full_page_on_same_connection(self):
+        s = self.server
+        s.save_friend_relationship('alice', 'bob')
+        for text in ('first', 'second'):
+            s.save_message('private', 'bob', 'alice', None, text, 'now')
+        peer, key, _ = self.connect('alice')
+        self.read_type(peer, 'history_end')
+        request = {'type': 'history_request', 'chat_type': 'private', 'target': 'bob', 'before_id': 3}
+        first = s.encrypt_message('first', key)
+        with patch.object(s, 'encrypt_message', side_effect=[first, RuntimeError('partial page')]):
+            client.send_msg(peer, request)
+            self.read_type(peer, 'history_begin')
+            self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 1)
+            self.assertEqual(client.recv_msg(peer)['type'], 'history_error')
+        client.send_msg(peer, request)
+        self.read_type(peer, 'history_begin')
+        self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 1)
+        self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 2)
+        self.read_type(peer, 'history_end')
 
 
 if __name__ == '__main__':

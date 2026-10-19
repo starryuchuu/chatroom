@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox, scrolledtext
 import socket
 import transport
+from client_history import HistoryMixin
 import threading
 import queue
 from Crypto.Cipher import AES, PKCS1_OAEP
@@ -170,7 +171,7 @@ def check_server_public_key(public_key_data):
     return public_key, None
 
 # 聊天客户端类
-class ChatClient:
+class ChatClient(HistoryMixin):
     def __init__(self, master):
         """
         初始化聊天客户端。
@@ -197,15 +198,13 @@ class ChatClient:
         self.connection_endpoint = None
         self.saved_drafts = {}
         self.pending_messages = {}
-        self.seen_message_ids = set()
-        self.message_order = {}
+        self.reset_history()
         self.group_windows = {}
         self.request_windows = {}
         self.group_info_requests = set()
-        self.history_syncing = False
-        self.history_exhausted = set()
-        self.history_page_pending = False
-        threading.Thread(target=self.send_worker, daemon=True).start()
+        self.closing = False
+        self.workers = []
+        self.start_worker(self.send_worker)
         self.server_port = int(SERVER_PORT)  # 连接端口（可在登录界面修改）
         self.build_login()
         self.master.protocol('WM_DELETE_WINDOW', self.close)
@@ -342,10 +341,7 @@ class ChatClient:
                 self.saved_drafts.pop(self.draft_key(), None)
         self.running = False
         self.pending_messages = {}
-        self.seen_message_ids = set()
-        self.message_order = {}
-        self.history_exhausted = set()
-        self.history_page_pending = False
+        self.reset_history()
         if self.sock:
             authenticated_sockets.discard(self.sock)
             try:
@@ -655,7 +651,17 @@ class ChatClient:
                 except OSError:
                     pass
 
+    def start_worker(self, target, *args):
+        """Track workers so they release their UI references before Tk teardown."""
+        self.workers = [worker for worker in self.workers if worker.is_alive()]
+        worker = threading.Thread(target=target, args=args, daemon=True)
+        self.workers.append(worker)
+        worker.start()
+
     def close(self):
+        if self.closing:
+            return
+        self.closing = True
         if self.auth_busy:
             self.cancel_auth()
         if self.running:
@@ -666,6 +672,23 @@ class ChatClient:
             except queue.Empty:
                 break
         self.outgoing.put_nowait(None)
+        for worker in self.workers:
+            worker.join(timeout=0.1)
+        self.finish_close()
+
+    def finish_close(self):
+        # Keep Tcl alive on its owner thread if a cancelled connect is still
+        # unwinding. Polling avoids blocking the UI on DNS or network timeouts.
+        if any(worker.is_alive() for worker in self.workers):
+            self.master.after(25, self.finish_close)
+            return
+        # Authentication completions capture self and can otherwise keep a
+        # destroyed Tcl interpreter in a cycle until a network thread runs GC.
+        while True:
+            try:
+                self.ui_tasks.get_nowait()
+            except queue.Empty:
+                break
         self.master.destroy()
 
     def set_auth_busy(self, busy, text=""):
@@ -688,7 +711,7 @@ class ChatClient:
         self.set_auth_busy(False, "连接已取消")
 
     def start_auth(self, username, password, register=False, window=None):
-        if self.auth_busy:
+        if self.auth_busy or self.closing:
             return
         self.auth_generation += 1
         generation = self.auth_generation
@@ -743,13 +766,12 @@ class ChatClient:
                         self.connection_endpoint = endpoint
                         authenticated_sockets.add(sock)
                         self.running = True
-                        self.seen_message_ids = set()
-                        self.message_order = {}
+                        self.reset_history()
                         self.pending_messages = {}
                         self.build_chat()
-                        threading.Thread(target=self.receive_msg, args=(sock,), daemon=True).start()
+                        self.start_worker(self.receive_msg, sock)
                 self.ui_tasks.put(finish)
-        threading.Thread(target=worker, daemon=True).start()
+        self.start_worker(worker)
 
     def connect_server(self, username, password):
         self.start_auth(username, password)
@@ -871,6 +893,8 @@ class ChatClient:
 
     def drain_incoming(self):
         """Apply network events on Tk's thread, discarding old connection events."""
+        if getattr(self, 'closing', False):
+            return
         try:
             for _ in range(100):
                 try:
@@ -895,7 +919,8 @@ class ChatClient:
                 except Exception:
                     logging.exception("忽略格式异常的服务器消息")
         finally:
-            self.master.after(50, self.drain_incoming)
+            if not getattr(self, 'closing', False):
+                self.master.after(50, self.drain_incoming)
 
     @staticmethod
     def run_ui(callback):
@@ -906,6 +931,9 @@ class ChatClient:
         # 畸形消息过滤：非 dict 或 type 非字符串的消息直接忽略，避免接收线程崩溃
         if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
             logging.warning(f"收到格式异常的消息，已忽略: {str(msg)[:100]}")
+            return
+
+        if self.handle_history_event(msg):
             return
 
         if msg['type'] in ('private_chat_result', 'group_chat_result', 'send_failed'):
@@ -1260,27 +1288,6 @@ class ChatClient:
                     err = msg.get("error", "好友响应失败")
                     self.run_ui(lambda e=err: self.notify("好友响应失败", e))
 
-            elif mtype == 'history_begin':
-                self.history_syncing = True
-            elif mtype == 'history_error':
-                self.history_syncing = False
-                self.history_page_pending = False
-                target = self.current_group or self.current_friend
-                if target:
-                    self.switch_chat_frame(target)
-                self.notify("历史记录",msg.get('error','历史加载失败'))
-                self.update_chat_target()
-            elif mtype == 'history_end':
-                self.history_syncing = False
-                self.history_page_pending = False
-                if msg.get('history_target') is not None and not msg.get('has_more',False):
-                    self.history_exhausted.add((msg.get('history_kind'),msg['history_target']))
-                target = self.current_group or self.current_friend
-                if target:
-                    self.switch_chat_frame(target)
-                    if msg.get('history_target') == target and hasattr(self,'chat_canvas'):
-                        self.chat_canvas.yview_moveto(0.0)
-                self.update_chat_target()
             elif mtype in ("group_invite_response_result", "send_failed"):
                 pass
             else:
@@ -1521,41 +1528,6 @@ class ChatClient:
     def update_group_info_window(self, window, gid):
         if gid in self.groups and window.winfo_exists():
             self.show_group_info_after_update(gid)
-
-    def load_older_history(self):
-        target = self.current_group or self.current_friend
-        if not target or self.history_page_pending:
-            return
-        ids = self.message_order.get(target, [])
-        before = min(ids) if ids else 9223372036854775807
-        try:
-            self.queue_send({'type':'history_request', 'chat_type':'group' if self.current_group else 'private',
-                             'target':target, 'before_id':before})
-        except Exception as error:
-            self.notify('历史记录',str(error))
-            return
-        self.history_page_pending = True
-        self.update_chat_target()
-
-    def clear_group_history(self, gid):
-        self.seen_message_ids.difference_update(self.message_order.pop(gid, []))
-        getattr(self,"history_exhausted",set()).discard(("group",gid))
-        if hasattr(self, f'group_messages_{gid}'):
-            delattr(self, f'group_messages_{gid}')
-        frame = self.chat_frames.pop(gid, None) if hasattr(self, 'chat_frames') else None
-        if frame is not None:
-            if self.current_chat_frame is frame:
-                self.current_chat_frame = None
-            frame.destroy()
-
-    def store_chat_message(self, chat_id, messages, entry, message_id):
-        import bisect
-        order = self.message_order.setdefault(chat_id, [])
-        key = message_id if isinstance(message_id, int) else (order[-1] + 1 if order else 0)
-        index = bisect.bisect_right(order, key)
-        order.insert(index, key)
-        messages.insert(index, entry)
-        return index == len(messages) - 1
 
     def update_chat_target(self):
         gid = getattr(self, 'current_group', None)

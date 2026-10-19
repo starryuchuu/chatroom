@@ -132,8 +132,8 @@ jobs:
           test -s "release-assets/$binary"
         done
         git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
-        cp client.py server.py transport.py history_store.py pending_store.py storage.py requirements.txt release-assets/
-        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" client.py server.py transport.py history_store.py pending_store.py storage.py requirements.txt > SHA256SUMS)
+        cp client.py client_history.py server.py transport.py history_store.py pending_store.py storage.py requirements.txt release-assets/
+        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" client.py client_history.py server.py transport.py history_store.py pending_store.py storage.py requirements.txt > SHA256SUMS)
         gh release create "$tag" release-assets/* \
           --target "$GITHUB_SHA" --title "$tag — Python 客户端与双服务端" \
           --notes-file RELEASE_NOTES.md --latest

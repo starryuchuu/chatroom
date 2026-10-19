@@ -153,6 +153,7 @@ chatroom/
 ├── storage.py                         # 数据库敏感字段加密及迁移
 ├── STORAGE_ENCRYPTION.md              # 存储格式、备份和恢复
 ├── transport.py                       # 协议 v2 完整报文认证
+├── client_history.py                  # 客户端历史状态、分页重试与消息排序
 ├── history_store.py                   # Python 历史分页查询
 ├── pending_store.py                   # Python 申请与邀请持久化
 ├── tests/
@@ -369,7 +370,7 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前开发版本兼容性
 
-本分支采用协议 v2，必须同时升级客户端和 Python / Go 服务端；不接受旧版未认证报文或明文登录。数据库自动增加表和索引，已有消息与账号保留。请完整下载源码压缩包，Python 运行需要 `transport.py`、`history_store.py`、`pending_store.py`、`storage.py` 与入口脚本同目录。
+本分支采用协议 v2，必须同时升级客户端和 Python / Go 服务端；不接受旧版未认证报文或明文登录。数据库自动增加表和索引，已有消息与账号保留。请完整下载源码压缩包，Python 运行需要 `client_history.py`、`transport.py`、`history_store.py`、`pending_store.py`、`storage.py` 与入口脚本同目录。
 
 ### 最新功能
 
@@ -412,3 +413,5 @@ Python / Go 服务端使用相同的字段级存储加密格式。聊天正文�
 升级前先停止旧服务端并备份数据库。新版在监听端口之前，按事务迁移旧账号、聊天和群组等数据，再清理旧空闲页及 WAL。迁移失败会回滚；清理中断会在下次启动继续。密钥丢失、损坏或不匹配时停止启动，不生成替代密钥，也不回退到明文读取。迁移后的数据库只能供支持存储 v1 的服务端使用；客户端协议仍是 v2，v1.0.10 客户端可继续使用。
 
 这是敏感字段加密，SQLite 表结构、记录 ID、群 ID、消息类型、关联索引、申请过期时间及记录数量仍可见。服务端运行时会解密数据，属于服务端静态数据保护。原有明文备份、日志以及底层存储已删除块不在此次自动迁移的保护范围内。格式及恢复说明见 [存储说明](STORAGE_ENCRYPTION.md)。
+
+开发与发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
