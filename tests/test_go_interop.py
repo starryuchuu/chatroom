@@ -242,7 +242,7 @@ class GoInteropTests(unittest.TestCase):
         bob, bk, _ = self.connect('bob')
         root = client.tk.Tk()
         root.withdraw()
-        app = client.ChatClient(root, preferences=PreferencesStore(persistent=False))
+        app = client.ChatClient(root, preferences=PreferencesStore(persistent=False), encryption=False)
         try:
             app.view.username_entry.insert(0, 'alice')
             app.view.password_entry.insert(0, ' password ')

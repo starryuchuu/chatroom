@@ -1,6 +1,7 @@
 """Application actions and event pump, composed from UI, model and connection."""
 import logging
 import queue
+import time
 import uuid
 
 from .connection import AuthResult, ServerEvent
@@ -16,10 +17,15 @@ from .sync import SyncController
 
 
 class ChatApplication:
-    def __init__(self, view, connection, preferences=None):
+    def __init__(self, view, connection, preferences=None, *, encryption=None):
         self.view, self.connection = view, connection
         self.preferences = preferences if preferences is not None else PreferencesStore(persistent=False)
         self.state = ClientState()
+        if encryption is True:
+            from .encryption import EncryptionController
+            self.encryption = EncryptionController(self)
+        else:
+            self.encryption = encryption or None
         self.closing = False
         self.auth_window = None
         self.reconnecting = False
@@ -73,7 +79,15 @@ class ChatApplication:
         self.start_auth(username, password)
 
     def start_auth(self, username, password, register=False, window=None):
-        if self.connection.authenticate(username, password, register=register):
+        options = {'register': register}
+        if self.encryption is not None and not register:
+            try:
+                endpoint = (self.connection.settings.host, self.connection.settings.port)
+                options['prepare'] = self.encryption.prepare_login(username, password, endpoint)
+            except (ValueError, OSError) as error:
+                self.view.notify('本机密钥', str(error))
+                return
+        if self.connection.authenticate(username, password, **options):
             self.auth_window = window
             self.view.set_auth_busy(True, '正在注册…' if register else '正在连接…')
 
@@ -87,12 +101,16 @@ class ChatApplication:
 
     def finish_auth(self, result):
         if not self.connection.accept_auth(result):
+            if self.encryption is not None:
+                self.encryption.discard_result(result)
             return
         resuming = self.reconnecting
         if not resuming:
             self.view.set_auth_busy(False)
         window, self.auth_window = self.auth_window, None
         if result.error is not None:
+            if self.encryption is not None:
+                self.encryption.discard_result(result)
             if resuming:
                 if result.retryable and self.connection.can_reconnect:
                     self.schedule_reconnect(self.reconnect_policy.retry())
@@ -115,6 +133,8 @@ class ChatApplication:
             self.sync.establish(result.endpoint, result.username, result.capabilities)
             if not resuming:
                 self.view.build_chat()
+            if self.encryption is not None:
+                self.encryption.establish(result)
             self.view.set_connection_status('已连接 · 正在补取消息')
             self.view.refresh_controls()
             self.connection.receive()
@@ -130,6 +150,8 @@ class ChatApplication:
         self.state.pending_messages.clear()
         self.state.pending_history = None
         self.sync.abort()
+        if self.encryption is not None:
+            self.encryption.pause()
         self.activity.flush()
         self.connection.disconnect(preserve_credentials=True)
         self.reconnecting = True
@@ -197,12 +219,19 @@ class ChatApplication:
         if key is None:
             self.view.notify('提示', '请选择好友或群组进行聊天')
             return
+        if self.encryption is not None:
+            self.encryption.send_message(text, key)
+            return
         request_id = uuid.uuid4().hex
         data = {'type': key.kind + '_chat', 'request_id': request_id,
                 'content': encrypt_message(text, self.connection.session_key),
                 'gid' if key.kind == 'group' else 'to': key.target}
+        self.send_chat_payload(data, text)
+
+    def send_chat_payload(self, data, text):
         if not self.try_send(data):
             return
+        request_id = data['request_id']
         self.state.pending_messages[request_id] = text
         self.view.refresh_controls()
         self.view.notify('消息', '发送中，等待服务器保存确认…')
@@ -254,6 +283,8 @@ class ChatApplication:
             self.history.load_older()
 
     def handle_server_message(self, message):
+        if self.encryption is not None and self.encryption.handle(message):
+            return
         if self.sync.handle(message):
             return
         self.events.handle(message)
@@ -264,6 +295,7 @@ class ChatApplication:
     def drain_incoming(self):
         if self.closing:
             return
+        started = time.monotonic()
         try:
             for _ in range(100):
                 try:
@@ -280,6 +312,10 @@ class ChatApplication:
                             self.handle_server_message(event.message)
                 except Exception:
                     logging.exception('忽略格式异常的服务器消息')
+                # Encrypted trust persistence can take longer than transport
+                # decryption. Yield to Tk between messages during catch-up.
+                if time.monotonic() - started >= 0.02:
+                    break
         finally:
             if not self.closing:
                 if self.notifier.poll():
@@ -304,6 +340,8 @@ class ChatApplication:
         self.reconnecting = False
         self.reconnect_policy.stop()
         self.sync.abort()
+        if self.encryption is not None:
+            self.encryption.reset()
         self.activity.flush()
         self.activity.reset()
         self.notifier.discard_pending()
@@ -314,6 +352,46 @@ class ChatApplication:
         self._uncertain_send = False
         if not self.closing:
             self.view.build_login()
+
+    def export_encryption_keys(self, path):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        return self.encryption.export_keys(path)
+
+    def change_encryption_passphrase(self, value):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        return self.encryption.change_passphrase(value)
+
+    def import_encryption_keys(self, path, passphrase, username=None, endpoint=None, *, replace=False, allow_rebind=False):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        if username is None:
+            username = self.view.username_entry.get().strip()
+        if not username:
+            raise ValueError('请先填写密钥备份所属的用户名')
+        if endpoint is None:
+            port = self.view.read_port()
+            if port is None:
+                raise ValueError('请输入有效的服务器端口')
+            endpoint = (self.connection.settings.host, port)
+        return self.encryption.import_keys(path, passphrase, username, endpoint,
+                                           replace=replace, allow_rebind=allow_rebind)
+
+    def verify_encryption_peer(self, username):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        return self.encryption.verify_peer(username)
+
+    def accept_encryption_peer(self, username, bundle):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        return self.encryption.accept_peer(username, bundle)
+
+    def review_encryption_group(self):
+        if self.encryption is None:
+            raise ValueError('此客户端实例未启用端到端加密')
+        return self.encryption.review_group(self.state.current_chat)
 
     def close(self):
         if self.closing:

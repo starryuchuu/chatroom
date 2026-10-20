@@ -36,7 +36,7 @@ def check_server_public_key(public_key_data):
 
 
 class ChatClient(ChatApplication):
-    def __init__(self, master, *, preferences=None):
+    def __init__(self, master, *, preferences=None, encryption=True):
         if preferences is None:
             default = ServerProfile('默认服务器', SERVER_HOST, SERVER_PORT, EXPECTED_SERVER_KEY_FINGERPRINT)
             preferences = PreferencesStore(default_profile=default)
@@ -45,7 +45,7 @@ class ChatClient(ChatApplication):
         view = TkClientView(master)
         connection = ConnectionManager(settings)
         try:
-            super().__init__(view, connection, preferences)
+            super().__init__(view, connection, preferences, encryption=encryption)
         except Exception:
             connection.close()
             raise

@@ -9,4 +9,5 @@ type Message struct {
 	GID       string `json:"gid,omitempty"`     // 群聊时使用
 	Content   string `json:"content"`
 	Timestamp string `json:"timestamp"`
+	E2EE      bool   `json:"e2ee"`
 }

@@ -64,7 +64,7 @@ class DesktopFeatureScenarios:
         self.root = client.tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.close_client)
-        self.app = client.ChatClient(self.root, preferences=preferences)
+        self.app = client.ChatClient(self.root, preferences=preferences, encryption=False)
         self.assertEqual(self.app.connection.settings.host, profile.host)
         self.assertEqual(self.app.connection.settings.port, profile.port)
         self.assertEqual(self.app.connection.settings.expected_fingerprint, profile.fingerprint)

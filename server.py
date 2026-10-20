@@ -3,6 +3,7 @@ import transport
 import pending_store
 import history_store
 import storage
+import e2ee_server
 import threading
 import time
 import datetime
@@ -316,11 +317,12 @@ def enqueue_packet(sock, packet, ready=None):
     except queue.Full:
         close_connection(sock)
 
-def validate_chat_packet(kind, sender, recipient, gid, content, timestamp):
+def validate_chat_packet(kind, sender, recipient, gid, content, timestamp, *, e2ee=False):
     # Saved messages must fit both live delivery and later replay metadata.
-    payload = {'type': kind, 'from': sender, 'content': content,
+    payload = {'type': kind, 'from': sender,
                'timestamp': timestamp, 'message_id': 9223372036854775807,
                'history': True, 'sync': True}
+    payload.update(chat_content(content, None, e2ee=e2ee, already_encrypted=True))
     payload['gid' if kind == 'group_chat' else 'to'] = gid if kind == 'group_chat' else recipient
     if len(json.dumps(payload).encode('utf-8')) > MAX_MESSAGE_LEN:
         raise ValueError('消息内容过长，无法转发')
@@ -425,6 +427,9 @@ def init_db():
                 timestamp TEXT NOT NULL
             )
         """)
+        if 'e2ee' not in {row[1] for row in cursor.execute('PRAGMA table_info(messages)')}:
+            cursor.execute('ALTER TABLE messages ADD COLUMN e2ee INTEGER NOT NULL DEFAULT 0')
+        cursor.execute('CREATE TABLE IF NOT EXISTS e2ee_identities (username TEXT PRIMARY KEY,identity TEXT NOT NULL)')
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS friends (
                 user TEXT NOT NULL,
@@ -579,7 +584,7 @@ def validate_user(username, password):
     return False
 
 # 保存消息到数据库
-def save_message(chat_type, from_user, to_user, gid, message, timestamp):
+def save_message(chat_type, from_user, to_user, gid, message, timestamp, *, e2ee=False):
     """
     保存聊天消息到数据库。
     参数:
@@ -593,7 +598,7 @@ def save_message(chat_type, from_user, to_user, gid, message, timestamp):
     conn = storage.connect("chat.db")
     cursor = conn.cursor()
     try:
-        message_id = storage.save_message(conn, chat_type, from_user, to_user, gid, message, timestamp)
+        message_id = storage.save_message(conn, chat_type, from_user, to_user, gid, message, timestamp, e2ee=e2ee)
         conn.commit()
         return message_id
     except Exception as e:
@@ -657,7 +662,7 @@ def send_replay_message(client_sock, payload):
         send_msg(client_sock, compact)
         return
     legacy = dict(payload)
-    for marker in ('sync', 'history'):
+    for marker in ('sync', 'history', 'encryption'):
         legacy.pop(marker, None)
         compact = json.dumps(legacy, ensure_ascii=False, separators=(',', ':'))
         if len(compact.encode('utf-8')) <= MAX_MESSAGE_LEN:
@@ -669,6 +674,14 @@ def send_replay_message(client_sock, payload):
 
 
 # 发送聊天历史记录给客户端
+def chat_content(content, key, *, e2ee=False, already_encrypted=False):
+    if e2ee:
+        envelope = content if isinstance(content, dict) else json.loads(content)
+        return {'e2ee': envelope, 'encryption': 'e2ee_v1'}
+    return {'content': content if already_encrypted else encrypt_message(content, key),
+            'encryption': 'legacy'}
+
+
 def send_history(client_sock, username, only_gid=None, *, kind=None, target=None, before=None):
     session_key = session_keys.get(client_sock)
     if not session_key:
@@ -680,9 +693,10 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
             boundary = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
         send_msg(client_sock, {"type":"history_begin"})
         rows, has_more = history_store.page(username, boundary, before=before, kind=kind, target=target)
-        for message_id, chat_type, sender, recipient, gid, message, timestamp in rows:
-            payload = {"type":chat_type+"_chat", "from":sender, "content":encrypt_message(message,session_key),
+        for message_id, chat_type, sender, recipient, gid, message, timestamp, *encryption in rows:
+            payload = {"type":chat_type+"_chat", "from":sender,
                        "timestamp":timestamp, "message_id":message_id, "history": True}
+            payload.update(chat_content(message, session_key, e2ee=bool(encryption and encryption[0])))
             payload['gid' if chat_type=='group' else 'to'] = gid if chat_type=='group' else recipient
             if chat_type == 'group':
                 group_ops_lock.acquire()
@@ -744,11 +758,11 @@ def send_sync(client_sock, username, request):
         send_msg(client_sock, dict(type='sync_begin', after_id=after, boundary=boundary,
                                   **correlation))
         rows, has_more = history_store.sync_page(username, after, boundary)
-        for message_id, chat_type, sender, recipient, gid, content, timestamp in rows:
+        for message_id, chat_type, sender, recipient, gid, content, timestamp, *encryption in rows:
             payload = {'type': chat_type + '_chat', 'from': sender,
-                       'content': encrypt_message(content, session_key),
                        'timestamp': timestamp, 'message_id': message_id,
                        'history': True, 'sync': True}
+            payload.update(chat_content(content, session_key, e2ee=bool(encryption and encryption[0])))
             payload['gid' if chat_type == 'group' else 'to'] = gid if chat_type == 'group' else recipient
             if chat_type == 'group':
                 # Removal/disband and this enqueue use the same operation lock;
@@ -770,6 +784,89 @@ def send_sync(client_sock, username, request):
         error('消息同步失败，请重试')
 
 # 检查用户是否存在
+def _e2ee_request_id(request):
+    value = request.get('request_id')
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        raise e2ee_server.E2EEError('端到端加密请求编号无效')
+    try:
+        value.encode('utf-8')
+    except UnicodeError as error:
+        raise e2ee_server.E2EEError('端到端加密请求编号无效') from error
+    return value
+
+
+def handle_e2ee_identity(client_sock, username, request):
+    reply = {'type': 'e2ee_identity_result', 'success': False}
+    # Enrollment and message commits use the same lock: a successful identity
+    # binding can never be followed by a racing plaintext message commit.
+    group_ops_lock.acquire()
+    try:
+        reply['request_id'] = _e2ee_request_id(request)
+        reply['identity'] = e2ee_server.publish_identity(
+            username, request.get('identity'), request.get('proof'))
+        reply['success'] = True
+    except (ValueError, TypeError, KeyError) as error:
+        reply['error'] = str(error) if isinstance(error, e2ee_server.E2EEError) else '端到端身份保存失败，请重试'
+        try:
+            reply['identity'] = e2ee_server.get_identity(username)
+        except Exception:
+            pass
+    except Exception:
+        logging.exception('端到端身份保存失败')
+        reply['error'] = '端到端身份保存失败，请重试'
+    finally:
+        group_ops_lock.release()
+    send_msg(client_sock, reply)
+
+
+def handle_e2ee_keys(client_sock, username, request):
+    reply = {'type': 'e2ee_keys', 'success': False}
+    group_ops_lock.acquire()
+    try:
+        reply['request_id'] = _e2ee_request_id(request)
+        kind, target = request.get('kind'), request.get('target')
+        if kind not in ('private', 'group') or not isinstance(target, str) or not 1 <= len(target) <= 256:
+            raise e2ee_server.E2EEError('端到端会话参数错误')
+        reply.update(kind=kind, target=target)
+        if kind == 'private':
+            with user_friends_lock:
+                allowed = target != username and target in user_friends.get(username, set())
+            if not allowed:
+                raise e2ee_server.E2EEError('无权读取该会话的端到端密钥')
+            members = sorted({username, target})
+        else:
+            group = get_group_db(target)
+            if group is None or username not in group['members']:
+                raise e2ee_server.E2EEError('无权读取该会话的端到端密钥')
+            members = sorted(set(group['members']))
+        identities, missing = e2ee_server.identities_for(members)
+        reply.update(success=True, members=members, identities=identities, missing=missing)
+    except e2ee_server.E2EEError as error:
+        reply['error'] = str(error)
+    except Exception:
+        logging.exception('读取端到端会话密钥失败')
+        reply['error'] = '读取端到端会话密钥失败，请重试'
+    finally:
+        group_ops_lock.release()
+    send_msg(client_sock, reply)
+
+
+def prepare_chat_content(request, sender, kind, target, members, session_key, timestamp):
+    if 'e2ee' in request:
+        if 'content' in request:
+            raise e2ee_server.E2EEError('端到端消息不能同时携带旧版消息内容')
+        envelope = e2ee_server.validate_envelope(request['e2ee'], sender, kind, target, members)
+        validate_chat_packet(kind + '_chat', sender, target if kind == 'private' else None,
+                             target if kind == 'group' else None, envelope, timestamp, e2ee=True)
+        return e2ee_server.canonical(envelope).decode('ascii'), True
+    e2ee_server.reject_legacy(members)
+    encrypted_content = request.get('content')
+    message = decrypt_message(encrypted_content, session_key)
+    validate_chat_packet(kind + '_chat', sender, target if kind == 'private' else None,
+                         target if kind == 'group' else None, encrypted_content, timestamp)
+    return message, False
+
+
 def user_exists(username):
     """
     检查用户名是否存在于数据库中。
@@ -967,7 +1064,7 @@ def handle_client(client_sock, addr):
 
         # 1. 发送公钥
         send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION,
-                               "capabilities": ["message_sync"], "key": public_key_pem.decode('utf-8')})
+                               "capabilities": ["message_sync", "e2ee_v1"], "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
         encrypted_session_key_data = recv_msg(client_sock, auth_deadline)
@@ -1063,7 +1160,8 @@ def handle_client(client_sock, addr):
                         else:
                             friends = load_friends(username)
                             session_timestamps[client_sock] = datetime.datetime.now().timestamp()
-                            send_msg(client_sock, {"type": "login_result", "success": True}, ready=ready)
+                            send_msg(client_sock, {"type": "login_result", "success": True,
+                                                   "e2ee_identity": e2ee_server.get_identity(username)}, ready=ready)
                             send_msg(client_sock, {"type": "friends_list", "friends": list(friends)}, ready=ready)
                             with user_friends_lock:
                                 user_friends[username] = friends
@@ -1115,7 +1213,13 @@ def handle_client(client_sock, addr):
             logging.debug(f"Message from {current_username}: {msg}")
             mtype = msg.get("type")
             
-            if mtype == "sync_request":
+            if mtype == 'e2ee_identity_publish':
+                handle_e2ee_identity(client_sock, current_username, msg)
+
+            elif mtype == 'e2ee_keys_request':
+                handle_e2ee_keys(client_sock, current_username, msg)
+
+            elif mtype == "sync_request":
                 send_sync(client_sock, current_username, msg)
 
             elif mtype == "history_request":
@@ -1232,8 +1336,8 @@ def handle_client(client_sock, addr):
             elif mtype == "private_chat":
                 message_id = None
                 try:
+                    group_ops_lock.acquire()
                     to_user = msg.get("to")
-                    encrypted_content = msg.get("content")
                     # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
                     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
@@ -1256,15 +1360,11 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
-                    try:
-                        plaintext = decrypt_message(encrypted_content, sender_session_key)
-                    except Exception as e:
-                        logging.error(f"解密来自 {current_username} 的私聊消息失败: {e}")
-                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
-                        continue
-                    
-                    validate_chat_packet('private_chat', current_username, to_user, None, encrypted_content, now)
-                    message_id = save_message('private', current_username, to_user, None, plaintext, now)
+                    stored_content, encrypted_end_to_end = prepare_chat_content(
+                        msg, current_username, 'private', to_user, [current_username, to_user],
+                        sender_session_key, now)
+                    message_id = save_message('private', current_username, to_user, None,
+                                              stored_content, now, e2ee=encrypted_end_to_end)
                     send_msg(client_sock, {"type": "private_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
                     logging.info(f"Private message from '{current_username}' to '{to_user}' saved to database.")
 
@@ -1277,11 +1377,12 @@ def handle_client(client_sock, addr):
                                 "type": "private_chat",
                                 "from": current_username,
                                 "to": to_user,
-                                "content": encrypt_message(plaintext, recipient_session_key),
                                 "timestamp": now,
                                 "message_id": message_id,
                                 "history": False
                             }
+                            message_for_recipient.update(chat_content(
+                                stored_content, recipient_session_key, e2ee=encrypted_end_to_end))
                             send_msg(to_sock, message_for_recipient)
                             logging.info(f"Private message from '{current_username}' forwarded to '{to_user}'.")
                         else:
@@ -1292,16 +1393,20 @@ def handle_client(client_sock, addr):
                         "type": "private_chat",
                         "from": current_username,
                         "to": to_user,
-                        "content": encrypt_message(plaintext, sender_session_key),
                         "timestamp": now,
                         "message_id": message_id,
                         "history": False
                     }
+                    message_for_sender.update(chat_content(
+                        stored_content, sender_session_key, e2ee=encrypted_end_to_end))
                     send_msg(client_sock, message_for_sender)
                 except Exception as e:
                     logging.error(f"Error processing private_chat from {current_username}: {e}")
                     if message_id is None:
-                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息保存失败，请重试"})
+                        send_msg(client_sock, {"type": "private_chat_result", "success": False, "request_id": msg.get("request_id"),
+                                               "error": str(e) if isinstance(e, e2ee_server.E2EEError) else "消息保存失败，请重试"})
+                finally:
+                    group_ops_lock.release()
 
             elif mtype == "group_create":
                 try:
@@ -1384,7 +1489,6 @@ def handle_client(client_sock, addr):
                 try:
                     group_ops_lock.acquire()
                     gid = msg.get("gid")
-                    encrypted_content = msg.get("content")
                     # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
                     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     from_user = current_username
@@ -1411,15 +1515,10 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
                         continue
                     
-                    try:
-                        plaintext = decrypt_message(encrypted_content, sender_session_key)
-                    except Exception as e:
-                        logging.error(f"解密来自 {from_user} 的群聊消息失败 (群组: {gid}): {e}")
-                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息未保存，请检查目标和消息内容"})
-                        continue
-
-                    validate_chat_packet('group_chat', from_user, None, gid, encrypted_content, now)
-                    message_id = save_message('group', from_user, None, gid, plaintext, now)
+                    stored_content, encrypted_end_to_end = prepare_chat_content(
+                        msg, from_user, 'group', gid, group['members'], sender_session_key, now)
+                    message_id = save_message('group', from_user, None, gid, stored_content, now,
+                                              e2ee=encrypted_end_to_end)
                     send_msg(client_sock, {"type": "group_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
                     logging.info(f"Group message from '{from_user}' in group '{gid}' saved to database.")
 
@@ -1433,11 +1532,12 @@ def handle_client(client_sock, addr):
                                     "type": "group_chat",
                                     "from": from_user,
                                     "gid": gid,
-                                    "content": encrypt_message(plaintext, member_session_key),
                                     "timestamp": now,
                                     "message_id": message_id,
                                     "history": False
                                 }
+                                message_to_send.update(chat_content(
+                                    stored_content, member_session_key, e2ee=encrypted_end_to_end))
                                 try:
                                     send_msg(sock, message_to_send)
                                 except Exception as e:
@@ -1447,7 +1547,8 @@ def handle_client(client_sock, addr):
                 except Exception as e:
                     logging.error(f"Error processing group_chat from {current_username}: {e}")
                     if message_id is None:
-                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"), "error": "消息保存失败，请重试"})
+                        send_msg(client_sock, {"type": "group_chat_result", "success": False, "request_id": msg.get("request_id"),
+                                               "error": str(e) if isinstance(e, e2ee_server.E2EEError) else "消息保存失败，请重试"})
                 finally:
                     group_ops_lock.release()
 

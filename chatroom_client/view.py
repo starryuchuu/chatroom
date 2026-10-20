@@ -6,6 +6,7 @@ from tkinter import messagebox, simpledialog
 from .group_view import GroupWindows
 from .models import ChatKey
 from .settings_view import ServerProfileSelector
+from .encryption_view import EncryptionWindow, confirm_roster, import_keys
 
 
 class TkClientView:
@@ -156,6 +157,9 @@ class TkClientView:
 
     def append_message(self, key, message):
         label = f'{message.author}(群聊)' if key.kind == 'group' else message.author
+        if self.controller.encryption is not None:
+            security = getattr(message, 'encryption', 'legacy')
+            label += {'e2ee': ' [端到端加密]', 'legacy': ' [旧消息 · 非端到端加密]'}.get(security, ' [安全验证失败]')
         self.display_message_with_time(f'{label}: {message.content}', message.timestamp,
                                        message.is_self, key=key)
 
@@ -194,7 +198,9 @@ class TkClientView:
         label = getattr(self, 'chat_title', None)
         if label is not None and label.winfo_exists():
             label.configure(text=f'当前会话：{title}' if title else '请选择好友或群组')
-            can_send = title and self.controller.connection.running and not self.state.pending_messages
+            encryption = self.controller.encryption
+            can_send = (title and self.controller.connection.running and not self.state.pending_messages
+                        and (encryption is None or (encryption.ready and not encryption.sending)))
             self.send_button.configure(state=tk.NORMAL if can_send else tk.DISABLED)
             conversation = self.state.conversation(key) if key else None
             can_load = (title and self.controller.connection.running and not conversation.exhausted
@@ -289,6 +295,14 @@ class TkClientView:
         tk.Label(login_frame, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
         self.password_entry.pack(ipady=6)
+        self.encryption_entry = None
+        if self.controller.encryption is not None:
+            tk.Label(login_frame, text='本机加密密钥口令:', font=('微软雅黑', 12), bg='#ffffff').pack(pady=(10, 5))
+            self.encryption_entry = tk.Entry(login_frame, **entry_style, bg='#f5faff', show='*')
+            self.encryption_entry.pack(ipady=6)
+            tk.Label(login_frame, text='至少 8 个字符，与登录密码不同；仅在本机使用', bg='#ffffff', fg='#555').pack(pady=3)
+            self.import_keys_button = tk.Button(login_frame, text='从密钥备份恢复…', command=lambda: import_keys(self))
+            self.import_keys_button.pack(pady=3)
         tk.Label(login_frame, text="端口（仅本次连接）:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.port_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
@@ -331,6 +345,14 @@ class TkClientView:
         self.do_not_disturb = tk.BooleanVar(self.master, self.controller.preferences.do_not_disturb)
         tk.Checkbutton(top_frame, text='免打扰', variable=self.do_not_disturb, command=self.save_notification_preferences).pack(side=tk.RIGHT)
         tk.Checkbutton(top_frame, text='消息提醒', variable=self.notifications_enabled, command=self.save_notification_preferences).pack(side=tk.RIGHT)
+
+        if self.controller.encryption is not None:
+            security_frame = tk.Frame(self.master)
+            security_frame.pack(side=tk.TOP, fill=tk.X)
+            self.encryption_status = tk.Label(security_frame, text='', anchor=tk.W, wraplength=770)
+            self.encryption_status.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=4)
+            tk.Button(security_frame, text='端到端加密与密钥…', command=lambda: EncryptionWindow(self)).pack(side=tk.RIGHT, padx=10)
+            self.refresh_encryption()
 
         left_frame = tk.Frame(self.master)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
@@ -499,6 +521,27 @@ class TkClientView:
         for entry in (self.port_entry, self.username_entry, self.password_entry):
             if entry.winfo_exists():
                 entry.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        entry = getattr(self, 'encryption_entry', None)
+        if entry is not None and entry.winfo_exists():
+            entry.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        button = getattr(self, 'import_keys_button', None)
+        if button is not None and button.winfo_exists():
+            button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+
+    def encryption_passphrase(self):
+        entry = getattr(self, 'encryption_entry', None)
+        return entry.get() if entry is not None and entry.winfo_exists() else ''
+
+    def confirm_encryption_roster(self, gid, identities, previous):
+        return confirm_roster(self.master, gid, identities, previous)
+
+    def refresh_encryption(self):
+        encryption = self.controller.encryption
+        label = getattr(self, 'encryption_status', None)
+        if encryption is not None and label is not None and label.winfo_exists():
+            label.configure(text=encryption.status, fg='#1e6c39' if encryption.ready else '#a04b00')
+        if getattr(self, 'chat_title', None) is not None and self.chat_title.winfo_exists():
+            self.refresh_controls()
 
     def register(self):
         """
