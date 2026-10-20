@@ -45,6 +45,49 @@ func TestPendingRequestsSurviveDatabaseReopenAndExpire(t *testing.T) {
 	}
 }
 
+func TestFriendAcceptanceConsumesBothDurableRequestDirections(t *testing.T) {
+	InitDB(filepath.Join(t.TempDir(), "chat.db"))
+	t.Cleanup(func() { DB.Close() })
+	for _, pair := range [][2]string{{"alice", "bob"}, {"bob", "alice"}, {"carol", "alice"}} {
+		if err := SavePendingFriend(pair[0], pair[1], time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SaveFriendRelationship("bob", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// Inspect stored rows directly: startup repair must not conceal an
+	// acceptance transaction which failed to consume the reciprocal request.
+	var remaining int
+	if err := DB.QueryRow("SELECT COUNT(*) FROM pending_friend_requests").Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("acceptance left %d requests; want only Carol's request", remaining)
+	}
+}
+
+func TestPendingRequestRestoreRepairsExistingFriendships(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat.db")
+	InitDB(path)
+	if err := SaveFriendRelationship("alice", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	// Older servers could leave the reciprocal request pending after acceptance.
+	for _, pair := range [][2]string{{"alice", "bob"}, {"bob", "alice"}, {"carol", "alice"}} {
+		if err := SavePendingFriend(pair[0], pair[1], time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	DB.Close()
+	InitDB(path)
+	t.Cleanup(func() { DB.Close() })
+	friends, _, err := LoadPendingRequests()
+	if err != nil || len(friends) != 1 || friends[0].Requester != "carol" || friends[0].Target != "alice" {
+		t.Fatalf("existing friendship replayed a stale request: %v %v", friends, err)
+	}
+}
+
 func TestHistoryPagesAreBoundedCompleteAndFiltered(t *testing.T) {
 	InitDB(filepath.Join(t.TempDir(), "chat.db"))
 	DB.SetMaxOpenConns(1)

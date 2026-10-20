@@ -20,7 +20,7 @@ func legacyStorageFixture(t *testing.T, path string) {
 	if err = createTables(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"alice-secret-name", "bob-secret-name"} {
+	for _, name := range []string{"alice-secret-name", "bob-secret-name", "carol-secret-name"} {
 		hash, err := hashPassword("legacy password")
 		if err != nil {
 			t.Fatal(err)
@@ -40,7 +40,7 @@ func legacyStorageFixture(t *testing.T, path string) {
 			t.Fatal(err)
 		}
 	}
-	if _, err = DB.Exec("INSERT INTO pending_friend_requests VALUES(?,?,?)", "bob-secret-name", "alice-secret-name", float64(time.Now().Unix())); err != nil {
+	if _, err = DB.Exec("INSERT INTO pending_friend_requests VALUES(?,?,?)", "carol-secret-name", "alice-secret-name", float64(time.Now().Unix())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = DB.Exec("INSERT INTO pending_group_invites VALUES(?,?,?,?)", "g", "bob-secret-name", "alice-secret-name", float64(time.Now().Unix())); err != nil {
@@ -69,14 +69,14 @@ func TestStorageMigrationConfidentialityAndReopen(t *testing.T) {
 		t.Fatalf("groups: %v %v", groups, err)
 	}
 	friends, invites, err := LoadPendingRequests()
-	if err != nil || len(friends) != 1 || len(invites) != 1 || friends[0].Target != "alice-secret-name" || invites[0].Inviter != "alice-secret-name" {
+	if err != nil || len(friends) != 1 || len(invites) != 1 || friends[0].Requester != "carol-secret-name" || friends[0].Target != "alice-secret-name" || invites[0].Inviter != "alice-secret-name" {
 		t.Fatalf("pending: %v %v %v", friends, invites, err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"alice-secret-name", "bob-secret-name", "uniquely-secret-message", "uniquely-secret-group", "secret-date", "$argon2id$"} {
+	for _, secret := range []string{"alice-secret-name", "bob-secret-name", "carol-secret-name", "uniquely-secret-message", "uniquely-secret-group", "secret-date", "$argon2id$"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("plaintext remains: %s", secret)
 		}

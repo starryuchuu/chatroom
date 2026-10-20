@@ -494,7 +494,8 @@ def save_friend_relationship(user1, user2):
         user2 = storage.put_name(conn, user2)
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user1, user2))
         cursor.execute("INSERT OR IGNORE INTO friends (user, friend) VALUES (?, ?)", (user2, user1))
-        cursor.execute("DELETE FROM pending_friend_requests WHERE requester=? AND target=?", (user2,user1))
+        cursor.execute("DELETE FROM pending_friend_requests WHERE (requester=? AND target=?) OR (requester=? AND target=?)",
+                       (user1, user2, user2, user1))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -1060,21 +1061,16 @@ def handle_client(client_sock, addr):
                         send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": f"用户 {to_user} 不存在"})
                         logging.warning(f"Friend request from '{sender}' failed: User '{to_user}' does not exist.")
                         continue
-                    # 检查是否已是好友
-                    conn = None
-                    try:
-                        conn = storage.connect("chat.db")
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT COUNT(*) FROM friends WHERE user=? AND friend=?", (storage.token(sender), storage.token(to_user)))
-                        already_friends = cursor.fetchone()[0] > 0
-                    finally:
-                        if conn:
-                            conn.close()
-                    if already_friends:
-                        send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": f"您和 {to_user} 已是好友"})
-                        continue
-                    # 记录待处理请求，用于 friend_response 校验（带过期时间）
+                    # 与接受请求共用锁，使好友检查和保存申请成为一次操作，
+                    # 防止并发接受后重试申请重新创建已失效的待处理记录。
                     with pending_friend_requests_lock:
+                        with closing(storage.connect("chat.db")) as conn:
+                            already_friends = conn.execute(
+                                "SELECT 1 FROM friends WHERE user=? AND friend=?",
+                                (storage.token(sender), storage.token(to_user))).fetchone() is not None
+                        if already_friends:
+                            send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": f"您和 {to_user} 已是好友"})
+                            continue
                         ts = pending_friend_requests.get((sender, to_user))
                         if ts is not None and time.time() - ts <= PENDING_REQUEST_TIMEOUT_SECONDS:
                             send_msg(client_sock, {"type": "friend_request_result", "success": False, "error": "已发送过好友申请，请等待对方处理"})
@@ -1114,9 +1110,17 @@ def handle_client(client_sock, addr):
                             continue
                         if accepted:
                             save_friend_relationship(responder, from_user)
+                            # Publish authorization before either user can react
+                            # to an acceptance notification or a new login snapshot.
+                            with user_friends_lock:
+                                user_friends.setdefault(responder, set()).add(from_user)
+                                if from_user in user_friends:
+                                    user_friends[from_user].add(responder)
                         else:
                             pending_store.decline_friend(from_user, responder)
                         del pending_friend_requests[(from_user, responder)]
+                        if accepted:
+                            pending_friend_requests.pop((responder, from_user), None)
 
                     from_sock = get_sock_by_username(from_user)
                     if from_sock:
@@ -1124,15 +1128,6 @@ def handle_client(client_sock, addr):
                         logging.info(f"Friend response from '{responder}' sent to '{from_user}'.")
                     
                     if accepted:
-                        # 确保两个用户的好友列表都更新（持锁修改，防止并发竞争）
-                        with user_friends_lock:
-                            if responder not in user_friends:
-                                user_friends[responder] = set()
-                            user_friends[responder].add(from_user)
-                            
-                            if from_user in user_friends:
-                                user_friends[from_user].add(responder)
-                        
                         logging.info(f"Friend relationship between '{responder}' and '{from_user}' saved.")
 
                         # 通知双方更新好友列表

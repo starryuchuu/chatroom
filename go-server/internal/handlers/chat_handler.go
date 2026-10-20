@@ -842,21 +842,24 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 		return
 	}
 
-	// 检查是否已经是好友，防止重复申请骚扰
+	// Acceptance commits under this same lock. Check the friendship while
+	// holding it so a retry cannot recreate a request just after acceptance.
+	pendingFriendRequestsMu.Lock()
 	areFriends, err := database.AreFriends(fromUser, toUser)
 	if err != nil {
+		pendingFriendRequestsMu.Unlock()
 		log.Printf("检查好友关系失败 (%s, %s): %v", fromUser, toUser, err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "服务器内部错误"})
 		return
 	}
 	if areFriends {
+		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "您和 " + toUser + " 已是好友"})
 		log.Printf("好友请求从 '%s' 到 '%s' 失败: 已是好友", fromUser, toUser)
 		return
 	}
 
 	// 记录待处理请求，用于 friend_response 防伪校验
-	pendingFriendRequestsMu.Lock()
 	pruneFriendRequestsLocked(time.Now())
 	if pendingFriendRequests[fromUser] == nil {
 		pendingFriendRequests[fromUser] = make(map[string]time.Time)
@@ -1076,6 +1079,12 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 	delete(pendingFriendRequests[fromUser], responder)
 	if len(pendingFriendRequests[fromUser]) == 0 {
 		delete(pendingFriendRequests, fromUser)
+	}
+	if accepted {
+		delete(pendingFriendRequests[responder], fromUser)
+		if len(pendingFriendRequests[responder]) == 0 {
+			delete(pendingFriendRequests, responder)
+		}
 	}
 	pendingFriendRequestsMu.Unlock()
 

@@ -22,6 +22,10 @@ def load():
     with closing(storage.connect()) as db, db:
         cutoff = time.time() - TTL
         db.execute('DELETE FROM pending_friend_requests WHERE created_at<=?', (cutoff,))
+        # Older versions could retain a reciprocal request after becoming friends.
+        db.execute('''DELETE FROM pending_friend_requests WHERE EXISTS (
+            SELECT 1 FROM friends WHERE friends.user=pending_friend_requests.requester
+            AND friends.friend=pending_friend_requests.target)''')
         db.execute('DELETE FROM pending_group_invites WHERE created_at<=?', (cutoff,))
         friends = db.execute('SELECT requester,target,created_at FROM pending_friend_requests').fetchall()
         invites = db.execute('SELECT gid,target,inviter,created_at FROM pending_group_invites').fetchall()
