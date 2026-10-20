@@ -29,6 +29,9 @@ This project is a secure encrypted chat room system implemented in both Python a
   - Group information maintenance
 
 - 🎨 **User Experience**
+  - Saved server profiles with address, port and verified public-key fingerprint
+  - Per-conversation unread counts, recent previews, desktop alerts and Do Not Disturb
+  - Cancelable automatic reconnection and paginated recovery of missed messages
   - Clean and intuitive graphical interface
   - Real-time message notifications
   - Group member management
@@ -57,7 +60,17 @@ When upgrading from an unauthenticated protocol version, upgrade the Python clie
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
 
-The client requires `client.py`, the complete `chatroom_client/` package, and `transport.py`. Download `chatroom-v1.0.16-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `history_store.py`, `pending_store.py`, and `storage.py`. The v1.0.16 client remains compatible with v1.0.10–v1.0.15 servers; this refactor does not change the protocol or storage format.
+The client requires `client.py`, the complete `chatroom_client/` package, and `transport.py`. Download `chatroom-v1.1.0-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `history_store.py`, `pending_store.py`, and `storage.py`. Protocol v2 and storage format v1 remain unchanged. Clients can still connect to v1.0.10–v1.0.17 servers; complete missed-message recovery requires a v1.1.0 server.
+
+## Desktop settings and recovery
+
+Use the server selector and **连接设置…** on the login screen to save multiple server profiles. Python and Go loopback presets are included. Remote servers require a verified SHA-256 public-key fingerprint; the optional login port field affects only the current connection. Profiles cannot be changed during authentication, an active session or reconnection.
+
+Conversation rows show unread counts and recent message previews. Incoming messages stay unread while the window is inactive or minimized; opening a conversation in the foreground marks it read. The title shows the total count. The initial history snapshot establishes a baseline on the first-ever account login. Later logins restore read markers and unread IDs, isolated by endpoint and account. Desktop alerts contain generic text, without message bodies. **消息提醒** controls alerts; **免打扰** preserves unread counts while muting notifications and sounds. Native desktop notifications are best effort (Windows notification icon, Linux `notify-send`, macOS notifications); unavailable backends fall back to a window bell.
+
+Unexpected disconnects retain the current conversation and draft. Reconnection retries after 1, 2, 4, 8, 15 and then 30 seconds, with a **取消重连** button. Credentials stay in memory only and are cleared on explicit disconnect, cancellation or close. Identity or password failures stop reconnection. Updated Python and Go servers replay missed messages in bounded pages against one fixed boundary, including gaps larger than 100 messages. Only a fully completed replay advances the persisted checkpoint; failed recovery can be retried with **重试补取**. Unconfirmed outgoing messages are retained for manual verification and are never automatically resent.
+
+Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG_HOME/chatroom/client.json` (or `~/.config/chatroom/client.json`) on Linux, and `~/Library/Application Support/Chatroom/client.json` on macOS. `CHATROOM_CONFIG_DIR` overrides the directory. Settings contain profile data, notification preferences, account identifiers and message IDs; no passwords, message bodies or drafts. Drafts last only for the current process. Source constants supply defaults on the first launch; saved profiles take precedence afterward.
 
 ## Security Design
 
@@ -96,6 +109,12 @@ chatroom/
 │   ├── protocol.py                   # TCP framing, encryption and identity checks
 │   ├── events.py                     # Server event dispatch and handlers
 │   ├── history.py                    # Retry-safe history pagination
+│   ├── sync.py                       # Complete bounded catch-up and durable cursor
+│   ├── reconnect.py                  # Retry delays and cancellation tokens
+│   ├── preferences.py                # Private profiles and account metadata
+│   ├── settings_view.py              # Server and notification preferences UI
+│   ├── activity.py                   # Unread/read markers and notification policy
+│   ├── notifications.py              # Native desktop notices and bell fallback
 │   ├── view.py                       # Tk widgets and rendering
 │   └── group_view.py                 # Group windows
 ├── CLIENT_ARCHITECTURE.md              # Client architecture and ownership rules

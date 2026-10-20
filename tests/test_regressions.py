@@ -27,6 +27,7 @@ client = load('chat_client', ROOT / 'client.py')
 from chatroom_client.app import ChatApplication
 from chatroom_client.connection import ClientSettings, ConnectionManager, ServerEvent
 from chatroom_client.models import ChatKey, Message
+from chatroom_client.preferences import PreferencesStore
 from chatroom_client.view import TkClientView
 
 
@@ -235,7 +236,7 @@ class TkClientTests(unittest.TestCase):
     def setUp(self):
         self.root = client.tk.Tk()
         self.root.withdraw()
-        self.app = client.ChatClient(self.root)
+        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False))
 
     def tearDown(self):
         if self.app.connection.auth_busy:

@@ -32,12 +32,14 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 		if err != nil {
 			return err
 		}
-		payload := map[string]interface{}{"type": message.ChatType + "_chat", "from": message.FromUser, "content": content, "timestamp": message.Timestamp, "message_id": message.ID}
+		target := message.ToUser
 		if message.ChatType == "group" {
-			payload["gid"] = message.GID
+			target = message.GID
+		}
+		payload := historyChatPayload(message.ChatType+"_chat", message.FromUser, target, content, message.Timestamp, message.ID, false)
+		if message.ChatType == "group" {
 			err = sendAuthorizedGroupHistory(conn, username, message.GID, payload)
 		} else {
-			payload["to"] = message.ToUser
 			err = protocol.SendMsgWait(conn, payload)
 		}
 		if err != nil {

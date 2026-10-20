@@ -59,6 +59,16 @@ func startPeer(t *testing.T, key []byte) (net.Conn, <-chan struct{}) {
 	if err != nil || public["type"] != "public_key" {
 		t.Fatalf("handshake: %v %v", public, err)
 	}
+	capabilities, ok := public["capabilities"].([]interface{})
+	hasSync := false
+	for _, capability := range capabilities {
+		if capability == "message_sync" {
+			hasSync = true
+		}
+	}
+	if !ok || !hasSync {
+		t.Fatalf("message catch-up capability not advertised: %v", public["capabilities"])
+	}
 	encrypted, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, &privateKey.PublicKey, key, nil)
 	if err != nil {
 		t.Fatal(err)

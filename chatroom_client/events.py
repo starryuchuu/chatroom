@@ -77,6 +77,9 @@ class ServerEvents:
         for gid in self.state.groups.keys() - groups.keys():
             self.remove_group(gid, refresh=False)
         self.state.groups = groups
+        activity = getattr(self.controller, 'activity', None)
+        if activity is not None:
+            activity.reconcile_groups(groups)
         self.view.refresh_groups()
 
     def chat_message(self, message):
@@ -101,6 +104,16 @@ class ServerEvents:
             self.view.update_friends_listbox()
         if key.kind == 'group' and key.target not in self.state.groups:
             self.controller.request_group_info(key.target)
+        activity = getattr(self.controller, 'activity', None)
+        if activity is not None:
+            # Some already-stored frames leave no space for additive replay
+            # flags. The surrounding history/sync batch remains a fallback for
+            # those frames as well as for older servers.
+            syncing = getattr(getattr(self.controller, 'sync', None), 'active', False) is True
+            live = message.get('history') is False and message.get('sync') is not True
+            catchup = not live and (message.get('sync') is True or syncing)
+            historical = not live and (message.get('history') is True or catchup or self.state.history_syncing)
+            activity.receive(key, item, historical=historical, catchup=catchup)
         if self.state.current_chat == key and not self.state.history_syncing:
             if index == len(conversation.messages) - 1:
                 self.view.append_message(key, item)
@@ -161,6 +174,9 @@ class ServerEvents:
     def remove_group(self, gid, *, refresh=True):
         selected = self.state.current_chat == ChatKey('group', gid)
         self.state.remove_group(gid)
+        activity = getattr(self.controller, 'activity', None)
+        if activity is not None:
+            activity.forget(ChatKey('group', gid))
         self.view.remove_conversation(ChatKey('group', gid))
         if selected:
             self.view.clear_selection()

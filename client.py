@@ -1,4 +1,4 @@
-"""Python desktop client entry point and user-editable server configuration.
+"""Python desktop client entry point and first-launch server defaults.
 
 The application is composed in chatroom_client. Wire helpers remain exported
 here for existing protocol integrations and command-line scripts.
@@ -18,6 +18,7 @@ from chatroom_client.protocol import (
 )
 from chatroom_client.app import ChatApplication
 from chatroom_client.connection import ClientSettings, ConnectionManager
+from chatroom_client.preferences import PreferencesStore, ServerProfile
 from chatroom_client.view import TkClientView
 
 SERVER_HOST = '127.0.0.1'
@@ -35,12 +36,16 @@ def check_server_public_key(public_key_data):
 
 
 class ChatClient(ChatApplication):
-    def __init__(self, master):
-        settings = ClientSettings(SERVER_HOST, SERVER_PORT, EXPECTED_SERVER_KEY_FINGERPRINT)
+    def __init__(self, master, *, preferences=None):
+        if preferences is None:
+            default = ServerProfile('默认服务器', SERVER_HOST, SERVER_PORT, EXPECTED_SERVER_KEY_FINGERPRINT)
+            preferences = PreferencesStore(default_profile=default)
+        profile = preferences.selected_profile
+        settings = ClientSettings(profile.host, profile.port, profile.fingerprint)
         view = TkClientView(master)
         connection = ConnectionManager(settings)
         try:
-            super().__init__(view, connection)
+            super().__init__(view, connection, preferences)
         except Exception:
             connection.close()
             raise
