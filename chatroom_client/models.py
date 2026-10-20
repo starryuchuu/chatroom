@@ -30,6 +30,26 @@ class Conversation:
     exhausted: bool = False
     _order: list[int] = field(default_factory=list, repr=False)
     _seen: set[int] = field(default_factory=set, repr=False)
+    read_id: int = 0
+    unread_ids: set[int] = field(default_factory=set, repr=False)
+    _anonymous_unread: int = field(default=0, repr=False)
+
+    @property
+    def unread_count(self):
+        return len(self.unread_ids) + self._anonymous_unread
+
+    @property
+    def latest_message(self):
+        return self.messages[-1] if self.messages else None
+
+    @property
+    def preview(self):
+        """A short, single-line preview kept in memory with the conversation."""
+        message = self.latest_message
+        if message is None:
+            return ''
+        text = ' '.join(message.content.split())
+        return text if len(text) <= 60 else text[:59] + '…'
 
     @property
     def message_ids(self):
@@ -69,6 +89,10 @@ class ClientState:
     group_info_requests: set[str] = field(default_factory=set)
     group_sync_chunks: list[str] = field(default_factory=list)
     drafts: dict[tuple[str, int, str], str] = field(default_factory=dict)
+
+    @property
+    def total_unread(self):
+        return sum(conversation.unread_count for conversation in self.conversations.values())
 
     def conversation(self, key):
         return self.conversations.setdefault(key, Conversation())

@@ -17,6 +17,7 @@ spec = importlib.util.spec_from_file_location('go_interop_client', ROOT / 'clien
 client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
 from chatroom_client.models import ChatKey
+from chatroom_client.preferences import PreferencesStore
 
 
 @unittest.skipUnless(os.environ.get('CHATROOM_GO_SERVER_EXE'), 'Go binary not selected')
@@ -241,7 +242,7 @@ class GoInteropTests(unittest.TestCase):
         bob, bk, _ = self.connect('bob')
         root = client.tk.Tk()
         root.withdraw()
-        app = client.ChatClient(root)
+        app = client.ChatClient(root, preferences=PreferencesStore(persistent=False))
         try:
             app.view.username_entry.insert(0, 'alice')
             app.view.password_entry.insert(0, ' password ')

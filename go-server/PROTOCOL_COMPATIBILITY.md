@@ -26,6 +26,20 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 ## 持久化与兼容性
 
+### v1.1.0 增量补取
+
+支持完整断线补取的服务端在 `public_key` 中增加 `capabilities: ["message_sync"]`。客户端只有看到此能力才发送 `sync_request`；旧客户端忽略新增字段，帧格式仍为 v2。历史聊天帧增加 `history: true`，增量聊天帧通常还带 `sync: true`；旧版本近长度上限的消息可省略可选标记，客户端也使用批次状态识别历史。
+
+```json
+{"type":"sync_request","after_id":123,"boundary":456,"request_id":"unique-page-id"}
+```
+
+`after_id` 为排他下界，`boundary` 为包含的上界；省略 `boundary` 时使用当前最大消息 ID。两者为 0 至 9007199254740991 的整数，且 `after_id <= boundary <= 当前最大 ID`。`request_id` 为 1–128 个 Unicode 字符。
+
+回复依次为 `sync_begin`、最多 100 条当前有权读取的聊天消息、`sync_end`，按 ID 升序排列。开始与结束事件均回显 `request_id`、`after_id`、`boundary`；结束事件另有 `has_more`、`next_after_id`。有下一页时游标为本页最后一条 ID，否则为 `boundary`。客户端后续请求保持同一上界。群消息排队前再次校验成员资格。失败返回关联 `request_id` 的 `sync_error`，不能据此推进完成游标。
+
+新客户端在第一次账号登录时使用最近历史建立基线。后续登录和异常重连按该账号已持久化的完成位置补取全部新消息，只有所有页成功到达才保存新位置。旧服务端不支持该请求时仅提供最近历史，客户端保留旧位置，升级服务端后可继续补齐。
+
 启动时自动增加 `pending_friend_requests`、`pending_group_invites` 及消息索引。申请与邀请有效期 24 小时，重启后恢复；接受好友或入群在数据库事务中消费申请，拒绝时先删除持久化记录再通知成功。原有账号和聊天记录保留。
 
 保存确认仍携带请求 ID 和提交后的消息 ID。未收到确认的发送结果仍属于未知状态，客户端保留输入，避免自动重发。

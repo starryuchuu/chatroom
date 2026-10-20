@@ -41,6 +41,7 @@ USERNAME_MIN_LEN = 2  # 用户名最小长度
 USERNAME_MAX_LEN = 20  # 用户名最大长度
 PASSWORD_MIN_LEN = 6  # 密码最小长度
 PASSWORD_MAX_LEN = 64  # 密码最大长度
+MAX_SYNC_ID = 9007199254740991  # Exact JSON integer range shared with Go clients.
 
 
 # 配置日志记录，设置日志级别为INFO，格式为时间-级别-消息
@@ -316,9 +317,10 @@ def enqueue_packet(sock, packet, ready=None):
         close_connection(sock)
 
 def validate_chat_packet(kind, sender, recipient, gid, content, timestamp):
-    # The forwarded packet adds metadata that the incoming packet may omit.
+    # Saved messages must fit both live delivery and later replay metadata.
     payload = {'type': kind, 'from': sender, 'content': content,
-               'timestamp': timestamp, 'message_id': 9223372036854775807}
+               'timestamp': timestamp, 'message_id': 9223372036854775807,
+               'history': True, 'sync': True}
     payload['gid' if kind == 'group_chat' else 'to'] = gid if kind == 'group_chat' else recipient
     if len(json.dumps(payload).encode('utf-8')) > MAX_MESSAGE_LEN:
         raise ValueError('消息内容过长，无法转发')
@@ -643,6 +645,29 @@ def send_user_groups(client_sock, username):
         group_ops_lock.release()
 
 
+def send_replay_message(client_sock, payload):
+    """Keep previously accepted near-limit records readable with new markers."""
+    if len(json.dumps(payload).encode('utf-8')) <= MAX_MESSAGE_LEN:
+        send_msg(client_sock, payload)
+        return
+    # Older versions budgeted only live fields. Compact encoding often leaves
+    # enough room for replay markers without changing any message contents.
+    compact = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    if len(compact.encode('utf-8')) <= MAX_MESSAGE_LEN:
+        send_msg(client_sock, compact)
+        return
+    legacy = dict(payload)
+    for marker in ('sync', 'history'):
+        legacy.pop(marker, None)
+        compact = json.dumps(legacy, ensure_ascii=False, separators=(',', ':'))
+        if len(compact.encode('utf-8')) <= MAX_MESSAGE_LEN:
+            send_msg(client_sock, compact)
+            return
+    # The framing layer rejects an already-invalid legacy record rather than
+    # silently changing its text or timestamp.
+    send_msg(client_sock, compact)
+
+
 # 发送聊天历史记录给客户端
 def send_history(client_sock, username, only_gid=None, *, kind=None, target=None, before=None):
     session_key = session_keys.get(client_sock)
@@ -657,18 +682,18 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
         rows, has_more = history_store.page(username, boundary, before=before, kind=kind, target=target)
         for message_id, chat_type, sender, recipient, gid, message, timestamp in rows:
             payload = {"type":chat_type+"_chat", "from":sender, "content":encrypt_message(message,session_key),
-                       "timestamp":timestamp, "message_id":message_id}
+                       "timestamp":timestamp, "message_id":message_id, "history": True}
             payload['gid' if chat_type=='group' else 'to'] = gid if chat_type=='group' else recipient
             if chat_type == 'group':
                 group_ops_lock.acquire()
                 try:
                     group = get_group_db(gid)
                     if group and username in group['members']:
-                        send_msg(client_sock,payload)
+                        send_replay_message(client_sock, payload)
                 finally:
                     group_ops_lock.release()
             else:
-                send_msg(client_sock,payload)
+                send_replay_message(client_sock, payload)
         end = {"type":"history_end", "boundary":boundary}
         if kind is not None:
             end.update(history_kind=kind, history_target=target, has_more=has_more,
@@ -683,6 +708,66 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
                                    "history_kind": kind, "history_target": target})
         else:
             send_msg(client_sock, {"type": "error", "message": "历史同步失败，请重新登录"})
+
+
+def send_sync(client_sock, username, request):
+    """Replay one authorized, forward-only page for an interrupted session."""
+    request_id = request.get('request_id')
+    valid_request_id = isinstance(request_id, str) and 0 < len(request_id) <= 128
+    correlation = {'request_id': request_id} if valid_request_id else {}
+
+    def error(text):
+        send_msg(client_sock, dict(type='sync_error', error=text, **correlation))
+
+    def valid_cursor(value):
+        return (type(value) in (int, float) and 0 <= value <= MAX_SYNC_ID
+                and int(value) == value)
+
+    after = request.get('after_id')
+    boundary = request.get('boundary')
+    if (not valid_request_id or not valid_cursor(after)
+            or ('boundary' in request and not valid_cursor(boundary))):
+        error('同步查询参数错误')
+        return
+    after = int(after)
+    try:
+        with closing(storage.connect("chat.db")) as conn:
+            current = conn.execute("SELECT COALESCE(MAX(id),0) FROM messages").fetchone()[0]
+        boundary = int(boundary) if 'boundary' in request else current
+        if not after <= boundary <= current or boundary > MAX_SYNC_ID:
+            error('同步游标已失效，请重新登录')
+            return
+        session_key = session_keys.get(client_sock)
+        if not session_key:
+            error('会话密钥未建立')
+            return
+        send_msg(client_sock, dict(type='sync_begin', after_id=after, boundary=boundary,
+                                  **correlation))
+        rows, has_more = history_store.sync_page(username, after, boundary)
+        for message_id, chat_type, sender, recipient, gid, content, timestamp in rows:
+            payload = {'type': chat_type + '_chat', 'from': sender,
+                       'content': encrypt_message(content, session_key),
+                       'timestamp': timestamp, 'message_id': message_id,
+                       'history': True, 'sync': True}
+            payload['gid' if chat_type == 'group' else 'to'] = gid if chat_type == 'group' else recipient
+            if chat_type == 'group':
+                # Removal/disband and this enqueue use the same operation lock;
+                # an obsolete query result must not disclose a removed group's text.
+                group_ops_lock.acquire()
+                try:
+                    group = get_group_db(gid)
+                    if group and username in group['members']:
+                        send_replay_message(client_sock, payload)
+                finally:
+                    group_ops_lock.release()
+            else:
+                send_replay_message(client_sock, payload)
+        next_after = rows[-1][0] if has_more else boundary
+        send_msg(client_sock, dict(type='sync_end', after_id=after, boundary=boundary,
+                                  next_after_id=next_after, has_more=has_more, **correlation))
+    except Exception:
+        logging.exception('断线消息同步失败')
+        error('消息同步失败，请重试')
 
 # 检查用户是否存在
 def user_exists(username):
@@ -881,7 +966,8 @@ def handle_client(client_sock, addr):
         client_sock.settimeout(AUTH_TIMEOUT_SECONDS)
 
         # 1. 发送公钥
-        send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION, "key": public_key_pem.decode('utf-8')})
+        send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION,
+                               "capabilities": ["message_sync"], "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
         encrypted_session_key_data = recv_msg(client_sock, auth_deadline)
@@ -1029,7 +1115,10 @@ def handle_client(client_sock, addr):
             logging.debug(f"Message from {current_username}: {msg}")
             mtype = msg.get("type")
             
-            if mtype == "history_request":
+            if mtype == "sync_request":
+                send_sync(client_sock, current_username, msg)
+
+            elif mtype == "history_request":
                 kind, target, before = msg.get('chat_type'), msg.get('target'), msg.get('before_id')
                 if kind not in ('private','group') or not isinstance(target,str) or not target or type(before) is not int or not 0<before<=9223372036854775807:
                     send_msg(client_sock,{'type':'history_error','error':'历史查询参数错误'})
