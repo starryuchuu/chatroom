@@ -4,13 +4,14 @@ import unittest
 from unittest.mock import Mock, patch
 
 import client
+from chatroom_client.preferences import PreferencesStore
 
 
 class ClientDraftTests(unittest.TestCase):
     def setUp(self):
         self.root = client.tk.Tk()
         self.root.withdraw()
-        self.app = client.ChatClient(self.root)
+        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False))
         self.app.connection.send = Mock()
 
     def tearDown(self):

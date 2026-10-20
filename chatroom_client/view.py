@@ -5,6 +5,7 @@ from tkinter import messagebox, simpledialog
 
 from .group_view import GroupWindows
 from .models import ChatKey
+from .settings_view import ServerProfileSelector
 
 
 class TkClientView:
@@ -16,6 +17,10 @@ class TkClientView:
         self.is_loading_messages = False
         self.request_windows = {}
         self._scroll_after_id = None
+        self._scheduled = set()
+        self._destroyed = False
+        self._friend_keys = []
+        self.profile_selector = None
         self.master.title('简易聊天客户端')
 
     @property
@@ -26,12 +31,26 @@ class TkClientView:
         self.controller = controller
         self.groups_ui = GroupWindows(self.master, controller)
         self.master.protocol('WM_DELETE_WINDOW', controller.close)
+        self.master.bind('<FocusIn>', lambda event: self.schedule(0, self.controller.activity.focus_changed), add='+')
 
     def schedule(self, milliseconds, callback):
-        self.master.after(milliseconds, callback)
+        if self._destroyed:
+            return None
+        after_id = None
+        def run():
+            self._scheduled.discard(after_id)
+            if not self._destroyed:
+                callback()
+        after_id = self.master.after(milliseconds, run)
+        self._scheduled.add(after_id)
+        return after_id
 
     def destroy(self):
+        self._destroyed = True
         self.cancel_scroll()
+        for after_id in list(self._scheduled):
+            self.master.after_cancel(after_id)
+        self._scheduled.clear()
         self.master.destroy()
 
     def clear_window(self):
@@ -42,6 +61,9 @@ class TkClientView:
         self.groups_ui.windows.clear()
         self.chat_frames.clear()
         self.current_chat_frame = None
+        self._friend_keys.clear()
+        self.profile_selector = None
+        self.master.title('简易聊天客户端')
 
     def input_text(self):
         entry = getattr(self, 'msg_entry', None)
@@ -81,8 +103,8 @@ class TkClientView:
         if not self.controller.connection.running or self.is_loading_messages:
             return
         selection = self.friends_listbox.curselection()
-        if selection:
-            self.controller.select_chat(ChatKey('private', self.friends_listbox.get(selection[0])))
+        if selection and selection[0] < len(self._friend_keys):
+            self.controller.select_chat(ChatKey('private', self._friend_keys[selection[0]]))
 
     def select_group(self, event):
         if not self.controller.connection.running or self.is_loading_messages:
@@ -158,7 +180,8 @@ class TkClientView:
             else:
                 self.groups_ui.show(gid)
         for index, (gid, info) in enumerate(self.state.groups.items()):
-            self.group_listbox.insert(tk.END, info.get('group_name', gid))
+            key = ChatKey('group', gid)
+            self.group_listbox.insert(tk.END, self.conversation_label(key, info.get('group_name', gid)))
             if self.state.current_chat == ChatKey('group', gid):
                 self.group_listbox.selection_set(index)
         self.refresh_controls()
@@ -174,19 +197,91 @@ class TkClientView:
             can_send = title and self.controller.connection.running and not self.state.pending_messages
             self.send_button.configure(state=tk.NORMAL if can_send else tk.DISABLED)
             conversation = self.state.conversation(key) if key else None
-            can_load = title and not conversation.exhausted and self.state.pending_history is None
+            can_load = (title and self.controller.connection.running and not conversation.exhausted
+                        and self.state.pending_history is None and not self.controller.sync.active
+                        and not self.controller.sync.awaiting_initial)
             self.load_history_button.configure(state=tk.NORMAL if can_load else tk.DISABLED)
+
+    def conversation_label(self, key, title):
+        conversation = self.state.conversations.get(key)
+        if conversation is None:
+            return title
+        badge = f' [{conversation.unread_count}]' if conversation.unread_count else ''
+        preview = ' '.join(conversation.preview.split())[:34]
+        return f'{title}{badge}' + (f' · {preview}' if preview else '')
+
+    def refresh_activity(self):
+        if getattr(self, 'friends_listbox', None) is None or not self.friends_listbox.winfo_exists():
+            return
+        self.update_friends_listbox()
+        # Refresh rows without opening or rebuilding unrelated group dialogs.
+        self.group_listbox.delete(0, tk.END)
+        for index, (gid, info) in enumerate(self.state.groups.items()):
+            key = ChatKey('group', gid)
+            self.group_listbox.insert(tk.END, self.conversation_label(key, info.get('group_name', gid)))
+            if self.state.current_chat == key:
+                self.group_listbox.selection_set(index)
+        count = self.state.total_unread
+        self.master.title((f'({count}) ' if count else '') + '简易聊天客户端')
+
+    def is_chat_visible(self, key):
+        try:
+            focused = self.master.focus_displayof()
+            return (self.state.current_chat == key and self.master.state() == 'normal'
+                    and self.master.winfo_viewable() == 1 and focused is not None
+                    and focused.winfo_toplevel() is self.master)
+        except tk.TclError:
+            return False
+
+    def bell(self):
+        if (self.controller.preferences.notifications_enabled and
+                not self.controller.preferences.do_not_disturb):
+            self.master.bell()
+
+    def apply_profile(self, profile):
+        port = getattr(self, 'port_entry', None)
+        if port is not None and port.winfo_exists():
+            port.delete(0, tk.END)
+            port.insert(0, str(profile.port))
+        password = getattr(self, 'password_entry', None)
+        if password is not None and password.winfo_exists():
+            password.delete(0, tk.END)
+        if self.profile_selector is not None and self.profile_selector.winfo_exists():
+            self.profile_selector.refresh()
+
+    def set_connection_status(self, text, reconnecting=False):
+        label = getattr(self, 'connection_status', None)
+        if label is not None and label.winfo_exists():
+            label.configure(text=text, fg='#a75b00' if reconnecting else '#1e6c39')
+            self.disconnect_button.configure(text='取消重连' if reconnecting else '断开连接')
+            if self.controller.sync.failed:
+                self.sync_retry_button.pack(side=tk.RIGHT, padx=5)
+            else:
+                self.sync_retry_button.pack_forget()
+
+    def save_notification_preferences(self):
+        try:
+            self.controller.preferences.set_notifications(
+                enabled=self.notifications_enabled.get(), do_not_disturb=self.do_not_disturb.get())
+            if not self.notifications_enabled.get() or self.do_not_disturb.get():
+                self.controller.notifier.discard_pending()
+        except (OSError, ValueError) as error:
+            self.notifications_enabled.set(self.controller.preferences.notifications_enabled)
+            self.do_not_disturb.set(self.controller.preferences.do_not_disturb)
+            self.notify('提醒设置保存失败', str(error))
 
     def build_login(self):
         """
         构建登录界面，包含用户名和密码输入框，以及登录和注册按钮。
         """
         self.clear_window()
-        self.master.geometry('950x530')
+        self.master.geometry('1020x680')
         self.master.configure(bg="#ffffff")
         login_frame = tk.Frame(self.master, bg="#ffffff", bd=0, highlightthickness=0)
         login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         tk.Label(login_frame, text="简易聊天室登录", font=("微软雅黑", 20, "bold"), bg="#ffffff", fg="#3a7bd5").pack(pady=(0, 25))
+        self.profile_selector = ServerProfileSelector(login_frame, self.controller)
+        self.profile_selector.pack(fill=tk.X, pady=(0, 16))
         tk.Label(login_frame, text="用户名:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(0, 8))
         entry_style = {"font": ("微软雅黑", 12), "relief": tk.FLAT, "highlightthickness": 2, "highlightbackground": "#aee1f9", "highlightcolor": "#3a7bd5", "bd": 0, "width": 22}
         self.username_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
@@ -194,7 +289,7 @@ class TkClientView:
         tk.Label(login_frame, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
         self.password_entry.pack(ipady=6)
-        tk.Label(login_frame, text="端口:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
+        tk.Label(login_frame, text="端口（仅本次连接）:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.port_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
         self.port_entry.pack(ipady=6)
@@ -220,15 +315,27 @@ class TkClientView:
         self.master.unbind('<Return>')
         top_frame = tk.Frame(self.master)
         top_frame.pack(side=tk.TOP, fill=tk.X)
-        tk.Label(top_frame, text=f"当前用户：{self.state.username}", fg="green").pack(side=tk.LEFT, padx=10, pady=5)
+        endpoint = self.controller.connection.endpoint or (
+            self.controller.connection.settings.host, self.controller.connection.settings.port)
+        host = f'[{endpoint[0]}]' if ':' in endpoint[0] else endpoint[0]
+        tk.Label(top_frame, text=f"{self.state.username} · {host}:{endpoint[1]}",
+                 fg="green", wraplength=260).pack(side=tk.LEFT, padx=10, pady=5)
+        self.connection_status = tk.Label(top_frame, text='已连接', fg='#1e6c39')
+        self.connection_status.pack(side=tk.LEFT, padx=8)
 
         # 添加断开连接按钮
-        tk.Button(top_frame, text="断开连接", command=self.controller.disconnect).pack(side=tk.RIGHT, padx=10, pady=5)
+        self.disconnect_button = tk.Button(top_frame, text="断开连接", command=self.controller.disconnect)
+        self.disconnect_button.pack(side=tk.RIGHT, padx=10, pady=5)
+        self.sync_retry_button = tk.Button(top_frame, text='重试补取', command=self.controller.retry_sync)
+        self.notifications_enabled = tk.BooleanVar(self.master, self.controller.preferences.notifications_enabled)
+        self.do_not_disturb = tk.BooleanVar(self.master, self.controller.preferences.do_not_disturb)
+        tk.Checkbutton(top_frame, text='免打扰', variable=self.do_not_disturb, command=self.save_notification_preferences).pack(side=tk.RIGHT)
+        tk.Checkbutton(top_frame, text='消息提醒', variable=self.notifications_enabled, command=self.save_notification_preferences).pack(side=tk.RIGHT)
 
         left_frame = tk.Frame(self.master)
         left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
         tk.Label(left_frame, text="好友列表").pack(pady=5)
-        self.friends_listbox = tk.Listbox(left_frame, width=18, exportselection=False)
+        self.friends_listbox = tk.Listbox(left_frame, width=32, exportselection=False)
         self.friends_listbox.pack(fill=tk.Y, expand=True)
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
         tk.Button(left_frame, text="添加好友", command=self.add_friend).pack(pady=5)
@@ -236,7 +343,7 @@ class TkClientView:
 
         # 群组列表
         tk.Label(left_frame, text="群组列表").pack(pady=(10, 5))
-        self.group_listbox = tk.Listbox(left_frame, width=18, exportselection=False)
+        self.group_listbox = tk.Listbox(left_frame, width=32, exportselection=False)
         self.group_listbox.pack(fill=tk.Y, expand=True)
         self.group_listbox.bind('<<ListboxSelect>>', self.select_group)
         self.group_listbox.bind('<Double-1>', self.show_group_info_on_double_click)
@@ -356,7 +463,9 @@ class TkClientView:
 
     def notify(self, title, text):
         """Nonmodal feedback keeps the incoming event pump running."""
-        label = getattr(self, 'status_label', None) if self.controller.connection.running else getattr(self, 'login_status', None)
+        label = getattr(self, 'status_label', None)
+        if label is None or not label.winfo_exists():
+            label = getattr(self, 'login_status', None)
         if label is not None and label.winfo_exists():
             label.configure(text=f"{title}：{text}")
         else:
@@ -381,8 +490,15 @@ class TkClientView:
 
     def set_auth_busy(self, busy, text=""):
         for button in (self.login_button, self.register_button):
-            button.configure(state=tk.DISABLED if busy else tk.NORMAL)
-        self.login_status.configure(text=text)
+            if button.winfo_exists():
+                button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        if self.login_status.winfo_exists():
+            self.login_status.configure(text=text)
+        if self.profile_selector is not None:
+            self.profile_selector.set_busy(busy)
+        for entry in (self.port_entry, self.username_entry, self.password_entry):
+            if entry.winfo_exists():
+                entry.configure(state=tk.DISABLED if busy else tk.NORMAL)
 
     def register(self):
         """
@@ -457,7 +573,11 @@ class TkClientView:
         """更新好友列表框"""
         try:
             self.friends_listbox.delete(0, tk.END)
-            for friend in self.state.friends:
-                self.friends_listbox.insert(tk.END, friend)
+            self._friend_keys = list(self.state.friends)
+            for index, friend in enumerate(self._friend_keys):
+                key = ChatKey('private', friend)
+                self.friends_listbox.insert(tk.END, self.conversation_label(key, friend))
+                if self.state.current_chat == key:
+                    self.friends_listbox.selection_set(index)
         except tk.TclError:
             logging.warning("update_friends_listbox called on a destroyed widget.")
