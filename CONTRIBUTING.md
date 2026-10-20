@@ -28,6 +28,8 @@
 
 ## 本地验证
 
+端到端加密改动需要覆盖 `test_e2ee_crypto.py`、`test_key_vault.py`、`test_encryption_view.py`、`test_e2ee_python.py` 和 `test_e2ee_interop.py`，以及控制器的信任/降级/重放测试。真实互操作用例同时验证两种服务端及共享数据库迁移。请保持 `ChatClient` 的正常入口默认要求端到端加密；旧协议兼容测试明确注入 `encryption=False`，界面不提供关闭加密的开关。不要仅凭服务端的历史标志信任已撤销密钥或旧群成员。
+
 使用 Python 3.11+、Go 1.24.5+。Linux 需要 Tk、Xvfb 和 xauth；Windows 在桌面会话中运行，无需 `xvfb-run`。
 
 ```bash

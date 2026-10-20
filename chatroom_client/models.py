@@ -21,6 +21,7 @@ class Message:
     timestamp: str = ''
     message_id: int | None = None
     is_self: bool = False
+    encryption: str = 'legacy'
 
 
 @dataclass

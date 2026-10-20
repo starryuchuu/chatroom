@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"chatroom/internal/crypto"
 	"chatroom/internal/database"
 	"chatroom/internal/protocol"
 	"fmt"
@@ -69,15 +68,10 @@ func sendSyncPage(conn net.Conn, username string, key []byte, requestID string, 
 		return err
 	}
 	for _, message := range messages {
-		content, err := crypto.EncryptMessage(message.Content, key)
+		payload, err := storedChatPayload(message, key, true)
 		if err != nil {
 			return err
 		}
-		target := message.ToUser
-		if message.ChatType == "group" {
-			target = message.GID
-		}
-		payload := historyChatPayload(message.ChatType+"_chat", message.FromUser, target, content, message.Timestamp, message.ID, true)
 		if message.ChatType == "group" {
 			err = sendAuthorizedGroupHistory(conn, username, message.GID, payload)
 		} else {

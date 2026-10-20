@@ -67,6 +67,10 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 			handleHistoryRequest(conn, username, sessionKey, msg)
 		case "sync_request":
 			handleSyncRequest(conn, username, sessionKey, msg)
+		case "e2ee_identity_publish":
+			handleE2EEIdentityPublish(conn, username, msg)
+		case "e2ee_keys_request":
+			handleE2EEKeysRequest(conn, username, msg)
 		case "private_chat":
 			handlePrivateChat(conn, username, sessionKey, msg, clientManager)
 		case "friend_request":
@@ -772,19 +776,31 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 }
 
 func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[string]interface{}, clientManager types.ClientManager) {
+	e2eeIdentityMu.RLock()
+	defer e2eeIdentityMu.RUnlock()
 	toUser, ok := msg["to"].(string)
 	if !ok || toUser == "" || toUser == fromUser {
 		sendChatResult(conn, "private_chat", msg, 0, "目标用户格式错误")
 		return
 	}
-	content, ok := msg["content"].(string)
-	if !ok {
-		sendChatResult(conn, "private_chat", msg, 0, "消息内容格式错误")
-		return
-	}
 	friends, err := database.AreFriends(fromUser, toUser)
 	if err != nil || !friends {
 		sendChatResult(conn, "private_chat", msg, 0, "好友关系校验失败")
+		return
+	}
+	members := []string{fromUser, toUser}
+	if _, encrypted := msg["e2ee"]; encrypted {
+		handleE2EEChat(conn, fromUser, "private", toUser, members, msg, clientManager)
+		return
+	}
+	required, err := requiresE2EE(members)
+	if err != nil || required {
+		sendChatResult(conn, "private_chat", msg, 0, "该会话需要端到端加密，请升级客户端并设置加密身份")
+		return
+	}
+	content, ok := msg["content"].(string)
+	if !ok {
+		sendChatResult(conn, "private_chat", msg, 0, "消息内容格式错误")
 		return
 	}
 	plaintext, err := crypto.DecryptMessage(content, sessionKey)
@@ -898,16 +914,13 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 }
 
 func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[string]interface{}, clientManager types.ClientManager) {
+	e2eeIdentityMu.RLock()
+	defer e2eeIdentityMu.RUnlock()
 	unlock := lockGroupOperation(msg)
 	defer unlock()
 	gid, ok := msg["gid"].(string)
 	if !ok || gid == "" {
 		sendChatResult(conn, "group_chat", msg, 0, "群组ID格式错误")
-		return
-	}
-	content, ok := msg["content"].(string)
-	if !ok {
-		sendChatResult(conn, "group_chat", msg, 0, "消息内容格式错误")
 		return
 	}
 	group, err := database.GetGroup(gid)
@@ -924,6 +937,20 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 	}
 	if !member {
 		sendChatResult(conn, "group_chat", msg, 0, "您不是该群成员")
+		return
+	}
+	if _, encrypted := msg["e2ee"]; encrypted {
+		handleE2EEChat(conn, fromUser, "group", gid, group.Members, msg, clientManager)
+		return
+	}
+	required, err := requiresE2EE(group.Members)
+	if err != nil || required {
+		sendChatResult(conn, "group_chat", msg, 0, "该会话需要端到端加密，请升级客户端并设置加密身份")
+		return
+	}
+	content, ok := msg["content"].(string)
+	if !ok {
+		sendChatResult(conn, "group_chat", msg, 0, "消息内容格式错误")
 		return
 	}
 	plaintext, err := crypto.DecryptMessage(content, sessionKey)

@@ -3,6 +3,7 @@ package server
 import (
 	"chatroom/internal/crypto"
 	"chatroom/internal/database"
+	"chatroom/internal/e2ee"
 	"chatroom/internal/handlers"
 	"chatroom/internal/protocol"
 	"chatroom/internal/types" // 导入 types 包
@@ -87,7 +88,7 @@ func handleConnection(conn net.Conn) {
 		"type":         "public_key",
 		"key":          string(publicKeyPEM),
 		"protocol":     protocol.Version,
-		"capabilities": []string{"message_sync"},
+		"capabilities": []string{"message_sync", "e2ee_v1"},
 	}
 	if err := protocol.SendMsg(conn, pubKeyMsg); err != nil {
 		log.Printf("发送公钥失败: %v", err)
@@ -160,7 +161,16 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 	currentUsername = username // Only an owned reservation may be removed on exit.
-	if err := protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true}); err != nil {
+	var identity interface{}
+	storedIdentity, err := database.GetE2EEIdentity(username)
+	if err == nil && storedIdentity != "" {
+		identity, err = e2ee.ParseBundle(storedIdentity)
+	}
+	if err != nil {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "加密身份加载失败，请重试"})
+		return
+	}
+	if err := protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true, "e2ee_identity": identity}); err != nil {
 		return
 	}
 	protocol.EnableQueuedWrites(conn)

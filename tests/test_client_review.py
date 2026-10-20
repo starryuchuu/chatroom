@@ -33,7 +33,7 @@ class ClientWindowReviewTests(unittest.TestCase):
     def setUp(self):
         self.root = client.tk.Tk()
         self.root.withdraw()
-        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False))
+        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False), encryption=False)
         self.app.connection.running = True
         self.app.connection.sock = Mock()
         self.app.connection.session_key = b'0123456789abcdef'

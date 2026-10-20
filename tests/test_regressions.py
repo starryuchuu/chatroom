@@ -236,7 +236,7 @@ class TkClientTests(unittest.TestCase):
     def setUp(self):
         self.root = client.tk.Tk()
         self.root.withdraw()
-        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False))
+        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False), encryption=False)
 
     def tearDown(self):
         if self.app.connection.auth_busy:
@@ -608,11 +608,11 @@ class ServerTests(unittest.TestCase):
         self.read_type(alice, 'online_users'); self.read_type(bob, 'online_users')
         entered, finish = threading.Event(), threading.Event()
         original = s.save_message
-        def paused_save(*args):
+        def paused_save(*args, **kwargs):
             entered.set()
             if not finish.wait(3):
                 raise TimeoutError('test did not release save')
-            return original(*args)
+            return original(*args, **kwargs)
         with patch.object(s, 'save_message', side_effect=paused_save):
             client.send_msg(bob, {'type': 'group_chat', 'gid': gid,
                                     'content': client.encrypt_message('in flight', key)})
@@ -632,11 +632,11 @@ class ServerTests(unittest.TestCase):
         self.read_type(alice, 'online_users'); self.read_type(bob, 'online_users')
         entered, finish = threading.Event(), threading.Event()
         original = s.save_message
-        def paused_save(*args):
+        def paused_save(*args, **kwargs):
             entered.set()
             if not finish.wait(3):
                 raise TimeoutError('test did not release save')
-            return original(*args)
+            return original(*args, **kwargs)
         with patch.object(s, 'save_message', side_effect=paused_save):
             client.send_msg(bob, {'type': 'group_chat', 'gid': gid,
                                     'content': client.encrypt_message('in flight', key)})

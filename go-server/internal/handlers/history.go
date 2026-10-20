@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"chatroom/internal/crypto"
 	"chatroom/internal/database"
 	"chatroom/internal/models"
 	"chatroom/internal/protocol"
@@ -28,15 +27,10 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 		return err
 	}
 	for _, message := range history {
-		content, err := crypto.EncryptMessage(message.Content, key)
+		payload, err := storedChatPayload(message, key, false)
 		if err != nil {
 			return err
 		}
-		target := message.ToUser
-		if message.ChatType == "group" {
-			target = message.GID
-		}
-		payload := historyChatPayload(message.ChatType+"_chat", message.FromUser, target, content, message.Timestamp, message.ID, false)
 		if message.ChatType == "group" {
 			err = sendAuthorizedGroupHistory(conn, username, message.GID, payload)
 		} else {

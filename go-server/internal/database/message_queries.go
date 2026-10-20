@@ -14,6 +14,16 @@ func SaveMessage(chatType, fromUser, toUser, gid, message, timestamp string) err
 	return err
 }
 func SaveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string) (int64, error) {
+	return saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp, false)
+}
+
+// SaveE2EEMessageWithID stores an opaque signed envelope. The storage layer
+// protects the envelope at rest but never decrypts its end-to-end message body.
+func SaveE2EEMessageWithID(chatType, fromUser, toUser, gid, envelope, timestamp string) (int64, error) {
+	return saveMessageWithID(chatType, fromUser, toUser, gid, envelope, timestamp, true)
+}
+
+func saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string, e2ee bool) (int64, error) {
 	tx, err := DB.Begin()
 	if err != nil {
 		return 0, err
@@ -29,7 +39,7 @@ func SaveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp strin
 			return 0, err
 		}
 	}
-	result, err := tx.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp) VALUES(?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, "", "")
+	result, err := tx.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp,e2ee) VALUES(?,?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, "", "", e2ee)
 	if err != nil {
 		return 0, err
 	}
@@ -130,7 +140,7 @@ func getAuthorizedMessagePage(username string, boundary, cursor int64, kind, tar
 	if forward {
 		order = "ASC"
 	}
-	rows, err := DB.Query(`SELECT id,chat_type,from_user,to_user,gid,message,timestamp FROM messages WHERE `+condition+` AND ((`+private+`) OR `+group+`) ORDER BY id `+order+` LIMIT ?`, args...)
+	rows, err := DB.Query(`SELECT id,chat_type,from_user,to_user,gid,message,timestamp,e2ee FROM messages WHERE `+condition+` AND ((`+private+`) OR `+group+`) ORDER BY id `+order+` LIMIT ?`, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -139,7 +149,7 @@ func getAuthorizedMessagePage(username string, boundary, cursor int64, kind, tar
 	for rows.Next() {
 		var m models.Message
 		var to, gid sql.NullString
-		if err = rows.Scan(&m.ID, &m.ChatType, &m.FromUser, &to, &gid, &m.Content, &m.Timestamp); err != nil {
+		if err = rows.Scan(&m.ID, &m.ChatType, &m.FromUser, &to, &gid, &m.Content, &m.Timestamp, &m.E2EE); err != nil {
 			return nil, false, err
 		}
 		m.ToUser, m.GID = to.String, gid.String

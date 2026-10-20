@@ -35,7 +35,7 @@ def page(username, boundary, *, before=None, kind=None, target=None):
         if before is not None:
             condition += ' AND id<?'
             prefix.append(before)
-        query = 'SELECT id,chat_type,from_user,to_user,gid,message,timestamp FROM messages WHERE ' + condition + ' AND ' + authorized + ' ORDER BY id DESC LIMIT ?'
+        query = 'SELECT id,chat_type,from_user,to_user,gid,message,timestamp,e2ee FROM messages WHERE ' + condition + ' AND ' + authorized + ' ORDER BY id DESC LIMIT ?'
         records = db.execute(query, prefix+args+[PAGE_SIZE+1]).fetchall()
         decoded = [storage.decode_message(db, r) for r in reversed(records[:PAGE_SIZE])]
     return decoded, len(records)>PAGE_SIZE
@@ -45,7 +45,7 @@ def sync_page(username, after, boundary):
     """Walk forward to a fixed boundary without a login snapshot's 100-row cap."""
     with closing(storage.connect()) as db:
         authorized, args = _authorization(db, username)
-        query = ('SELECT id,chat_type,from_user,to_user,gid,message,timestamp '
+        query = ('SELECT id,chat_type,from_user,to_user,gid,message,timestamp,e2ee '
                  'FROM messages WHERE id>? AND id<=? AND ' + authorized +
                  ' ORDER BY id ASC LIMIT ?')
         records = db.execute(query, [after, boundary] + args + [PAGE_SIZE + 1]).fetchall()
