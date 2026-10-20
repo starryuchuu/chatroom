@@ -65,6 +65,8 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 		switch msgType {
 		case "history_request":
 			handleHistoryRequest(conn, username, sessionKey, msg)
+		case "sync_request":
+			handleSyncRequest(conn, username, sessionKey, msg)
 		case "private_chat":
 			handlePrivateChat(conn, username, sessionKey, msg, clientManager)
 		case "friend_request":
@@ -792,7 +794,7 @@ func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg ma
 	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	payload := chatPayload("private_chat", fromUser, toUser, content, timestamp, 9223372036854775807)
-	if err := protocol.ValidateMessage(payload); err != nil {
+	if err := validateReplayableChat(payload); err != nil {
 		sendChatResult(conn, "private_chat", msg, 0, "消息内容过长")
 		return
 	}
@@ -930,7 +932,7 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 		return
 	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	if err := protocol.ValidateMessage(chatPayload("group_chat", fromUser, gid, content, timestamp, 9223372036854775807)); err != nil {
+	if err := validateReplayableChat(chatPayload("group_chat", fromUser, gid, content, timestamp, 9223372036854775807)); err != nil {
 		sendChatResult(conn, "group_chat", msg, 0, "消息内容过长")
 		return
 	}

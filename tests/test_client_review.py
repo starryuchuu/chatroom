@@ -1,10 +1,12 @@
 """Client failures discovered during the release audit."""
 import gc
+import time
 import unittest
 from unittest.mock import Mock, patch
 
 import client
 from chatroom_client.connection import AuthResult, ClientSettings, ConnectionManager
+from chatroom_client.preferences import PreferencesStore
 
 
 class AuthenticationFailureTests(unittest.TestCase):
@@ -31,7 +33,7 @@ class ClientWindowReviewTests(unittest.TestCase):
     def setUp(self):
         self.root = client.tk.Tk()
         self.root.withdraw()
-        self.app = client.ChatClient(self.root)
+        self.app = client.ChatClient(self.root, preferences=PreferencesStore(persistent=False))
         self.app.connection.running = True
         self.app.connection.sock = Mock()
         self.app.connection.session_key = b'0123456789abcdef'
@@ -61,6 +63,22 @@ class ClientWindowReviewTests(unittest.TestCase):
         self.app.connection.send.assert_called_once_with({
             'type': 'group_create', 'from': 'alice', 'group_name': 'Team', 'members': ['bob'],
         })
+
+    def test_closing_cancels_owned_reconnect_and_sync_timers(self):
+        callback = Mock()
+        self.app.view.schedule(20000, callback)
+        pending = set(self.app.view._scheduled)
+        self.assertTrue(pending)
+        self.app.close()
+        deadline = time.monotonic() + 3
+        while not self.app.view._destroyed and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(.005)
+        self.assertTrue(self.app.view._destroyed)
+        remaining = set(self.root.tk.call('after', 'info'))
+        self.assertFalse(pending & remaining)
+        self.assertFalse(self.app.view._scheduled)
+        callback.assert_not_called()
 
 
 if __name__ == '__main__':

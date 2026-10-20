@@ -84,9 +84,10 @@ func handleConnection(conn net.Conn) {
 
 	// 1. 发送公钥
 	pubKeyMsg := map[string]interface{}{
-		"type":     "public_key",
-		"key":      string(publicKeyPEM),
-		"protocol": protocol.Version,
+		"type":         "public_key",
+		"key":          string(publicKeyPEM),
+		"protocol":     protocol.Version,
+		"capabilities": []string{"message_sync"},
 	}
 	if err := protocol.SendMsg(conn, pubKeyMsg); err != nil {
 		log.Printf("发送公钥失败: %v", err)

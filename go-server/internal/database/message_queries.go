@@ -75,15 +75,28 @@ func GetChatHistorySnapshot(username string) ([]models.Message, int64, error) {
 
 // GetHistoryPage uses an exclusive before-ID cursor; OFFSET is never used.
 func GetHistoryPage(username string, boundary, before int64, kind, target string) ([]models.Message, bool, error) {
+	return getAuthorizedMessagePage(username, boundary, before, kind, target, false)
+}
+
+// GetSyncPage walks all currently authorized conversations forwards inside one
+// fixed snapshot. Reconnecting clients can recover a gap larger than one page.
+func GetSyncPage(username string, boundary, after int64) ([]models.Message, bool, error) {
+	return getAuthorizedMessagePage(username, boundary, after, "", "", true)
+}
+
+func getAuthorizedMessagePage(username string, boundary, cursor int64, kind, target string, forward bool) ([]models.Message, bool, error) {
 	groups, err := GetUserGroups(username)
 	if err != nil {
 		return nil, false, err
 	}
 	condition := "id<=?"
 	args := []interface{}{boundary}
-	if before > 0 {
+	if forward {
+		condition += " AND id>?"
+		args = append(args, cursor)
+	} else if cursor > 0 {
 		condition += " AND id<?"
-		args = append(args, before)
+		args = append(args, cursor)
 	}
 	private := "0"
 	if kind != "group" {
@@ -113,7 +126,11 @@ func GetHistoryPage(username string, boundary, before int64, kind, target string
 		group = "(chat_type='group' AND gid IN (" + strings.Join(placeholders, ",") + "))"
 	}
 	args = append(args, HistoryPageSize+1)
-	rows, err := DB.Query(`SELECT id,chat_type,from_user,to_user,gid,message,timestamp FROM messages WHERE `+condition+` AND ((`+private+`) OR `+group+`) ORDER BY id DESC LIMIT ?`, args...)
+	order := "DESC"
+	if forward {
+		order = "ASC"
+	}
+	rows, err := DB.Query(`SELECT id,chat_type,from_user,to_user,gid,message,timestamp FROM messages WHERE `+condition+` AND ((`+private+`) OR `+group+`) ORDER BY id `+order+` LIMIT ?`, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -155,8 +172,10 @@ func GetHistoryPage(username string, boundary, before int64, kind, target string
 			return nil, false, err
 		}
 	}
-	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
-		history[i], history[j] = history[j], history[i]
+	if !forward {
+		for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+			history[i], history[j] = history[j], history[i]
+		}
 	}
 	return history, more, nil
 }
