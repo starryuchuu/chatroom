@@ -225,6 +225,22 @@ class ActivityEventTests(unittest.TestCase):
         self.assertEqual(self.state.total_unread, 0)
         self.assertEqual(self.notices, [])
 
+    def test_first_login_live_frame_interleaved_with_history_stays_unread(self):
+        self.state.history_syncing = True
+        self.events.chat_message(self.message(101, history=False))
+        self.events.chat_message(self.message(100, history=True))
+        self.assertEqual(self.state.conversation(ChatKey('private', 'bob')).read_id, 100)
+        self.assertEqual(self.state.total_unread, 1)
+        self.assertEqual(len(self.notices), 1)
+
+    def test_explicit_live_frame_during_catchup_can_alert(self):
+        self.activity.history_complete()
+        self.state.history_syncing = self.sync.active = True
+        self.events.chat_message(self.message(101, history=False))
+        self.events.chat_message(self.message(100, history=True, sync=True))
+        self.assertEqual(self.state.total_unread, 2)
+        self.assertEqual(len(self.notices), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

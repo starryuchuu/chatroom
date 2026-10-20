@@ -1,5 +1,6 @@
 """User-facing server profiles and isolated persistent read metadata."""
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import stat
@@ -8,6 +9,32 @@ import unittest
 from unittest.mock import patch
 
 from chatroom_client.preferences import PreferencesError, PreferencesStore, ServerProfile, default_config_path
+
+
+def _update_preferences_worker(path, username, ready, start):
+    store = PreferencesStore(path)
+    ready.send(True)
+    ready.close()
+    if not start.wait(10):
+        raise RuntimeError('preferences worker did not receive start signal')
+    for cursor in range(1, 11):
+        store.update_account(('localhost', 12345), username, {'sync_cursor': cursor})
+
+
+def _hold_preferences_lock(path, ready, release):
+    from chatroom_client.preferences import _preferences_lock
+
+    with _preferences_lock(Path(path)):
+        ready.send(True)
+        ready.close()
+        if not release.wait(10):
+            raise RuntimeError('preferences lock was not released')
+
+
+def _stop_process(process):
+    if process.is_alive():
+        process.terminate()
+    process.join(5)
 
 
 class ServerProfileTests(unittest.TestCase):
@@ -124,6 +151,111 @@ class PreferencesTests(unittest.TestCase):
         reopened = PreferencesStore(self.path)
         self.assertFalse(reopened.notifications_enabled)
         self.assertTrue(reopened.do_not_disturb)
+
+    def test_stale_instances_preserve_profiles_settings_and_account_fields(self):
+        second = PreferencesStore(self.path)
+        remote = ServerProfile('远程', 'chat.example', 443, 'ab' * 32)
+        activity = {'initialized': True, 'conversations': []}
+        self.store.save_profile(remote)
+        self.store.set_notifications(enabled=False)
+        second.set_notifications(do_not_disturb=True)
+        second.update_account(('localhost', 12345), 'alice', {'sync_cursor': 42})
+        self.store.update_account(('localhost', 12345), 'alice', {'activity': activity})
+        second.update_account(('localhost', 12345), 'bob', {'sync_cursor': 99})
+        self.store.set_notifications(do_not_disturb=True)
+        reopened = PreferencesStore(self.path)
+        self.assertEqual(reopened.selected_profile, remote)
+        self.assertEqual(reopened.notifications, {'enabled': False, 'do_not_disturb': True})
+        self.assertEqual(reopened.account(('localhost', 12345), 'alice'),
+                         {'sync_cursor': 42, 'activity': activity})
+        self.assertEqual(reopened.account(('localhost', 12345), 'bob'), {'sync_cursor': 99})
+
+    def test_stale_profile_operations_use_current_names_and_selection(self):
+        second = PreferencesStore(self.path)
+        added = ServerProfile('开发', 'localhost', 23456)
+        self.store.save_profile(added)
+        with self.assertRaises(PreferencesError):
+            second.save_profile(added)
+        self.assertEqual(second.select_profile(added.name), added)
+        renamed = ServerProfile('开发新版', 'localhost', 23457)
+        self.store.save_profile(renamed, replace_name=added.name)
+        with self.assertRaises(PreferencesError):
+            second.delete_profile(added.name)
+        self.assertEqual(second.delete_profile(renamed.name).name, 'Python 本机')
+        with self.assertRaises(PreferencesError):
+            self.store.save_profile(renamed, replace_name=renamed.name)
+        with self.assertRaises(PreferencesError):
+            self.store.save_profile(ServerProfile('Go 本机', 'localhost', 9999))
+        self.assertEqual([profile.name for profile in PreferencesStore(self.path).profiles],
+                         ['Python 本机', 'Go 本机'])
+
+    def test_external_corruption_is_preserved_and_external_repair_is_recognized(self):
+        self.store.select_profile('Python 本机')
+        self.path.write_bytes(b'{broken json')
+        original = self.path.read_bytes()
+        with self.assertRaises(PreferencesError):
+            self.store.update_account(('localhost', 12345), 'alice', {'sync_cursor': 1})
+        self.assertEqual(self.path.read_bytes(), original)
+        blocked = PreferencesStore(self.path)
+        self.assertIsNotNone(blocked.warning)
+        self.store.select_profile('Go 本机')
+        blocked.update_account(('localhost', 12345), 'alice', {'sync_cursor': 2})
+        self.assertIsNone(blocked.warning)
+        self.assertEqual(blocked.selected_profile.name, 'Go 本机')
+
+    def test_spawned_processes_preserve_each_others_account_updates(self):
+        self.store.select_profile('Go 本机')
+        context = multiprocessing.get_context('spawn')
+        start = context.Event()
+        processes = []
+        receivers = []
+        for username in ('alice', 'bob'):
+            receiver, sender = context.Pipe(duplex=False)
+            process = context.Process(target=_update_preferences_worker,
+                                      args=(str(self.path), username, sender, start))
+            process.start()
+            sender.close()
+            self.addCleanup(receiver.close)
+            self.addCleanup(_stop_process, process)
+            receivers.append(receiver)
+            processes.append(process)
+        # Both snapshots are loaded before either process is permitted to save.
+        for receiver in receivers:
+            self.assertTrue(receiver.poll(10), 'preferences worker did not start')
+            self.assertTrue(receiver.recv())
+        start.set()
+        for process in processes:
+            process.join(10)
+            self.assertEqual(process.exitcode, 0)
+        reopened = PreferencesStore(self.path)
+        self.assertEqual(reopened.selected_profile.name, 'Go 本机')
+        for username in ('alice', 'bob'):
+            self.assertEqual(reopened.account(('localhost', 12345), username), {'sync_cursor': 10})
+
+    def test_other_process_lock_timeout_preserves_disk_and_live_state(self):
+        self.store.select_profile('Python 本机')
+        original = self.path.read_bytes()
+        context = multiprocessing.get_context('spawn')
+        release = context.Event()
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(target=_hold_preferences_lock, args=(str(self.path), sender, release))
+        process.start()
+        sender.close()
+        self.addCleanup(receiver.close)
+        self.addCleanup(_stop_process, process)
+        self.addCleanup(release.set)
+        self.assertTrue(receiver.poll(10), 'preferences lock holder did not start')
+        self.assertTrue(receiver.recv())
+        with patch('chatroom_client.preferences._LOCK_TIMEOUT', 0.05):
+            with self.assertRaisesRegex(PreferencesError, '其他进程'):
+                self.store.select_profile('Go 本机')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(self.store.selected_profile.name, 'Python 本机')
+        release.set()
+        process.join(10)
+        self.assertEqual(process.exitcode, 0)
+        self.store.select_profile('Go 本机')
+        self.assertEqual(PreferencesStore(self.path).selected_profile.name, 'Go 本机')
 
     def test_memory_store_never_resolves_or_reads_user_config(self):
         with patch('chatroom_client.preferences.default_config_path', side_effect=AssertionError('home lookup')):

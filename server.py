@@ -1279,7 +1279,8 @@ def handle_client(client_sock, addr):
                                 "to": to_user,
                                 "content": encrypt_message(plaintext, recipient_session_key),
                                 "timestamp": now,
-                                "message_id": message_id
+                                "message_id": message_id,
+                                "history": False
                             }
                             send_msg(to_sock, message_for_recipient)
                             logging.info(f"Private message from '{current_username}' forwarded to '{to_user}'.")
@@ -1293,7 +1294,8 @@ def handle_client(client_sock, addr):
                         "to": to_user,
                         "content": encrypt_message(plaintext, sender_session_key),
                         "timestamp": now,
-                        "message_id": message_id
+                        "message_id": message_id,
+                        "history": False
                     }
                     send_msg(client_sock, message_for_sender)
                 except Exception as e:
@@ -1433,7 +1435,8 @@ def handle_client(client_sock, addr):
                                     "gid": gid,
                                     "content": encrypt_message(plaintext, member_session_key),
                                     "timestamp": now,
-                                    "message_id": message_id
+                                    "message_id": message_id,
+                                    "history": False
                                 }
                                 try:
                                     send_msg(sock, message_to_send)

@@ -131,6 +131,9 @@ class DesktopFeatureScenarios:
 
         app.preferences.set_notifications(do_not_disturb=True)
         quiet_id = self.send_private(bob, 'quiet live message')
+        sent_echo = bob.wait(lambda event: event.get('type') == 'private_chat' and
+                             event.get('message_id') == quiet_id)
+        self.assertIs(sent_echo.get('history'), False)
         self.wait_ui(lambda: quiet_id in app.state.conversation(key).message_ids)
         self.assertEqual(app.state.conversation(key).unread_count, 1)
         self.assertEqual(self.alerts, [])
