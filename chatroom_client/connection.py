@@ -26,7 +26,7 @@ class AuthResult:
     username: str
     register: bool
     endpoint: tuple[str, int]
-    sock: socket.socket
+    sock: socket.socket | None
     key: bytes | None
     error: str | None
 
@@ -72,9 +72,10 @@ class ConnectionManager:
         return True
 
     def _authenticate(self, generation, endpoint, username, password, register):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = None
         key, error, keep = None, None, False
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             with self._lock:
                 if generation != self.generation or self.closing:
                     return
@@ -162,6 +163,8 @@ class ConnectionManager:
 
     @staticmethod
     def _close_socket(sock):
+        if sock is None:
+            return
         protocol.authenticated_sockets.discard(sock)
         try:
             sock.shutdown(socket.SHUT_RDWR)

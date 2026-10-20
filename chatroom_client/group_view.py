@@ -29,7 +29,7 @@ class GroupWindows:
         def do_create():
             group_name = name_entry.get().strip()
             sel = members_listbox.curselection()
-            members = [self.state.friends[i] for i in sel]
+            members = [members_listbox.get(i) for i in sel]
             if not group_name or not members:
                 messagebox.showerror("错误", "群名和成员不能为空！")
                 return

@@ -62,6 +62,13 @@ func LoadPendingRequests() ([]PendingFriend, []PendingInvite, error) {
 	if _, err := DB.Exec("DELETE FROM pending_friend_requests WHERE created_at<=?", cutoff); err != nil {
 		return nil, nil, err
 	}
+	// Repair reciprocal requests left by older versions before restoring live
+	// request maps, so existing friendships never replay as pending requests.
+	if _, err := DB.Exec(`DELETE FROM pending_friend_requests WHERE EXISTS (
+		SELECT 1 FROM friends WHERE friends.user=pending_friend_requests.requester
+		AND friends.friend=pending_friend_requests.target)`); err != nil {
+		return nil, nil, err
+	}
 	if _, err := DB.Exec("DELETE FROM pending_group_invites WHERE created_at<=?", cutoff); err != nil {
 		return nil, nil, err
 	}

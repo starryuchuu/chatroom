@@ -407,6 +407,48 @@ class ReliabilityScenarios:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_friend_requests').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_group_invites').fetchone()[0], 0)
 
+    def test_accepting_reciprocal_friend_requests_consumes_both_directions(self):
+        for username in ('alice', 'bob'):
+            self.service.connect(username, register=True)
+        alice = self.service.connect('alice')
+        bob = self.service.connect('bob')
+        for sender, recipient in ((alice, bob), (bob, alice)):
+            result = sender.request({'type': 'friend_request', 'to': recipient.username},
+                                    'friend_request_result')
+            self.assertTrue(result['success'], result)
+            recipient.wait(lambda event: event.get('type') == 'friend_request' and
+                           event.get('from') == sender.username)
+
+        bob.send({'type': 'friend_response', 'to': 'alice', 'accepted': True})
+        for peer, friend in ((alice, 'bob'), (bob, 'alice')):
+            peer.wait(lambda event: event.get('type') == 'friend_update' and
+                      event.get('friend') == friend)
+
+        # Once friendship exists, the reverse request must no longer be actionable
+        # in the running process. A barrier also makes a missing rejection fail
+        # immediately instead of waiting for a success response that has no ack.
+        after = len(alice.events)
+        alice.send({'type': 'friend_response', 'to': 'bob', 'accepted': True})
+        alice.request({'type': 'group_info', 'gid': 'reciprocal-response-barrier'}, 'group_info')
+        rejections = [event for event in alice.events[after:]
+                      if event.get('type') == 'friend_response_result']
+        self.assertEqual(len(rejections), 1, 'accepted friendship left a reverse request actionable')
+        self.assertFalse(rejections[0]['success'], rejections[0])
+        self.assertFalse(any(event.get('type') == 'friend_update' for event in alice.events[after:]))
+
+        self.service.stop(kill=True)
+        self.service.start()
+        alice = self.service.connect('alice')
+        bob = self.service.connect('bob')
+        for peer, friend in ((alice, 'bob'), (bob, 'alice')):
+            snapshot = peer.wait(lambda event: event.get('type') == 'friends_list')
+            self.assertEqual(set(snapshot['friends']), {friend})
+            # Pending login requests can follow history_end; wait for a response
+            # sent after all login events before checking for a replay.
+            peer.request({'type': 'group_info', 'gid': 'reciprocal-restart-barrier'}, 'group_info')
+            self.assertFalse(any(event.get('type') == 'friend_request' for event in peer.events),
+                             'accepted reciprocal request replayed after restart')
+
     def test_connection_churn_reclaims_resources(self):
         peers, gid = self.cohort(3)
         observer, reconnecting, _ = peers

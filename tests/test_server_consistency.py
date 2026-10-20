@@ -1,5 +1,5 @@
 """Deterministic login/friend ordering and server identity recovery regressions."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 from pathlib import Path
@@ -263,6 +263,107 @@ class ServerConsistencyTests(unittest.TestCase):
             self.read_type(bob, 'friend_update')
             self.assertEqual(s.user_friends['alice'], {'bob'})
             self.assertEqual(s.load_friends('alice'), {'bob'})
+
+    def test_friend_request_retry_cannot_recreate_pending_after_acceptance(self):
+        s, wire = self.server, regressions.client
+        alice, _, _ = self.connect('alice')
+        self.read_type(alice, 'online_users')
+        alice_thread = self.threads[-1]
+        bob, _, _ = self.connect('bob')
+        self.read_type(bob, 'online_users')
+        self.read_type(alice, 'online_users')
+        created = time.time()
+        s.pending_store.save_friend('alice', 'bob', created)
+        s.pending_friend_requests[('alice', 'bob')] = created
+        requested, resume = threading.Event(), threading.Event()
+        original_lock = s.pending_friend_requests_lock
+
+        class GateLock:
+            def __enter__(self):
+                if threading.current_thread() is alice_thread and not requested.is_set():
+                    requested.set()
+                    if not resume.wait(5):
+                        raise TimeoutError('test did not resume the retried friend request')
+                return original_lock.__enter__()
+
+            def __exit__(self, *args):
+                return original_lock.__exit__(*args)
+
+        with patch.object(s, 'pending_friend_requests_lock', GateLock()):
+            try:
+                wire.send_msg(alice, {'type': 'friend_request', 'to': 'bob'})
+                self.assertTrue(requested.wait(3))
+                wire.send_msg(bob, {'type': 'friend_response', 'to': 'alice', 'accepted': True})
+                self.read_type(bob, 'friend_update')
+            finally:
+                resume.set()
+            result = self.read_type(alice, 'friend_request_result')
+            self.assertFalse(result['success'], 'the retry recreated a pending request after acceptance')
+        self.assertEqual(s.pending_friend_requests, {})
+        with closing(s.storage.connect()) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_friend_requests').fetchone()[0], 0)
+        self.assertEqual(s.pending_store.load()[0], [])
+        self.assertEqual(s.load_friends('alice'), {'bob'})
+
+    def test_friendship_consumes_reciprocal_requests_atomically(self):
+        s = self.server
+        for sender, target in [('alice', 'bob'), ('bob', 'alice')]:
+            s.pending_store.save_friend(sender, target, time.time())
+        with closing(s.storage.connect()) as db, db:
+            db.execute('''CREATE TRIGGER reject_pending_cleanup BEFORE DELETE ON pending_friend_requests
+                BEGIN SELECT RAISE(ABORT, 'injected pending cleanup failure'); END''')
+        with self.assertRaises(s.sqlite3.IntegrityError):
+            s.save_friend_relationship('alice', 'bob')
+        self.assertEqual(s.load_friends('alice'), set())
+        with closing(s.storage.connect()) as db, db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_friend_requests').fetchone()[0], 2)
+            db.execute('DROP TRIGGER reject_pending_cleanup')
+        s.save_friend_relationship('alice', 'bob')
+        self.assertEqual(s.load_friends('alice'), {'bob'})
+        self.assertEqual(s.load_friends('bob'), {'alice'})
+        with closing(s.storage.connect()) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM pending_friend_requests').fetchone()[0], 0)
+
+    def test_acceptance_notification_allows_immediate_private_chat(self):
+        s, wire = self.server, regressions.client
+        alice, key, _ = self.connect('alice')
+        self.read_type(alice, 'online_users')
+        bob, _, _ = self.connect('bob')
+        self.read_type(bob, 'online_users')
+        self.read_type(alice, 'online_users')
+        created = time.time()
+        s.pending_store.save_friend('alice', 'bob', created)
+        s.pending_friend_requests[('alice', 'bob')] = created
+        release_notification = threading.Event()
+        original_send = s.send_msg
+
+        def send(sock, message, **kwargs):
+            result = original_send(sock, message, **kwargs)
+            if message.get('type') == 'friend_response' and message.get('accepted'):
+                if not release_notification.wait(5):
+                    raise TimeoutError('test did not release the acceptance notification')
+            return result
+
+        with patch.object(s, 'send_msg', side_effect=send):
+            try:
+                wire.send_msg(bob, {'type': 'friend_response', 'to': 'alice', 'accepted': True})
+                self.assertTrue(self.read_type(alice, 'friend_response')['accepted'])
+                wire.send_msg(alice, {'type': 'private_chat', 'to': 'bob', 'request_id': 'first-chat',
+                                      'content': wire.encrypt_message('hello new friend', key)})
+                result = self.read_type(alice, 'private_chat_result')
+                self.assertTrue(result['success'], 'acceptance arrived before messaging was authorized')
+            finally:
+                release_notification.set()
+        self.read_type(bob, 'friend_update')
+
+    def test_startup_discards_pending_requests_for_existing_friends(self):
+        s = self.server
+        s.save_friend_relationship('alice', 'bob')
+        for sender, target in [('alice', 'bob'), ('bob', 'alice'), ('alice', 'carol')]:
+            s.pending_store.save_friend(sender, target, time.time())
+        s.restore_pending_requests()
+        self.assertEqual(set(s.pending_friend_requests), {('alice', 'carol')})
+        self.assertEqual([(a, b) for a, b, _ in s.pending_store.load()[0]], [('alice', 'carol')])
 
     @contextmanager
     def key_directory(self):
