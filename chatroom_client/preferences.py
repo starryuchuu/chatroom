@@ -1,6 +1,8 @@
 """Private desktop preferences, without credentials or message contents."""
 from copy import deepcopy
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+import errno
 import ipaddress
 import json
 import os
@@ -8,6 +10,62 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
+
+
+_LOCK_TIMEOUT = 1.0
+
+
+@contextmanager
+def _preferences_lock(path):
+    """Lock a stable sibling inode while the JSON file is atomically replaced."""
+    descriptor = os.open(path.with_name(path.name + '.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        if os.name == 'nt':
+            import msvcrt
+
+            # Windows byte-range locking requires a byte to lock. Never remove
+            # this file: another process may already be waiting on its inode.
+            def acquire():
+                if os.fstat(descriptor).st_size == 0:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    os.write(descriptor, b'\0')
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+
+            def release():
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def acquire():
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release():
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+        deadline = time.monotonic() + _LOCK_TIMEOUT
+        while True:
+            try:
+                acquire()
+                locked = True
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise PreferencesError('客户端设置正由其他进程保存，请稍后重试') from error
+                time.sleep(min(0.02, remaining))
+        yield
+    finally:
+        try:
+            if locked:
+                release()
+        finally:
+            os.close(descriptor)
 
 
 class PreferencesError(ValueError):
@@ -119,6 +177,7 @@ def _validate_account(value):
 class PreferencesStore:
     """Copy-on-write JSON preferences. Failed writes do not change live state.
 
+    Persistent mutations reload the latest file under a cross-process lock.
     ``persistent=False`` never reads or creates a user configuration directory.
     Activity writes preserve a broken source file until an explicit settings save.
     """
@@ -144,12 +203,7 @@ class PreferencesStore:
 
     def _load(self):
         try:
-            with self.path.open('rb') as source:
-                raw = source.read(8 * 1024 * 1024 + 1)
-            if len(raw) > 8 * 1024 * 1024:
-                raise PreferencesError('配置文件超过大小限制')
-            candidate = json.loads(raw.decode('utf-8'))
-            self._validate(candidate)
+            candidate = self._read()
         except FileNotFoundError:
             return
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
@@ -157,6 +211,15 @@ class PreferencesStore:
             self._blocked = True
             return
         self._data = candidate
+
+    def _read(self):
+        with self.path.open('rb') as source:
+            raw = source.read(8 * 1024 * 1024 + 1)
+        if len(raw) > 8 * 1024 * 1024:
+            raise PreferencesError('配置文件超过大小限制')
+        candidate = json.loads(raw.decode('utf-8'))
+        self._validate(candidate)
+        return candidate
 
     @staticmethod
     def _validate(data):
@@ -195,17 +258,45 @@ class PreferencesStore:
             _validate_account(value)
         data['accounts'] = accounts
 
+    def _mutate(self, mutation, *, explicit):
+        """Apply one operation to fresh data while holding the process lock."""
+        if not self.persistent:
+            candidate = deepcopy(self._data)
+            result = mutation(candidate)
+            self._commit(candidate, explicit=explicit)
+            return result
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with _preferences_lock(self.path):
+                try:
+                    candidate = self._read()
+                except FileNotFoundError:
+                    if self._blocked and not explicit:
+                        raise PreferencesError('原配置文件未能读取；请先在服务器设置中明确保存设置，再保存消息状态')
+                    candidate = deepcopy(self._data)
+                except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                    if not explicit:
+                        raise PreferencesError('原配置文件未能读取；请先在服务器设置中明确保存设置，再保存消息状态') from error
+                    candidate = deepcopy(self._data)
+                result = mutation(candidate)
+                self._commit(candidate, explicit=explicit)
+                # Another instance may have explicitly repaired a broken file.
+                self._blocked = False
+                self.warning = None
+                return result
+        except PreferencesError:
+            raise
+        except (OSError, ValueError) as error:
+            raise PreferencesError(f'保存客户端设置失败：{error}') from error
+
     def _commit(self, candidate, *, explicit):
         self._validate(candidate)
         payload = (json.dumps(candidate, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
         if len(payload) > 8 * 1024 * 1024:
             raise PreferencesError('客户端设置超过大小限制，未修改已保存的配置')
         if self.persistent:
-            if self._blocked and not explicit:
-                raise PreferencesError('原配置文件未能读取；请先在服务器设置中明确保存设置，再保存消息状态')
             temporary = None
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 descriptor, temporary = tempfile.mkstemp(prefix='.client-', suffix='.tmp', dir=self.path.parent)
                 with os.fdopen(descriptor, 'wb') as target:
                     target.write(payload)
@@ -243,38 +334,45 @@ class PreferencesStore:
     def save_profile(self, profile, *, replace_name=None, select=True):
         if not isinstance(profile, ServerProfile):
             raise PreferencesError('服务器配置格式错误')
-        candidate = deepcopy(self._data)
-        existing = [item['name'] for item in candidate['profiles']]
-        if replace_name is not None and replace_name not in existing:
-            raise PreferencesError('要修改的服务器配置不存在')
-        if profile.name in existing and profile.name != replace_name:
-            raise PreferencesError('服务器配置名称已存在')
-        if replace_name is None:
-            candidate['profiles'].append(asdict(profile))
-        else:
-            index = existing.index(replace_name)
-            candidate['profiles'][index] = asdict(profile)
-        if select or candidate['selected_profile'] == replace_name:
-            candidate['selected_profile'] = profile.name
-        self._commit(candidate, explicit=True)
-        return profile
+
+        def mutation(candidate):
+            existing = [item['name'] for item in candidate['profiles']]
+            if replace_name is not None and replace_name not in existing:
+                raise PreferencesError('要修改的服务器配置不存在')
+            if profile.name in existing and profile.name != replace_name:
+                raise PreferencesError('服务器配置名称已存在')
+            if replace_name is None:
+                candidate['profiles'].append(asdict(profile))
+            else:
+                index = existing.index(replace_name)
+                candidate['profiles'][index] = asdict(profile)
+            if select or candidate['selected_profile'] == replace_name:
+                candidate['selected_profile'] = profile.name
+            return profile
+
+        return self._mutate(mutation, explicit=True)
 
     def select_profile(self, name):
-        profile = self.get_profile(name)
-        candidate = deepcopy(self._data)
-        candidate['selected_profile'] = profile.name
-        self._commit(candidate, explicit=True)
-        return profile
+        def mutation(candidate):
+            for item in candidate['profiles']:
+                if item['name'] == name:
+                    candidate['selected_profile'] = name
+                    return ServerProfile(**item)
+            raise PreferencesError('服务器配置不存在')
+
+        return self._mutate(mutation, explicit=True)
 
     def delete_profile(self, name):
-        self.get_profile(name)
-        candidate = deepcopy(self._data)
-        if len(candidate['profiles']) == 1:
-            raise PreferencesError('至少保留一个服务器配置')
-        candidate['profiles'] = [profile for profile in candidate['profiles'] if profile['name'] != name]
-        if candidate['selected_profile'] == name:
-            candidate['selected_profile'] = candidate['profiles'][0]['name']
-        self._commit(candidate, explicit=True)
+        def mutation(candidate):
+            if not any(profile['name'] == name for profile in candidate['profiles']):
+                raise PreferencesError('服务器配置不存在')
+            if len(candidate['profiles']) == 1:
+                raise PreferencesError('至少保留一个服务器配置')
+            candidate['profiles'] = [profile for profile in candidate['profiles'] if profile['name'] != name]
+            if candidate['selected_profile'] == name:
+                candidate['selected_profile'] = candidate['profiles'][0]['name']
+
+        self._mutate(mutation, explicit=True)
         return self.selected_profile
 
     @property
@@ -290,13 +388,16 @@ class PreferencesStore:
         return self._data['notifications']['do_not_disturb']
 
     def set_notifications(self, *, enabled=None, do_not_disturb=None):
-        candidate = deepcopy(self._data)
         for key, value in (('enabled', enabled), ('do_not_disturb', do_not_disturb)):
-            if value is not None:
-                if type(value) is not bool:
-                    raise PreferencesError('提醒设置格式错误')
-                candidate['notifications'][key] = value
-        self._commit(candidate, explicit=True)
+            if value is not None and type(value) is not bool:
+                raise PreferencesError('提醒设置格式错误')
+
+        def mutation(candidate):
+            for key, value in (('enabled', enabled), ('do_not_disturb', do_not_disturb)):
+                if value is not None:
+                    candidate['notifications'][key] = value
+
+        self._mutate(mutation, explicit=True)
         return self.notifications
 
     @staticmethod
@@ -313,13 +414,14 @@ class PreferencesStore:
 
     def update_account(self, endpoint, username, changes, *, explicit=False):
         _validate_account(changes)
-        candidate = deepcopy(self._data)
         key = self._account_key(endpoint, username)
-        value = deepcopy(candidate['accounts'].get(key, {}))
-        value.update(deepcopy(changes))
-        candidate['accounts'][key] = value
-        self._commit(candidate, explicit=explicit)
-        return deepcopy(value)
+
+        def mutation(candidate):
+            value = candidate['accounts'].setdefault(key, {})
+            value.update(deepcopy(changes))
+            return deepcopy(value)
+
+        return self._mutate(mutation, explicit=explicit)
 
     def account_metadata(self, host, port, username):
         return self.account((host, port), username)

@@ -110,8 +110,9 @@ class ServerEvents:
             # flags. The surrounding history/sync batch remains a fallback for
             # those frames as well as for older servers.
             syncing = getattr(getattr(self.controller, 'sync', None), 'active', False) is True
-            catchup = message.get('sync') is True or syncing
-            historical = (message.get('history') is True or catchup or self.state.history_syncing)
+            live = message.get('history') is False and message.get('sync') is not True
+            catchup = not live and (message.get('sync') is True or syncing)
+            historical = not live and (message.get('history') is True or catchup or self.state.history_syncing)
             activity.receive(key, item, historical=historical, catchup=catchup)
         if self.state.current_chat == key and not self.state.history_syncing:
             if index == len(conversation.messages) - 1:

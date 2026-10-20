@@ -16,7 +16,7 @@ func sendChatResult(conn net.Conn, kind string, request map[string]interface{}, 
 }
 
 func chatPayload(kind, from, target, content, timestamp string, id int64) map[string]interface{} {
-	payload := map[string]interface{}{"type": kind, "from": from, "content": content, "timestamp": timestamp, "message_id": id}
+	payload := map[string]interface{}{"type": kind, "from": from, "content": content, "timestamp": timestamp, "message_id": id, "history": false}
 	if kind == "group_chat" {
 		payload["gid"] = target
 	} else {

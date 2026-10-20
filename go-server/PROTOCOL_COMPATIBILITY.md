@@ -28,7 +28,7 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 ### v1.1.0 增量补取
 
-支持完整断线补取的服务端在 `public_key` 中增加 `capabilities: ["message_sync"]`。客户端只有看到此能力才发送 `sync_request`；旧客户端忽略新增字段，帧格式仍为 v2。历史聊天帧增加 `history: true`，增量聊天帧通常还带 `sync: true`；旧版本近长度上限的消息可省略可选标记，客户端也使用批次状态识别历史。
+支持完整断线补取的服务端在 `public_key` 中增加 `capabilities: ["message_sync"]`。客户端只有看到此能力才发送 `sync_request`；旧客户端忽略新增字段，帧格式仍为 v2。实时聊天帧显式携带 `history: false`，历史聊天帧携带 `history: true`，增量聊天帧通常还带 `sync: true`；客户端优先识别显式实时标记，避免登录/补取期间交错到达的新消息被误标已读。旧版本近长度上限的历史消息可省略可选标记，客户端也使用批次状态识别历史。
 
 ```json
 {"type":"sync_request","after_id":123,"boundary":456,"request_id":"unique-page-id"}
