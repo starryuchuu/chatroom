@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
+from .theme import get_theme
+
 
 class GroupWindows:
     def __init__(self, master, controller):
@@ -14,17 +16,22 @@ class GroupWindows:
 
     def create(self):
         # 创建群聊弹窗
+        theme = get_theme(self.master)
         group_window = tk.Toplevel(self.master)
         group_window.title("创建群聊")
-        group_window.geometry("400x400")
-        tk.Label(group_window, text="群聊名称:").pack(pady=10)
-        name_entry = tk.Entry(group_window)
-        name_entry.pack(pady=5)
-        tk.Label(group_window, text="选择成员:").pack(pady=10)
-        members_listbox = tk.Listbox(group_window, selectmode=tk.MULTIPLE)
+        group_window.geometry("420x500")
+        group_window.minsize(360, 420)
+        group_window.transient(self.master)
+        heading = tk.Label(group_window, text="新的群聊", anchor=tk.W)
+        heading.pack(fill=tk.X, padx=24, pady=(24, 16))
+        tk.Label(group_window, text="群聊名称", anchor=tk.W).pack(fill=tk.X, padx=24, pady=(0, 8))
+        name_entry = theme.entry(group_window)
+        name_entry.pack(fill=tk.X, padx=24, ipady=8)
+        tk.Label(group_window, text="选择成员 · 可选择多位好友", anchor=tk.W).pack(fill=tk.X, padx=24, pady=(20, 8))
+        members_listbox = theme.listbox(group_window, selectmode=tk.MULTIPLE)
         for f in self.state.friends:
             members_listbox.insert(tk.END, f)
-        members_listbox.pack(pady=5, fill=tk.BOTH, expand=True)
+        members_listbox.pack(padx=24, fill=tk.BOTH, expand=True)
 
         def do_create():
             group_name = name_entry.get().strip()
@@ -42,9 +49,15 @@ class GroupWindows:
             if self.controller.try_send(req):
                 group_window.destroy()
 
-        tk.Button(group_window, text="创建", command=do_create).pack(pady=20)
+        create_button = theme.button(group_window, text="创建", command=do_create, variant='primary')
+        create_button.pack(fill=tk.X, padx=24, pady=24)
+        theme.style_window(group_window)
+        heading.configure(font=theme.fonts['title'])
+        create_button.configure(**theme._button_options(group_window, 'primary'))
+        name_entry.focus_set()
 
     def show(self, gid):
+        theme = get_theme(self.master)
         info = self.state.groups.get(gid)
         if not info:
             messagebox.showerror("错误", "无法获取群组信息")
@@ -61,23 +74,26 @@ class GroupWindows:
             for child in group_info_window.winfo_children():
                 child.destroy()
         group_info_window.title(f"群聊信息 - {info.get('group_name')}")
+        group_info_window.transient(self.master)
 
         # --- Top section with labels and listbox ---
         top_frame = tk.Frame(group_info_window)
-        top_frame.pack(pady=5, padx=10, fill="both", expand=True)
-        tk.Label(top_frame, text=f"群名: {info.get('group_name')}").pack()
-        tk.Label(top_frame, text=f"群主: {info.get('owner')}").pack()
-        tk.Label(top_frame, text="成员列表:").pack(pady=(10, 2))
+        top_frame.pack(pady=(24, 12), padx=24, fill="both", expand=True)
+        title = tk.Label(top_frame, text=f"群名: {info.get('group_name')}", anchor=tk.W)
+        title.pack(fill=tk.X)
+        owner = tk.Label(top_frame, text=f"群主: {info.get('owner')}", anchor=tk.W)
+        owner.pack(fill=tk.X, pady=(6, 20))
+        tk.Label(top_frame, text="成员列表", anchor=tk.W).pack(fill=tk.X, pady=(0, 8))
 
 
-        members_list = tk.Listbox(top_frame)
+        members_list = theme.listbox(top_frame, height=8)
         for m in members:
             members_list.insert(tk.END, m)
         members_list.pack(fill="both", expand=True)
 
         # --- Button section ---
         button_container = tk.Frame(group_info_window)
-        button_container.pack(pady=5, padx=10, fill="x")
+        button_container.pack(pady=(0, 20), padx=24, fill="x")
 
         # --- Member Actions Frame ---
         member_actions_frame = tk.Frame(button_container)
@@ -136,6 +152,9 @@ class GroupWindows:
             tk.Button(owner_actions_frame, text="修改群聊名称", command=rename_group).pack(side="left", padx=2, expand=True)
 
         # 自动调整窗口大小以适应内容
+        theme.style_window(group_info_window)
+        title.configure(font=theme.fonts['title'])
+        owner.configure(fg=theme.colors['muted'], font=theme.fonts['small'])
         group_info_window.update_idletasks()
         width = group_info_window.winfo_reqwidth()
         height = group_info_window.winfo_reqheight()

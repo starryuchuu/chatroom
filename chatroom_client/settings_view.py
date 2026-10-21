@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .preferences import PreferencesError, ServerProfile
+from .theme import get_theme
 
 
 def settings_busy(controller):
@@ -12,6 +13,7 @@ def settings_busy(controller):
 
 class ServerProfileSelector(ttk.Frame):
     def __init__(self, master, controller, **kwargs):
+        get_theme(master)
         super().__init__(master, **kwargs)
         self.controller = controller
         self.window = None
@@ -22,8 +24,8 @@ class ServerProfileSelector(ttk.Frame):
         self.combobox.bind('<<ComboboxSelected>>', self.select)
         self.button = ttk.Button(self, text='连接设置…', command=self.open_settings)
         self.button.grid(row=0, column=2, padx=(6, 0))
-        self.summary = ttk.Label(self, text='', wraplength=400)
-        self.summary.grid(row=1, column=0, columnspan=3, sticky='w', pady=(4, 0))
+        self.summary = ttk.Label(self, text='', wraplength=400, style='Muted.TLabel')
+        self.summary.grid(row=1, column=0, columnspan=3, sticky='w', pady=(8, 0))
         self.columnconfigure(1, weight=1)
         self.refresh()
 
@@ -70,38 +72,45 @@ class SettingsWindow(tk.Toplevel):
         self.title('服务器与通知设置')
         self.transient(master)
         self.resizable(False, False)
+        theme = get_theme(master)
+        c, f = theme.colors, theme.fonts
+        self.configure(bg=c['bg'])
         self.name = tk.StringVar(self)
         self.host = tk.StringVar(self)
         self.port = tk.StringVar(self)
         self.fingerprint = tk.StringVar(self)
-        outer = ttk.Frame(self, padding=15)
+        outer = ttk.Frame(self, padding=24)
         outer.pack(fill='both', expand=True)
-        self.profile_list = tk.Listbox(outer, exportselection=False, width=22, height=8)
-        self.profile_list.grid(row=0, column=0, rowspan=5, sticky='nsew', padx=(0, 14))
+        ttk.Label(outer, text='连接与提醒', font=f['title']).grid(
+            row=0, column=0, columnspan=3, sticky='w', pady=(0, 4))
+        ttk.Label(outer, text='管理服务器配置，让每一次连接清晰有序。', style='Muted.TLabel').grid(
+            row=1, column=0, columnspan=3, sticky='w', pady=(0, 20))
+        self.profile_list = theme.listbox(outer, width=20, height=8)
+        self.profile_list.grid(row=2, column=0, rowspan=5, sticky='nsew', padx=(0, 20))
         self.profile_list.bind('<<ListboxSelect>>', self.select)
         fields = [('配置名称', self.name), ('地址 / 域名', self.host), ('端口', self.port), ('SHA-256 公钥指纹', self.fingerprint)]
-        for row, (label, variable) in enumerate(fields):
+        for row, (label, variable) in enumerate(fields, start=2):
             ttk.Label(outer, text=label).grid(row=row, column=1, sticky='w', pady=5)
-            ttk.Entry(outer, textvariable=variable, width=50).grid(row=row, column=2, sticky='ew', pady=5)
+            ttk.Entry(outer, textvariable=variable, width=44).grid(row=row, column=2, sticky='ew', padx=(12, 0), pady=5)
         ttk.Label(outer, text='远程服务器必须填写通过可信渠道核实的公钥指纹；本机连接可留空。',
-                  wraplength=440).grid(row=4, column=1, columnspan=2, sticky='w', pady=(4, 10))
+                  wraplength=420, style='Muted.TLabel').grid(row=6, column=1, columnspan=2, sticky='w', pady=(8, 0))
         actions = ttk.Frame(outer)
-        actions.grid(row=5, column=0, columnspan=3, sticky='w', pady=8)
+        actions.grid(row=7, column=0, columnspan=3, sticky='w', pady=(16, 4))
         self.new_button = ttk.Button(actions, text='新增配置', command=self.new)
         self.new_button.pack(side='left')
-        self.save_button = ttk.Button(actions, text='保存并使用', command=self.save)
+        self.save_button = ttk.Button(actions, text='保存并使用', command=self.save, style='Primary.TButton')
         self.save_button.pack(side='left', padx=8)
         self.delete_button = ttk.Button(actions, text='删除配置', command=self.delete)
         self.delete_button.pack(side='left')
-        ttk.Separator(outer).grid(row=6, column=0, columnspan=3, sticky='ew', pady=10)
+        ttk.Separator(outer).grid(row=8, column=0, columnspan=3, sticky='ew', pady=18)
         self.enabled = tk.BooleanVar(self, controller.preferences.notifications_enabled)
         self.dnd = tk.BooleanVar(self, controller.preferences.do_not_disturb)
-        ttk.Checkbutton(outer, text='接收桌面消息提醒', variable=self.enabled).grid(row=7, column=0, columnspan=3, sticky='w')
-        ttk.Checkbutton(outer, text='免打扰（保留未读数，关闭提醒和提示音）', variable=self.dnd).grid(row=8, column=0, columnspan=3, sticky='w', pady=5)
+        ttk.Checkbutton(outer, text='接收桌面消息提醒', variable=self.enabled).grid(row=9, column=0, columnspan=3, sticky='w')
+        ttk.Checkbutton(outer, text='免打扰（保留未读数，关闭提醒和提示音）', variable=self.dnd).grid(row=10, column=0, columnspan=3, sticky='w', pady=5)
         self.notification_button = ttk.Button(outer, text='保存提醒设置', command=self.save_notifications)
-        self.notification_button.grid(row=9, column=0, columnspan=3, sticky='w', pady=(4, 8))
-        self.status = ttk.Label(outer, text=controller.preferences.warning or '', wraplength=620)
-        self.status.grid(row=10, column=0, columnspan=3, sticky='w')
+        self.notification_button.grid(row=11, column=0, columnspan=3, sticky='w', pady=(8, 12))
+        self.status = ttk.Label(outer, text=controller.preferences.warning or '', wraplength=640, style='Muted.TLabel')
+        self.status.grid(row=12, column=0, columnspan=3, sticky='w')
         self.refresh(controller.preferences.selected_profile.name)
 
     def guard(self):

@@ -10,6 +10,7 @@
 | `chatroom_client/app.py` / `events.py` | 应用操作、主线程事件泵和服务器事件处理 |
 | `chatroom_client/history.py` | 会话分页游标、完成边界和重试 |
 | `chatroom_client/view.py` / `group_view.py` | Tk 控件、输入、消息渲染及群窗口 |
+| `chatroom_client/theme.py` | 统一桌面配色、跨平台字体及 Tk / ttk 控件样式 |
 | `server.py` | Python 服务端认证、会话与业务操作 |
 | `transport.py` | Python 协议 v2 报文认证、方向密钥与序号 |
 | `storage.py` | Python 加密存储及旧库迁移 |

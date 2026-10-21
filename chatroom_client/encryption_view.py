@@ -4,6 +4,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from .theme import get_theme
+
 
 def fingerprint_text(value):
     return ' '.join(value[index:index + 4] for index in range(0, len(value), 4))
@@ -13,8 +15,10 @@ def confirm_roster(master, gid, identities, previous):
     from .e2ee_crypto import bundle_fingerprint
 
     window = tk.Toplevel(master)
+    theme = get_theme(master)
     window.title('确认群聊加密接收人')
-    window.geometry('850x470')
+    window.geometry('900x540')
+    window.minsize(820, 470)
     window.transient(master)
     accepted = [False]
     tk.Label(window, text=f'群聊 {gid} 的每位接收人都将能够解密新消息。请核对成员和指纹。',
@@ -42,7 +46,7 @@ def confirm_roster(master, gid, identities, previous):
     confirmed = tk.BooleanVar(window, False)
     button_frame = tk.Frame(window)
     button_frame.pack(fill=tk.X, padx=16, pady=12)
-    button = tk.Button(button_frame, text='确认接收人', state=tk.DISABLED)
+    button = theme.button(button_frame, text='确认接收人', state=tk.DISABLED, variant='primary')
     tk.Checkbutton(button_frame, text='我确认以上所有接收人均为此群成员', variable=confirmed,
                    command=lambda: button.configure(state=tk.NORMAL if confirmed.get() else tk.DISABLED)).pack(side=tk.LEFT)
 
@@ -53,8 +57,10 @@ def confirm_roster(master, gid, identities, previous):
 
     button.configure(command=accept)
     button.pack(side=tk.RIGHT)
-    tk.Button(button_frame, text='取消', command=window.destroy).pack(side=tk.RIGHT, padx=8)
+    theme.button(button_frame, text='取消', command=window.destroy).pack(side=tk.RIGHT, padx=8)
     window.protocol('WM_DELETE_WINDOW', window.destroy)
+    theme.style_window(window)
+    button.configure(**theme._button_options(button_frame, 'primary'))
     window.grab_set()
     master.wait_window(window)
     return accepted[0]
@@ -122,24 +128,27 @@ class EncryptionWindow(tk.Toplevel):
     def __init__(self, view):
         super().__init__(view.master)
         self.view, self.controller = view, view.controller
+        theme = get_theme(view.master)
         self.title('端到端加密与密钥')
-        self.geometry('850x530')
+        self.geometry('980x650')
+        self.minsize(860, 590)
         self.transient(view.master)
         encryption = self.controller.encryption
-        tk.Label(self, text=encryption.status, wraplength=810, justify=tk.LEFT).pack(fill=tk.X, padx=16, pady=(14, 8))
-        tk.Label(self, text='我的指纹（请与联系人通过其他可信渠道核对）', anchor=tk.W).pack(fill=tk.X, padx=16)
+        status = tk.Label(self, text=encryption.status, wraplength=910, justify=tk.LEFT)
+        status.pack(fill=tk.X, padx=24, pady=(24, 16))
+        tk.Label(self, text='我的指纹（请与联系人通过其他可信渠道核对）', anchor=tk.W).pack(fill=tk.X, padx=24)
         fingerprint = tk.Text(self, height=2, wrap=tk.WORD)
         fingerprint.insert('1.0', fingerprint_text(encryption.fingerprint or ''))
         fingerprint.configure(state=tk.DISABLED)
-        fingerprint.pack(fill=tk.X, padx=16, pady=6)
+        fingerprint.pack(fill=tk.X, padx=24, pady=8)
         tk.Label(self, text='私钥仅保存在本机加密文件中。请导出并妥善保管备份；遗失密钥后无法解密历史消息。',
-                 wraplength=810, justify=tk.LEFT).pack(fill=tk.X, padx=16, pady=6)
+                 wraplength=910, justify=tk.LEFT).pack(fill=tk.X, padx=24, pady=6)
         controls = tk.Frame(self)
-        controls.pack(fill=tk.X, padx=16, pady=6)
+        controls.pack(fill=tk.X, padx=24, pady=(8, 12))
         tk.Button(controls, text='导出加密密钥备份…', command=self.export).pack(side=tk.LEFT)
         tk.Button(controls, text='更改本机密钥口令…', command=self.change_passphrase).pack(side=tk.LEFT, padx=8)
         frame = tk.Frame(self)
-        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 16))
         self.tree = ttk.Treeview(frame, columns=('name', 'verified', 'fingerprint'), show='headings')
         for name, title, width in (('name', '联系人', 130), ('verified', '身份核对', 90), ('fingerprint', '指纹', 590)):
             self.tree.heading(name, text=title)
@@ -149,11 +158,15 @@ class EncryptionWindow(tk.Toplevel):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         buttons = tk.Frame(self)
-        buttons.pack(fill=tk.X, padx=16, pady=(0, 12))
+        buttons.pack(fill=tk.X, padx=24, pady=(0, 8))
         tk.Button(buttons, text='核对所选联系人指纹…', command=self.verify_peer).pack(side=tk.LEFT)
         tk.Button(buttons, text='处理所选联系人密钥变化…', command=self.accept_change).pack(side=tk.LEFT, padx=8)
-        tk.Button(buttons, text='确认当前群接收人…', command=lambda: self.perform(self.controller.review_encryption_group)).pack(side=tk.LEFT)
         tk.Button(buttons, text='关闭', command=self.destroy).pack(side=tk.RIGHT)
+        group_controls = tk.Frame(self)
+        group_controls.pack(fill=tk.X, padx=24, pady=(0, 24))
+        tk.Button(group_controls, text='确认当前群接收人…', command=lambda: self.perform(self.controller.review_encryption_group)).pack(side=tk.LEFT)
+        theme.style_window(self)
+        status.configure(font=theme.fonts['heading'])
         self.reload()
 
     def reload(self):

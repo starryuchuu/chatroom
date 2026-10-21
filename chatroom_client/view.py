@@ -7,6 +7,7 @@ from .group_view import GroupWindows
 from .models import ChatKey
 from .settings_view import ServerProfileSelector
 from .encryption_view import EncryptionWindow, confirm_roster, import_keys
+from .theme import AutoScrollbar, DesktopTheme
 
 
 class TkClientView:
@@ -22,7 +23,11 @@ class TkClientView:
         self._destroyed = False
         self._friend_keys = []
         self.profile_selector = None
-        self.master.title('简易聊天客户端')
+        self.theme = DesktopTheme(master)
+        self.colors, self.fonts = self.theme.colors, self.theme.fonts
+        self.master.title('chatroom')
+        self.master.geometry('1120x760')
+        self.master.minsize(900, 700)
 
     @property
     def state(self):
@@ -64,7 +69,25 @@ class TkClientView:
         self.current_chat_frame = None
         self._friend_keys.clear()
         self.profile_selector = None
-        self.master.title('简易聊天客户端')
+        self.master.title('chatroom')
+
+    def label(self, parent, text='', *, muted=False, font='body', **kwargs):
+        options = dict(bg=parent.cget('bg'), fg=self.colors['muted' if muted else 'text'],
+                       font=self.fonts[font], anchor=tk.W, justify=tk.LEFT)
+        options.update(kwargs)
+        return tk.Label(parent, text=text, **options)
+
+    def brand(self, parent, *, large=False):
+        frame = tk.Frame(parent, bg=parent.cget('bg'))
+        mark = tk.Canvas(frame, width=32, height=32, bg=frame.cget('bg'),
+                         highlightthickness=0, takefocus=False)
+        mark.pack(side=tk.LEFT, padx=(0, 10))
+        mark.create_polygon(5, 5, 27, 5, 27, 23, 14, 23, 8, 28, 8, 23, 5, 23,
+                            fill=self.colors['accent'], smooth=False)
+        for x in (11, 16, 21):
+            mark.create_oval(x-1, 13, x+1, 15, fill=self.colors['surface'], outline='')
+        self.label(frame, 'chatroom', font='title' if large else 'heading').pack(side=tk.LEFT)
+        return frame
 
     def input_text(self):
         entry = getattr(self, 'msg_entry', None)
@@ -133,7 +156,7 @@ class TkClientView:
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
         if key not in self.chat_frames:
-            self.chat_frames[key] = tk.Frame(self.chat_container, bg='#f5f5f5')
+            self.chat_frames[key] = tk.Frame(self.chat_container, bg=self.colors['bg'])
             self.bind_chat_wheel(self.chat_frames[key])
         frame = self.chat_frames[key]
         frame.pack(fill=tk.BOTH, expand=True)
@@ -156,12 +179,12 @@ class TkClientView:
             self.chat_canvas.yview_moveto(0.0)
 
     def append_message(self, key, message):
-        label = f'{message.author}(群聊)' if key.kind == 'group' else message.author
+        label = '你' if message.is_self else message.author
         if self.controller.encryption is not None:
             security = getattr(message, 'encryption', 'legacy')
             label += {'e2ee': ' [端到端加密]', 'legacy': ' [旧消息 · 非端到端加密]'}.get(security, ' [安全验证失败]')
-        self.display_message_with_time(f'{label}: {message.content}', message.timestamp,
-                                       message.is_self, key=key)
+        self.display_message_with_time(message.content, message.timestamp,
+                                       message.is_self, key=key, author=label)
 
     def clear_selection(self):
         if self.current_chat_frame is not None:
@@ -197,7 +220,14 @@ class TkClientView:
             title = self.state.groups.get(key.target, {}).get('group_name', key.target) if key.kind == 'group' else key.target
         label = getattr(self, 'chat_title', None)
         if label is not None and label.winfo_exists():
-            label.configure(text=f'当前会话：{title}' if title else '请选择好友或群组')
+            label.configure(text=title if title else '你的对话')
+            self.chat_subtitle.configure(text=('群聊' if key.kind == 'group' else '私聊')
+                                         if title else '从左侧选择好友或群聊')
+            if key and key.kind == 'group':
+                self.group_info_button.configure(state=tk.NORMAL)
+                self.group_info_button.pack(side=tk.LEFT, before=self.load_history_button, padx=(0, 6))
+            else:
+                self.group_info_button.pack_forget()
             encryption = self.controller.encryption
             can_send = (title and self.controller.connection.running and not self.state.pending_messages
                         and (encryption is None or (encryption.ready and not encryption.sending)))
@@ -207,6 +237,23 @@ class TkClientView:
                         and self.state.pending_history is None and not self.controller.sync.active
                         and not self.controller.sync.awaiting_initial)
             self.load_history_button.configure(state=tk.NORMAL if can_load else tk.DISABLED)
+            empty = getattr(self, 'empty_state', None)
+            if empty is not None and empty.winfo_exists():
+                if conversation is None or not conversation.messages:
+                    self.empty_title.configure(text='开始一段对话' if title else '给对话，一点空间')
+                    self.empty_subtitle.configure(text='写下第一条消息，聊聊近况吧。' if title
+                                                   else '选择一位好友或一个群聊，\n让交流从这里开始。')
+                    empty.place(relx=.5, rely=.45, anchor=tk.CENTER)
+                else:
+                    empty.place_forget()
+            self.refresh_sidebar_counts()
+
+    def refresh_sidebar_counts(self):
+        for name, text in (('friends_heading', f'好友  ·  {len(self.state.friends)}'),
+                           ('groups_heading', f'群聊  ·  {len(self.state.groups)}')):
+            label = getattr(self, name, None)
+            if label is not None and label.winfo_exists():
+                label.configure(text=text)
 
     def conversation_label(self, key, title):
         conversation = self.state.conversations.get(key)
@@ -228,7 +275,8 @@ class TkClientView:
             if self.state.current_chat == key:
                 self.group_listbox.selection_set(index)
         count = self.state.total_unread
-        self.master.title((f'({count}) ' if count else '') + '简易聊天客户端')
+        self.master.title((f'({count}) ' if count else '') + 'chatroom')
+        self.refresh_sidebar_counts()
 
     def is_chat_visible(self, key):
         try:
@@ -258,7 +306,7 @@ class TkClientView:
     def set_connection_status(self, text, reconnecting=False):
         label = getattr(self, 'connection_status', None)
         if label is not None and label.winfo_exists():
-            label.configure(text=text, fg='#a75b00' if reconnecting else '#1e6c39')
+            label.configure(text=text, fg=self.colors['warning' if reconnecting else 'success'])
             self.disconnect_button.configure(text='取消重连' if reconnecting else '断开连接')
             if self.controller.sync.failed:
                 self.sync_retry_button.pack(side=tk.RIGHT, padx=5)
@@ -277,192 +325,303 @@ class TkClientView:
             self.notify('提醒设置保存失败', str(error))
 
     def build_login(self):
-        """
-        构建登录界面，包含用户名和密码输入框，以及登录和注册按钮。
-        """
+        """A quiet, compact form, using the same controls as the chat view."""
         self.clear_window()
-        self.master.geometry('1020x680')
-        self.master.configure(bg="#ffffff")
-        login_frame = tk.Frame(self.master, bg="#ffffff", bd=0, highlightthickness=0)
-        login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        tk.Label(login_frame, text="简易聊天室登录", font=("微软雅黑", 20, "bold"), bg="#ffffff", fg="#3a7bd5").pack(pady=(0, 16))
-        self.profile_selector = ServerProfileSelector(login_frame, self.controller)
-        self.profile_selector.pack(fill=tk.X, pady=(0, 16))
-        tk.Label(login_frame, text="用户名:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(0, 8))
-        entry_style = {"font": ("微软雅黑", 12), "relief": tk.FLAT, "highlightthickness": 2, "highlightbackground": "#aee1f9", "highlightcolor": "#3a7bd5", "bd": 0, "width": 22}
-        self.username_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
-        self.username_entry.pack(pady=(0, 10), ipady=6)
-        tk.Label(login_frame, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
-        self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
-        self.password_entry.pack(ipady=6)
+        c = self.colors
+        self.master.configure(bg=c['bg'])
+        header = tk.Frame(self.master, bg=c['bg'])
+        header.pack(fill=tk.X, padx=32, pady=(22, 0))
+        self.brand(header).pack(side=tk.LEFT)
+        self.label(header, '桌面客户端', muted=True, font='small').pack(side=tk.RIGHT)
+
+        # The form scales naturally with the platform font and Tk's DPI setting.
+        form = tk.Frame(self.master, bg=c['bg'])
+        form.pack(expand=True, padx=32, pady=(8, 12))
+        form.columnconfigure(0, weight=1)
+        self.label(form, '欢迎回来', font='title').grid(row=0, column=0, sticky='w')
+        self.label(form, '登录账号，继续你的对话。', muted=True).grid(
+            row=1, column=0, sticky='w', pady=(4, 12))
+        self.profile_selector = ServerProfileSelector(form, self.controller)
+        self.profile_selector.grid(row=2, column=0, sticky='ew', pady=(0, 10))
+
+        def field(row, title, **kwargs):
+            self.label(form, title, font='small', muted=True).grid(
+                row=row, column=0, sticky='w', pady=(0, 5))
+            widget = self.theme.entry(form, width=38, **kwargs)
+            widget.grid(row=row+1, column=0, sticky='ew', ipady=7, pady=(0, 8))
+            return widget
+
+        self.username_entry = field(3, '用户名')
+        self.password_entry = field(5, '密码', show='•')
         self.encryption_entry = None
+        row = 7
         if self.controller.encryption is not None:
-            tk.Label(login_frame, text='本机加密密钥口令:', font=('微软雅黑', 12), bg='#ffffff').pack(pady=(10, 5))
-            self.encryption_entry = tk.Entry(login_frame, **entry_style, bg='#f5faff', show='*')
-            self.encryption_entry.pack(ipady=6)
-            tk.Label(login_frame, text='至少 8 个字符，与登录密码不同；仅在本机使用', bg='#ffffff', fg='#555').pack(pady=3)
-            self.import_keys_button = tk.Button(login_frame, text='从密钥备份恢复…', command=lambda: import_keys(self))
-            self.import_keys_button.pack(pady=3)
-        tk.Label(login_frame, text="端口（仅本次连接）:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
-        self.port_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
+            self.encryption_entry = field(row, '本机加密密钥口令', show='•')
+            row += 2
+            note = tk.Frame(form, bg=c['bg'])
+            note.grid(row=row, column=0, sticky='ew', pady=(0, 4))
+            self.label(note, '至少 8 个字符，与登录密码不同', muted=True, font='small').pack(side=tk.LEFT)
+            self.import_keys_button = self.theme.button(
+                note, '恢复密钥…', lambda: import_keys(self), variant='quiet',
+                font=self.fonts['small'], padx=5, pady=2)
+            self.import_keys_button.pack(side=tk.RIGHT)
+            row += 1
+        self.port_entry = field(row, '端口 · 仅用于本次连接')
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
-        self.port_entry.pack(ipady=6)
-        login_btn = tk.Button(login_frame, text="登录", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", activebackground="#5596e6", activeforeground="#fff", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.controller.login)
-        self.login_button = login_btn
-        login_btn.pack(pady=(12, 10))
-        register_btn = tk.Button(login_frame, text="注册", font=("微软雅黑", 12), bg="#f0f0f0", fg="#3a7bd5", activebackground="#dcdcdc", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.register)
-        self.register_button = register_btn
-        register_btn.pack(pady=(0, 10))
-        self.login_status = tk.Label(login_frame, text="", bg="#ffffff")
-        self.login_status.pack()
-        tk.Button(login_frame, text="取消连接", command=self.controller.cancel_auth).pack()
+        row += 2
+        self.login_button = self.theme.button(form, '登录', self.controller.login, variant='primary')
+        self.login_button.grid(row=row, column=0, sticky='ew', pady=(0, 4))
+        actions = tk.Frame(form, bg=c['bg'])
+        actions.grid(row=row+1, column=0, sticky='ew')
+        self.register_button = self.theme.button(actions, '创建账号', self.register, variant='quiet')
+        self.register_button.pack(side=tk.LEFT)
+        self.theme.button(actions, '取消连接', self.controller.cancel_auth, variant='quiet').pack(side=tk.RIGHT)
+        self.login_status = self.label(form, '', muted=True, font='small', wraplength=440)
+        self.login_status.grid(row=row+2, column=0, sticky='ew', pady=(4, 0))
         self.username_entry.focus_set()
-        self.master.bind('<Return>', lambda e: self.controller.login())
+        self.master.bind('<Return>', lambda event: self.controller.login())
 
     def build_chat(self):
-        """
-        构建聊天界面，包含好友列表、在线用户列表、聊天显示区域和消息输入框。
-        """
+        """Two columns keep conversations and their contents in focus."""
         self.clear_window()
-        # 解除登录界面的回车登录绑定，否则聊天界面中在输入框外按 Enter
-        # 会再次触发 login() 并访问已销毁的输入框
         self.master.unbind('<Return>')
-        top_frame = tk.Frame(self.master)
-        top_frame.pack(side=tk.TOP, fill=tk.X)
+        c, f = self.colors, self.fonts
+        self.master.configure(bg=c['line'])
+        toolbar = tk.Frame(self.master, bg=c['surface'])
+        toolbar.pack(side=tk.TOP, fill=tk.X, pady=(0, 1))
+        self.brand(toolbar).pack(side=tk.LEFT, padx=(22, 24), pady=14)
+        self.connection_status = self.label(toolbar, '已连接', font='small', fg=c['success'],
+                                            wraplength=230)
+        self.connection_status.pack(side=tk.LEFT)
+        self.disconnect_button = self.theme.button(
+            toolbar, '断开连接', self.controller.disconnect, variant='quiet')
+        self.disconnect_button.pack(side=tk.RIGHT, padx=(8, 20))
+        self.sync_retry_button = self.theme.button(
+            toolbar, '重试补取', self.controller.retry_sync, variant='quiet')
+        self.notifications_enabled = tk.BooleanVar(self.master, self.controller.preferences.notifications_enabled)
+        self.do_not_disturb = tk.BooleanVar(self.master, self.controller.preferences.do_not_disturb)
+        notifications = tk.Menubutton(toolbar, text='通知设置', bg=c['surface'], fg=c['muted'],
+                                      font=f['body'], relief=tk.FLAT, bd=0, padx=12, pady=7,
+                                      activebackground=c['selected'], takefocus=True,
+                                      highlightthickness=1, highlightbackground=c['surface'],
+                                      highlightcolor=c['accent'], cursor='hand2')
+        menu = tk.Menu(notifications, tearoff=False, bg=c['surface'], fg=c['text'],
+                       activebackground=c['selected'], activeforeground=c['text'], font=f['body'])
+        menu.add_checkbutton(label='消息提醒', variable=self.notifications_enabled,
+                             command=self.save_notification_preferences)
+        menu.add_checkbutton(label='免打扰', variable=self.do_not_disturb,
+                             command=self.save_notification_preferences)
+        notifications.configure(menu=menu)
+        notifications.pack(side=tk.RIGHT)
+        self.online_button = self.theme.button(toolbar, '在线用户 · 0', self.toggle_online, variant='quiet')
+        self.online_button.pack(side=tk.RIGHT, padx=4)
+
+        body = tk.Frame(self.master, bg=c['line'])
+        body.pack(fill=tk.BOTH, expand=True)
+        sidebar = tk.Frame(body, bg=c['sidebar'], width=256)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 1))
+        sidebar.pack_propagate(False)
+        account = tk.Frame(sidebar, bg=c['sidebar'])
+        account.pack(fill=tk.X, padx=20, pady=(22, 18))
+        self.label(account, self.state.username, font='heading', wraplength=210).pack(fill=tk.X)
         endpoint = self.controller.connection.endpoint or (
             self.controller.connection.settings.host, self.controller.connection.settings.port)
         host = f'[{endpoint[0]}]' if ':' in endpoint[0] else endpoint[0]
-        tk.Label(top_frame, text=f"{self.state.username} · {host}:{endpoint[1]}",
-                 fg="green", wraplength=260).pack(side=tk.LEFT, padx=10, pady=5)
-        self.connection_status = tk.Label(top_frame, text='已连接', fg='#1e6c39')
-        self.connection_status.pack(side=tk.LEFT, padx=8)
+        self.label(account, f'{host}:{endpoint[1]}', muted=True, font='small', wraplength=210).pack(
+            fill=tk.X, pady=(4, 0))
+        actions = tk.Frame(sidebar, bg=c['sidebar'])
+        actions.pack(fill=tk.X, padx=16, pady=(0, 18))
+        self.theme.button(actions, '添加好友', self.add_friend, variant='secondary',
+                          padx=10, font=f['small']).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.theme.button(actions, '创建群聊', self.groups_ui.create, variant='secondary',
+                          padx=10, font=f['small']).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        lists = tk.Frame(sidebar, bg=c['sidebar'])
+        lists.pack(fill=tk.BOTH, expand=True, padx=12)
+        lists.columnconfigure(0, weight=1)
+        lists.rowconfigure(1, weight=3)
+        lists.rowconfigure(3, weight=2)
 
-        # 添加断开连接按钮
-        self.disconnect_button = tk.Button(top_frame, text="断开连接", command=self.controller.disconnect)
-        self.disconnect_button.pack(side=tk.RIGHT, padx=10, pady=5)
-        self.sync_retry_button = tk.Button(top_frame, text='重试补取', command=self.controller.retry_sync)
-        self.notifications_enabled = tk.BooleanVar(self.master, self.controller.preferences.notifications_enabled)
-        self.do_not_disturb = tk.BooleanVar(self.master, self.controller.preferences.do_not_disturb)
-        tk.Checkbutton(top_frame, text='免打扰', variable=self.do_not_disturb, command=self.save_notification_preferences).pack(side=tk.RIGHT)
-        tk.Checkbutton(top_frame, text='消息提醒', variable=self.notifications_enabled, command=self.save_notification_preferences).pack(side=tk.RIGHT)
+        def conversation_list(row, title):
+            heading = self.label(lists, title, muted=True, font='small')
+            heading.grid(row=row, column=0, sticky='w', padx=8, pady=(0, 8))
+            holder = tk.Frame(lists, bg=c['sidebar'])
+            holder.grid(row=row+1, column=0, sticky='nsew', pady=(0, 18))
+            widget = self.theme.listbox(holder, width=23, height=4, bg=c['sidebar'],
+                                       highlightbackground=c['sidebar'], selectborderwidth=0)
+            widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar = AutoScrollbar(holder, orient=tk.VERTICAL, command=widget.yview)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            widget.configure(yscrollcommand=scrollbar.set)
+            return heading, widget
 
-        if self.controller.encryption is not None:
-            security_frame = tk.Frame(self.master)
-            security_frame.pack(side=tk.TOP, fill=tk.X)
-            self.encryption_status = tk.Label(security_frame, text='', anchor=tk.W, wraplength=770)
-            self.encryption_status.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=4)
-            tk.Button(security_frame, text='端到端加密与密钥…', command=lambda: EncryptionWindow(self)).pack(side=tk.RIGHT, padx=10)
-            self.refresh_encryption()
-
-        left_frame = tk.Frame(self.master)
-        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
-        tk.Label(left_frame, text="好友列表").pack(pady=5)
-        self.friends_listbox = tk.Listbox(left_frame, width=32, exportselection=False)
-        self.friends_listbox.pack(fill=tk.Y, expand=True)
+        self.friends_heading, self.friends_listbox = conversation_list(0, '好友  ·  0')
+        self.groups_heading, self.group_listbox = conversation_list(2, '群聊  ·  0')
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
-        tk.Button(left_frame, text="添加好友", command=self.add_friend).pack(pady=5)
-        tk.Button(left_frame, text="创建群聊", command=self.groups_ui.create).pack(pady=5)
-
-        # 群组列表
-        tk.Label(left_frame, text="群组列表").pack(pady=(10, 5))
-        self.group_listbox = tk.Listbox(left_frame, width=32, exportselection=False)
-        self.group_listbox.pack(fill=tk.Y, expand=True)
         self.group_listbox.bind('<<ListboxSelect>>', self.select_group)
         self.group_listbox.bind('<Double-1>', self.show_group_info_on_double_click)
+        self.label(sidebar, '双击群聊查看成员与设置', muted=True, font='small').pack(
+            anchor=tk.W, padx=20, pady=(0, 18))
 
-        online_frame = tk.Frame(self.master)
-        online_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
-        tk.Label(online_frame, text="在线用户").pack(pady=5)
-        self.online_listbox = tk.Listbox(online_frame, width=18)
-        self.online_listbox.pack(fill=tk.Y, expand=True)
+        workspace = tk.Frame(body, bg=c['bg'])
+        workspace.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        workspace.rowconfigure(0, weight=1)
+        workspace.columnconfigure(0, weight=1)
+        right = tk.Frame(workspace, bg=c['bg'])
+        right.grid(row=0, column=0, sticky='nsew')
+        self.online_panel = tk.Frame(workspace, bg=c['sidebar'], width=178)
+        self.online_panel.grid(row=0, column=1, sticky='nsew', padx=(1, 0))
+        self.online_panel.grid_propagate(False)
+        self.online_panel.rowconfigure(1, weight=1)
+        self.online_panel.columnconfigure(0, weight=1)
+        self.label(self.online_panel, '在线用户', font='heading').grid(
+            row=0, column=0, sticky='w', padx=16, pady=22)
+        self.online_listbox = self.theme.listbox(self.online_panel, width=14, bg=c['sidebar'],
+                                                highlightbackground=c['sidebar'])
+        self.online_listbox.grid(row=1, column=0, sticky='nsew', padx=12, pady=(0, 16))
+        online_scroll = AutoScrollbar(self.online_panel, orient=tk.VERTICAL, command=self.online_listbox.yview)
+        online_scroll.grid(row=1, column=1, sticky='ns', pady=(0, 16))
+        self.online_listbox.configure(yscrollcommand=online_scroll.set)
+        self.online_panel.grid_remove()
+        self.online_visible = False
 
-        right_frame = tk.Frame(self.master)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.chat_title = tk.Label(right_frame, text="请选择好友或群组")
+        chat_header = tk.Frame(right, bg=c['surface'])
+        chat_header.pack(fill=tk.X)
+        heading = tk.Frame(chat_header, bg=c['surface'])
+        self.chat_title = self.label(heading, '你的对话', font='title', wraplength=400)
         self.chat_title.pack(fill=tk.X)
-        self.load_history_button = tk.Button(right_frame, text="加载更早的消息", command=self.controller.load_older_history, state=tk.DISABLED)
-        self.load_history_button.pack(fill=tk.X)
-        self.status_label = tk.Label(right_frame, text="", anchor="w", wraplength=450)
-        self.status_label.pack(fill=tk.X)
-        chat_display_frame = tk.Frame(right_frame)
-        chat_display_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.chat_canvas = tk.Canvas(chat_display_frame, bg="#f5f5f5", highlightthickness=0)
-        self.chat_canvas.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
-        self.chat_scrollbar = tk.Scrollbar(chat_display_frame, orient="vertical", command=self.chat_canvas.yview)
-        self.chat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.chat_canvas.configure(yscrollcommand=self.chat_scrollbar.set)
-        self.chat_container = tk.Frame(self.chat_canvas, bg="#f5f5f5")
-        self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_container, anchor="nw")
-        self.chat_container.bind("<Configure>", lambda e: self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all")))
-        self.chat_canvas.bind("<Configure>", lambda e: self.chat_canvas.itemconfig(self.chat_window, width=e.width))
-        self.bind_chat_wheel(self.chat_canvas)
-        self.bind_chat_wheel(self.chat_container)
-        input_frame = tk.Frame(right_frame)
-        input_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
-        self.msg_entry = tk.Text(input_frame, height=2)
-        self.msg_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.chat_subtitle = self.label(heading, '从左侧选择好友或群聊', muted=True, font='small',
+                                        wraplength=400)
+        self.chat_subtitle.pack(fill=tk.X, pady=(3, 0))
+        tools = tk.Frame(chat_header, bg=c['surface'])
+        tools.pack(side=tk.RIGHT, padx=(0, 20))
+        self.group_info_button = self.theme.button(tools, '群聊信息', self.open_current_group,
+                                                   variant='quiet', state=tk.DISABLED, font=f['small'])
+        self.group_info_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.load_history_button = self.theme.button(
+            tools, '更早的消息', self.controller.load_older_history,
+            variant='quiet', state=tk.DISABLED, font=f['small'])
+        self.load_history_button.pack(side=tk.LEFT)
+        heading.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=24, pady=(20, 16))
+        tk.Frame(right, bg=c['line'], height=1).pack(fill=tk.X)
+
+        if self.controller.encryption is not None:
+            security = tk.Frame(right, bg=c['bg'])
+            security.pack(fill=tk.X, padx=24, pady=(10, 0))
+            self.encryption_status = self.label(security, '', muted=True, font='small', wraplength=460)
+            self.encryption_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self.theme.button(security, '加密与密钥…', lambda: EncryptionWindow(self),
+                              variant='quiet', font=f['small'], padx=6, pady=2).pack(side=tk.RIGHT)
+
+        composer = tk.Frame(right, bg=c['surface'])
+        composer.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Frame(composer, bg=c['line'], height=1).pack(fill=tk.X)
+        self.status_label = self.label(composer, '', muted=True, font='small', wraplength=550)
+        self.status_label.pack(fill=tk.X, padx=24, pady=(8, 4))
+        self.msg_entry = tk.Text(composer, height=3, wrap=tk.WORD, undo=True, font=f['body'],
+                                 bg=c['field'], fg=c['text'], insertbackground=c['text'],
+                                 selectbackground=c['selected'], selectforeground=c['text'],
+                                 relief=tk.FLAT, bd=0, padx=12, pady=10,
+                                 highlightthickness=1, highlightbackground=c['line'],
+                                 highlightcolor=c['accent'])
+        self.msg_entry.pack(fill=tk.X, padx=24)
         draft = self.controller.take_draft()
         if draft:
             self.msg_entry.insert('1.0', draft)
-        self.send_button = tk.Button(input_frame, text="发送", command=self.controller.send_message, state=tk.DISABLED)
-        self.send_button.pack(side=tk.LEFT, padx=5)
-        self.msg_entry.bind("<Return>", self.on_message_entry_key)
+        composer_actions = tk.Frame(composer, bg=c['surface'])
+        composer_actions.pack(fill=tk.X, padx=24, pady=(10, 16))
+        self.label(composer_actions, 'Enter 发送 · Shift / Ctrl + Enter 换行',
+                   muted=True, font='small').pack(side=tk.LEFT)
+        self.send_button = self.theme.button(composer_actions, '发送', self.controller.send_message,
+                                              variant='primary', state=tk.DISABLED, width=7)
+        self.send_button.pack(side=tk.RIGHT)
+        self.msg_entry.bind('<Return>', self.on_message_entry_key)
 
-    def display_message_with_time(self, msg, time_str, is_self=False, key=None):
-        """
-        在聊天区域显示带有时间戳的消息。
-        参数:
-            msg: 要显示的消息
-            time_str: 消息的时间戳
-            is_self: 是否是自己发送的消息，影响显示位置
-            key: 带类型的会话键，用于确定聊天框架
-        """
-        # 检查组件是否仍然存在
+        display = tk.Frame(right, bg=c['bg'])
+        display.pack(fill=tk.BOTH, expand=True)
+        self.chat_canvas = tk.Canvas(display, bg=c['bg'], highlightthickness=0, yscrollincrement=20)
+        self.chat_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.chat_scrollbar = AutoScrollbar(display, orient=tk.VERTICAL, command=self.chat_canvas.yview)
+        self.chat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.chat_canvas.configure(yscrollcommand=self.chat_scrollbar.set)
+        self.chat_container = tk.Frame(self.chat_canvas, bg=c['bg'])
+        self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_container, anchor=tk.NW)
+        self.chat_container.bind('<Configure>', lambda event: self.chat_canvas.configure(
+            scrollregion=self.chat_canvas.bbox('all')))
+        self.chat_canvas.bind('<Configure>', self.resize_chat)
+        self.bind_chat_wheel(self.chat_canvas)
+        self.bind_chat_wheel(self.chat_container)
+        self.empty_state = tk.Frame(self.chat_canvas, bg=c['bg'])
+        self.empty_title = self.label(self.empty_state, '给对话，一点空间', font='title', anchor=tk.CENTER)
+        self.empty_title.pack()
+        self.empty_subtitle = self.label(self.empty_state, '选择一位好友或一个群聊，\n让交流从这里开始。',
+                                         muted=True, justify=tk.CENTER, anchor=tk.CENTER)
+        self.empty_subtitle.pack(pady=(12, 0))
+        self.bind_chat_wheel(self.empty_state)
+        for child in self.empty_state.winfo_children():
+            self.bind_chat_wheel(child)
+        self.refresh_controls()
+        self.refresh_encryption()
+
+    def toggle_online(self):
+        self.online_visible = not self.online_visible
+        if self.online_visible:
+            self.online_panel.grid()
+        else:
+            self.online_panel.grid_remove()
+        self.online_button.configure(bg=self.colors['selected' if self.online_visible else 'surface'])
+
+    def open_current_group(self):
+        key = self.state.current_chat
+        if key is not None and key.kind == 'group' and self.controller.connection.running:
+            self.controller.request_group_info(key.target, open_window=True)
+
+    def resize_chat(self, event):
+        self.chat_canvas.itemconfigure(self.chat_window, width=event.width)
+        self.chat_title.configure(wraplength=max(140, event.width-280))
+        self.chat_subtitle.configure(wraplength=max(140, event.width-280))
+        self.status_label.configure(wraplength=max(140, event.width-48))
+        security = getattr(self, 'encryption_status', None)
+        if security is not None and security.winfo_exists():
+            security.configure(wraplength=max(140, event.width-180))
+        width = max(100, min(520, int(event.width*.78)-48))
+        for frame in self.chat_frames.values():
+            for bubble in frame.winfo_children():
+                for label in bubble.winfo_children():
+                    if isinstance(label, tk.Label):
+                        label.configure(wraplength=width)
+        self.empty_subtitle.configure(wraplength=max(140, event.width-64))
+
+    def display_message_with_time(self, msg, time_str, is_self=False, key=None, author=None):
+        """Keep metadata separate from the message and adapt to the viewport."""
         try:
             if not self.master.winfo_exists():
                 return
-        except tk.TclError:
-            return
-
-        if key is None:
-            key = self.state.current_chat
-        if key is not None and key in self.chat_frames:
-            chat_frame = self.chat_frames[key]
-        else:
-            chat_frame = self.chat_container
-
-        # 检查聊天框架是否存在
-        try:
+            if key is None:
+                key = self.state.current_chat
+            chat_frame = self.chat_frames.get(key, self.chat_container)
             if not chat_frame.winfo_exists():
                 return
-        except tk.TclError:
-            return
-
-        try:
-            bubble_frame = tk.Frame(chat_frame, bg="#f5f5f5")
-            if is_self:
-                bubble = tk.Label(bubble_frame, text=msg, bg="#aee1f9", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="e")
-                bubble.pack(side=tk.RIGHT, padx=8, pady=2)
-            else:
-                bubble = tk.Label(bubble_frame, text=msg, bg="#ffffff", fg="black", wraplength=350, justify="left", padx=10, pady=6, font=("微软雅黑", 11), anchor="w", relief="solid", bd=1)
-                bubble.pack(side=tk.LEFT, padx=8, pady=2)
-
-            if time_str:
-                time_label = tk.Label(bubble_frame, text=time_str, bg="#f5f5f5", fg="#888888", font=("微软雅黑", 8))
-                time_label.pack(side=tk.BOTTOM, anchor="e" if is_self else "w", padx=8)
-
-            bubble_frame.pack(fill=tk.X, anchor="e" if is_self else "w")
-            self.bind_chat_wheel(bubble_frame)
-            for child in bubble_frame.winfo_children():
+            c = self.colors
+            anchor = tk.E if is_self else tk.W
+            width = max(100, min(520, int(self.chat_canvas.winfo_width()*.78)-48))
+            row = tk.Frame(chat_frame, bg=c['bg'])
+            metadata = '  ·  '.join(str(value) for value in (author, time_str) if value)
+            if metadata:
+                self.label(row, metadata, muted=True, font='small', wraplength=width,
+                           justify=tk.LEFT, anchor=anchor).pack(anchor=anchor, pady=(0, 5))
+            bubble = self.label(row, msg, bg=c['self' if is_self else 'surface'],
+                                wraplength=width, justify=tk.LEFT, padx=14, pady=10)
+            bubble.pack(anchor=anchor)
+            row.pack(fill=tk.X, padx=24, pady=(14, 4))
+            self.bind_chat_wheel(row)
+            for child in row.winfo_children():
                 self.bind_chat_wheel(child)
-
-            # 强制更新UI并滚动到底部
+            if key == self.state.current_chat:
+                self.empty_state.place_forget()
             if not self.is_loading_messages:
                 self.request_scroll()
         except tk.TclError:
-            # Widget可能已被销毁，忽略错误
-            logging.warning("尝试在已销毁的widget上显示消息")
-            pass
+            logging.warning('尝试在已销毁的 widget 上显示消息')
 
     def scroll_to_bottom(self):
         """滚动到聊天区域底部"""
@@ -499,15 +658,17 @@ class TkClientView:
             existing.lift()
             return
         window = tk.Toplevel(self.master)
+        window.transient(self.master)
         self.request_windows[key] = window
         window.title(title)
-        tk.Label(window, text=text, wraplength=400).pack(padx=20, pady=20)
+        window.configure(bg=self.colors['bg'])
+        self.label(window, text, wraplength=400, justify=tk.LEFT).pack(padx=24, pady=24)
         def answer(accepted):
             self.request_windows.pop(key, None)
             window.destroy()
             callback(accepted)
-        tk.Button(window, text="接受", command=lambda: answer(True)).pack(side=tk.LEFT, padx=20, pady=10)
-        tk.Button(window, text="拒绝", command=lambda: answer(False)).pack(side=tk.RIGHT, padx=20, pady=10)
+        self.theme.button(window, '接受', lambda: answer(True), variant='primary').pack(side=tk.LEFT, padx=24, pady=(0, 20))
+        self.theme.button(window, '拒绝', lambda: answer(False)).pack(side=tk.RIGHT, padx=24, pady=(0, 20))
         window.protocol('WM_DELETE_WINDOW', lambda: answer(False))
 
     def set_auth_busy(self, busy, text=""):
@@ -539,7 +700,7 @@ class TkClientView:
         encryption = self.controller.encryption
         label = getattr(self, 'encryption_status', None)
         if encryption is not None and label is not None and label.winfo_exists():
-            label.configure(text=encryption.status, fg='#1e6c39' if encryption.ready else '#a04b00')
+            label.configure(text=encryption.status, fg=self.colors['success' if encryption.ready else 'warning'])
         if getattr(self, 'chat_title', None) is not None and self.chat_title.winfo_exists():
             self.refresh_controls()
 
@@ -549,16 +710,18 @@ class TkClientView:
         """
         register_window = tk.Toplevel(self.master)
         register_window.title("注册")
-        register_window.geometry("400x300")
-        register_window.configure(bg="#ffffff")
-        entry_style = {"font": ("微软雅黑", 12), "relief": tk.FLAT, "highlightthickness": 2,
-                       "highlightbackground": "#aee1f9", "highlightcolor": "#3a7bd5", "bd": 0, "width": 22}
-        tk.Label(register_window, text="用户名:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(20, 5))
-        username_entry = tk.Entry(register_window, **entry_style, bg="#f5faff")
-        username_entry.pack(ipady=6)
-        tk.Label(register_window, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
-        password_entry = tk.Entry(register_window, **entry_style, bg="#f5faff", show="*")
-        password_entry.pack(ipady=6)
+        register_window.transient(self.master)
+        register_window.resizable(False, False)
+        register_window.configure(bg=self.colors['bg'])
+        form = tk.Frame(register_window, bg=self.colors['bg'])
+        form.pack(fill=tk.BOTH, expand=True, padx=32, pady=28)
+        self.label(form, '创建账号', font='title').pack(anchor=tk.W, pady=(0, 20))
+        self.label(form, '用户名', muted=True, font='small').pack(anchor=tk.W, pady=(0, 5))
+        username_entry = self.theme.entry(form, width=30)
+        username_entry.pack(fill=tk.X, ipady=8)
+        self.label(form, '密码', muted=True, font='small').pack(anchor=tk.W, pady=(16, 5))
+        password_entry = self.theme.entry(form, width=30, show='•')
+        password_entry.pack(fill=tk.X, ipady=8)
 
         def do_register():
             username = username_entry.get().strip()
@@ -573,15 +736,17 @@ class TkClientView:
 
             self.controller.start_auth(username, password, register=True, window=register_window)
 
-        tk.Button(register_window, text="提交注册", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", command=do_register).pack(pady=20)
+        self.theme.button(form, '创建账号', do_register, variant='primary').pack(fill=tk.X, pady=(24, 0))
+        username_entry.focus_set()
+        register_window.bind('<Return>', lambda event: do_register())
 
     def on_message_entry_key(self, event):
         """
-        处理消息输入框的按键事件，Enter键发送消息，Ctrl+Enter换行。
+        Enter 发送；Shift+Enter 和 Ctrl+Enter 换行。
         参数:
             event: 按键事件
         """
-        if event.state & 0x4:  # Ctrl键被按下
+        if event.state & 0x5:  # Shift or Ctrl
             self.msg_entry.insert(tk.INSERT, "\n")
         else:
             self.controller.send_message()
@@ -596,6 +761,7 @@ class TkClientView:
         self.online_listbox.delete(0, tk.END)
         for user in user_list:
             self.online_listbox.insert(tk.END, user)
+        self.online_button.configure(text=f'在线用户 · {len(user_list)}')
 
     def bind_chat_wheel(self, widget):
         """Keep Windows/Tk wheel and standard X11 button events local to chat."""

@@ -45,7 +45,7 @@ This project is a secure encrypted chat room system implemented in both Python a
   - Chat Interface
     ![Chat interface with end-to-end encrypted messages and key management](docs/images/chat.png)
 
-  Captured from the current v1.2.0 Linux client on 2026-10-21, showing server profiles, the local key passphrase, unread previews and end-to-end encrypted chat. All accounts, groups and messages are synthetic demo data; the connection uses a loopback address. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
+  Captured from the current v1.2.1 Linux client on 2026-10-21, showing server profiles, the local key passphrase, unread previews and end-to-end encrypted chat. All accounts, groups and messages are synthetic demo data; the connection uses a loopback address. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
@@ -58,19 +58,21 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ## Current development protocol
 
-Upgrade the Python client and chosen server together. Protocol v2 rejects unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect each transport frame. Starting with v1.2.0, the desktop client also encrypts private and group messages **end to end** with Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
+When upgrading from versions without end-to-end encryption, upgrade the Python client and chosen server together. Protocol v2 rejects unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect each transport frame. Starting with v1.2.0, the desktop client also encrypts private and group messages **end to end** with Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
 The client requires a separate local key passphrase, different from the account password. Neither this passphrase nor private keys are uploaded. Compare contact fingerprints through another trusted channel, explicitly approve group recipients, and export an encrypted key backup from the encryption/key window. Restore that backup before logging in on another computer. Lost private keys cannot be recovered from the account password or server database. First-use trust requires independent verification, and this protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
 
-Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
+Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “更早的消息” button retrieves earlier pages for the selected conversation.
 
-The client requires `client.py`, the complete `chatroom_client/` package, `transport.py`, and the dependencies. Download `chatroom-v1.2.0-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `e2ee_server.py`, `history_store.py`, `pending_store.py`, `storage.py`, and the client package's public cryptographic validators. Transport v2 and storage encryption v1 remain unchanged; an additive schema upgrade records public identities and marks encrypted message envelopes. The v1.2.0 desktop client requires a v1.2.0 server and never silently downgrades. Back up the database and storage key before upgrading; do not run old servers against the upgraded database.
+The client requires `client.py`, the complete `chatroom_client/` package, `transport.py`, and the dependencies. Download `chatroom-v1.2.1-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `e2ee_server.py`, `history_store.py`, `pending_store.py`, `storage.py`, and the client package's public cryptographic validators. Transport v2 and storage encryption v1 remain unchanged; the additive schema upgrade introduced in v1.2.0 records public identities and marks encrypted message envelopes. The v1.2.1 desktop client supports v1.2.0 and newer servers with `e2ee_v1` and never silently downgrades. This interface update does not change the database schema. Back up the database and storage key before upgrading; do not run old servers against the upgraded database.
 
 ## Desktop settings and recovery
 
+The client uses a fog-white and graphite theme with a two-column layout. Toggle **在线用户** to show or hide the online list. Enter sends a message; Shift+Enter or Ctrl+Enter inserts a newline.
+
 Use the server selector and **连接设置…** on the login screen to save multiple server profiles. Python and Go loopback presets are included. Remote servers require a verified SHA-256 public-key fingerprint; the optional login port field affects only the current connection. Profiles cannot be changed during authentication, an active session or reconnection.
 
-Conversation rows show unread counts and recent message previews. Incoming messages stay unread while the window is inactive or minimized; opening a conversation in the foreground marks it read. The title shows the total count. The initial history snapshot establishes a baseline on the first-ever account login. Later logins restore read markers and unread IDs, isolated by endpoint and account. Desktop alerts contain generic text, without message bodies. **消息提醒** controls alerts; **免打扰** preserves unread counts while muting notifications and sounds. Native desktop notifications are best effort (Windows notification icon, Linux `notify-send`, macOS notifications); unavailable backends fall back to a window bell.
+Conversation rows show unread counts and recent message previews. Incoming messages stay unread while the window is inactive or minimized; opening a conversation in the foreground marks it read. The title shows the total count. The initial history snapshot establishes a baseline on the first-ever account login. Later logins restore read markers and unread IDs, isolated by endpoint and account. Desktop alerts contain generic text, without message bodies. The **通知设置** menu contains **消息提醒** for alerts; **免打扰** preserves unread counts while muting notifications and sounds. Native desktop notifications are best effort (Windows notification icon, Linux `notify-send`, macOS notifications); unavailable backends fall back to a window bell.
 
 Unexpected disconnects retain the current conversation and draft. Reconnection retries after 1, 2, 4, 8, 15 and then 30 seconds, with a **取消重连** button. Credentials stay in memory only and are cleared on explicit disconnect, cancellation or close. Identity or password failures stop reconnection. Updated Python and Go servers replay missed messages in bounded pages against one fixed boundary, including gaps larger than 100 messages. Only a fully completed replay advances the persisted checkpoint; failed recovery can be retried with **重试补取**. Unconfirmed outgoing messages are retained for manual verification and are never automatically resent.
 
@@ -108,6 +110,7 @@ chatroom/
 ├── client.py                 # Desktop client entry point
 ├── server.py                 # Python server entry point
 ├── chatroom_client/          # Desktop client components
+│   └── theme.py              # Fog-white/graphite theme, platform fonts and widget styles
 ├── go-server/                # Go server and build files
 ├── docs/                     # Documentation, guides, design notes and screenshots
 │   ├── README.md              # Documentation index
