@@ -40,10 +40,16 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build server (EXE)
-        run: pyinstaller --onefile --clean --name server server.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server server.py
 
       - name: Build client (EXE)
-        run: pyinstaller --onefile --windowed --clean --name client client.py
+        run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --clean --name client client.py
+
+      - name: Check frozen encryption runtime
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath "$PWD/dist/client.exe" -ArgumentList '--check-encryption-runtime' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Frozen encryption self-check failed: $($process.ExitCode)" }
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -80,10 +86,13 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build server
-        run: pyinstaller --onefile --clean --name server server.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server server.py
 
       - name: Build client
-        run: pyinstaller --onefile --clean --name client client.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name client client.py
+
+      - name: Check frozen encryption runtime
+        run: ./dist/client --check-encryption-runtime
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4

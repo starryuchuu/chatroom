@@ -40,9 +40,18 @@ jobs:
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y python3-tk
     - name: Build server
-      run: pyinstaller --onefile --clean --name server-${{ matrix.platform }} server.py
+      run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server-${{ matrix.platform }} server.py
     - name: Build client
-      run: pyinstaller --onefile --windowed --clean --name client-${{ matrix.platform }} client.py
+      run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --clean --name client-${{ matrix.platform }} client.py
+    - name: Check frozen encryption runtime on Linux
+      if: runner.os == 'Linux'
+      run: ./dist/client-linux --check-encryption-runtime
+    - name: Check frozen encryption runtime on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $process = Start-Process -FilePath "$PWD/dist/client-windows.exe" -ArgumentList '--check-encryption-runtime' -Wait -PassThru
+        if ($process.ExitCode -ne 0) { throw "Frozen encryption self-check failed: $($process.ExitCode)" }
     - uses: actions/upload-artifact@v4
       with:
         name: release-python-${{ matrix.platform }}

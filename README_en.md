@@ -109,6 +109,11 @@ chatroom/
 │   ├── models.py                     # Session, conversation and message data
 │   ├── connection.py                 # Authentication, socket workers and shutdown
 │   ├── protocol.py                   # TCP framing, encryption and identity checks
+│   ├── e2ee_crypto.py                # End-to-end envelopes, signatures and public keys
+│   ├── key_vault.py                  # Encrypted local keys, backups and trust records
+│   ├── encryption.py                 # End-to-end messaging and identity coordination
+│   ├── encryption_view.py            # Fingerprints, group approval and key recovery
+│   ├── runtime_check.py              # Frozen encryption dependency self-check
 │   ├── events.py                     # Server event dispatch and handlers
 │   ├── history.py                    # Retry-safe history pagination
 │   ├── sync.py                       # Complete bounded catch-up and durable cursor
@@ -121,6 +126,7 @@ chatroom/
 │   └── group_view.py                 # Group windows
 ├── CLIENT_ARCHITECTURE.md              # Client architecture and ownership rules
 ├── server.py                          # Python server code (group chat/session key/group management/database persistence)
+├── e2ee_server.py                      # Public identity and encrypted envelope validation
 ├── requirements.txt                   # Python dependency list
 ├── go-server/                         # Go language implementation of the server
 │   ├── README.md                      # Go server documentation

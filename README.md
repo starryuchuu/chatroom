@@ -160,6 +160,11 @@ chatroom/
 │   ├── models.py                     # 会话、消息与账号状态
 │   ├── connection.py                 # 认证、收发线程和连接生命周期
 │   ├── protocol.py                   # TCP 分帧、正文加密及身份校验
+│   ├── e2ee_crypto.py                # 端到端封装、签名与公钥校验
+│   ├── key_vault.py                  # 本机加密密钥库、备份与信任记录
+│   ├── encryption.py                 # 端到端收发与身份协调
+│   ├── encryption_view.py            # 指纹核对、群确认与密钥恢复
+│   ├── runtime_check.py              # 安装包加密依赖自检
 │   ├── events.py                     # 服务器事件处理表
 │   ├── history.py                    # 历史分页与失败重试
 │   ├── sync.py                       # 断线消息分页补取与完成游标
@@ -172,6 +177,7 @@ chatroom/
 │   └── group_view.py                 # 群创建及信息窗口
 ├── CLIENT_ARCHITECTURE.md              # 客户端结构及维护约定
 ├── server.py                          # Python 服务端（数据库/加密/群聊）
+├── e2ee_server.py                      # 服务端公开身份与密文验证
 ├── requirements.txt                   # Python 依赖包
 ├── go-server/                         # Go 服务端实现
 │   ├── README.md                      # Go 服务端文档

@@ -285,13 +285,13 @@ class TkClientView:
         self.master.configure(bg="#ffffff")
         login_frame = tk.Frame(self.master, bg="#ffffff", bd=0, highlightthickness=0)
         login_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        tk.Label(login_frame, text="简易聊天室登录", font=("微软雅黑", 20, "bold"), bg="#ffffff", fg="#3a7bd5").pack(pady=(0, 25))
+        tk.Label(login_frame, text="简易聊天室登录", font=("微软雅黑", 20, "bold"), bg="#ffffff", fg="#3a7bd5").pack(pady=(0, 16))
         self.profile_selector = ServerProfileSelector(login_frame, self.controller)
         self.profile_selector.pack(fill=tk.X, pady=(0, 16))
         tk.Label(login_frame, text="用户名:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(0, 8))
         entry_style = {"font": ("微软雅黑", 12), "relief": tk.FLAT, "highlightthickness": 2, "highlightbackground": "#aee1f9", "highlightcolor": "#3a7bd5", "bd": 0, "width": 22}
         self.username_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff")
-        self.username_entry.pack(pady=(0, 18), ipady=6)
+        self.username_entry.pack(pady=(0, 10), ipady=6)
         tk.Label(login_frame, text="密码:", font=("微软雅黑", 12), bg="#ffffff").pack(pady=(10, 5))
         self.password_entry = tk.Entry(login_frame, **entry_style, bg="#f5faff", show="*")
         self.password_entry.pack(ipady=6)
@@ -309,7 +309,7 @@ class TkClientView:
         self.port_entry.pack(ipady=6)
         login_btn = tk.Button(login_frame, text="登录", font=("微软雅黑", 12, "bold"), bg="#3a7bd5", fg="#fff", activebackground="#5596e6", activeforeground="#fff", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.controller.login)
         self.login_button = login_btn
-        login_btn.pack(pady=(20, 10))
+        login_btn.pack(pady=(12, 10))
         register_btn = tk.Button(login_frame, text="注册", font=("微软雅黑", 12), bg="#f0f0f0", fg="#3a7bd5", activebackground="#dcdcdc", bd=0, relief=tk.FLAT, width=16, height=1, cursor="hand2", command=self.register)
         self.register_button = register_btn
         register_btn.pack(pady=(0, 10))
