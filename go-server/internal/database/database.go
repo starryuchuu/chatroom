@@ -52,6 +52,9 @@ func OpenDB(dataSourceName string) error {
 	if err = createTables(); err == nil {
 		err = initializeStorage(dataSourceName)
 	}
+	if err == nil {
+		err = upgradeE2EESchema()
+	}
 	if err != nil {
 		DB.Close()
 	}

@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"chatroom/internal/crypto"
+	"chatroom/internal/models"
 	"chatroom/internal/protocol"
 	"net"
 )
@@ -15,8 +17,34 @@ func sendChatResult(conn net.Conn, kind string, request map[string]interface{}, 
 	protocol.SendMsg(conn, result)
 }
 
+// Stored E2EE is relayed without server-side content decryption or session-key
+// encryption. Legacy records keep their original transport-only path.
+func storedChatPayload(message models.Message, key []byte, sync bool) (map[string]interface{}, error) {
+	target := message.ToUser
+	if message.ChatType == "group" {
+		target = message.GID
+	}
+	if message.E2EE {
+		envelope, err := parseStoredE2EE(message.Content)
+		if err != nil {
+			return nil, err
+		}
+		payload := e2eeChatPayload(message.ChatType, message.FromUser, target, envelope, message.Timestamp, message.ID)
+		payload["history"] = true
+		if sync {
+			payload["sync"] = true
+		}
+		return payload, protocol.ValidateMessage(payload)
+	}
+	content, err := crypto.EncryptMessage(message.Content, key)
+	if err != nil {
+		return nil, err
+	}
+	return historyChatPayload(message.ChatType+"_chat", message.FromUser, target, content, message.Timestamp, message.ID, sync), nil
+}
+
 func chatPayload(kind, from, target, content, timestamp string, id int64) map[string]interface{} {
-	payload := map[string]interface{}{"type": kind, "from": from, "content": content, "timestamp": timestamp, "message_id": id, "history": false}
+	payload := map[string]interface{}{"type": kind, "from": from, "content": content, "timestamp": timestamp, "message_id": id, "history": false, "encryption": "legacy"}
 	if kind == "group_chat" {
 		payload["gid"] = target
 	} else {
@@ -45,6 +73,7 @@ func historyChatPayload(kind, from, target, content, timestamp string, id int64,
 	// Older releases could store a frame with no room for new optional flags.
 	// Keep its body and message ID intact; clients also track replay boundaries.
 	if protocol.ValidateMessage(payload) != nil {
+		delete(payload, "encryption")
 		delete(payload, "sync")
 		if protocol.ValidateMessage(payload) != nil {
 			delete(payload, "history")

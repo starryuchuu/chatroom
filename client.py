@@ -3,6 +3,40 @@
 The application is composed in chatroom_client. Wire helpers remain exported
 here for existing protocol integrations and command-line scripts.
 """
+import sys
+
+
+def _check_encryption_runtime():
+    try:
+        from chatroom_client.runtime_check import check_encryption_runtime
+        check_encryption_runtime()
+    except Exception as error:
+        # A PyInstaller --windowed executable has no stdout/stderr. Returning a
+        # nonzero status still fails CI without triggering its exception GUI.
+        stream = sys.stderr
+        if stream is not None:
+            try:
+                stream.write(f'Encryption runtime self-check failed: {type(error).__name__}: {error}\n')
+                stream.flush()
+            except (OSError, ValueError):
+                pass
+        return 1
+    stream = sys.stdout
+    if stream is not None:
+        try:
+            stream.write('PASS encryption runtime: Argon2id vault, Ed25519, X25519, authenticated private messages\n')
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    return 0
+
+
+# Handle the frozen-runtime probe before importing Tk or the application.
+# Missing optional native providers must become a clean failing exit status.
+if __name__ == '__main__' and '--check-encryption-runtime' in sys.argv[1:]:
+    raise SystemExit(_check_encryption_runtime() if sys.argv[1:] == ['--check-encryption-runtime'] else 2)
+
+
 import logging
 import socket
 import tkinter as tk
@@ -36,7 +70,7 @@ def check_server_public_key(public_key_data):
 
 
 class ChatClient(ChatApplication):
-    def __init__(self, master, *, preferences=None):
+    def __init__(self, master, *, preferences=None, encryption=True):
         if preferences is None:
             default = ServerProfile('默认服务器', SERVER_HOST, SERVER_PORT, EXPECTED_SERVER_KEY_FINGERPRINT)
             preferences = PreferencesStore(default_profile=default)
@@ -45,13 +79,16 @@ class ChatClient(ChatApplication):
         view = TkClientView(master)
         connection = ConnectionManager(settings)
         try:
-            super().__init__(view, connection, preferences)
+            super().__init__(view, connection, preferences, encryption=encryption)
         except Exception:
             connection.close()
             raise
 
 
-def main():
+def main(argv=None):
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    if '--check-encryption-runtime' in arguments:
+        return _check_encryption_runtime() if arguments == ['--check-encryption-runtime'] else 2
     logging.info('Starting Chat Client')
     root = tk.Tk()
     ChatClient(root)
@@ -59,4 +96,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

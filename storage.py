@@ -204,11 +204,15 @@ def open_field(value, *parts):
     return _store.open(value, *parts)
 
 
-def save_message(db, kind, sender, recipient, gid, message, timestamp):
+def save_message(db, kind, sender, recipient, gid, message, timestamp, *, e2ee=False):
     sender = put_name(db, sender)
     recipient = put_name(db, recipient) if recipient else recipient
-    cursor = db.execute('INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp) VALUES(?,?,?,?,?,?)',
-                        (kind, sender, recipient, gid, '', ''))
+    if e2ee:
+        cursor = db.execute('INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp,e2ee) VALUES(?,?,?,?,?,?,1)',
+                            (kind, sender, recipient, gid, '', ''))
+    else:
+        cursor = db.execute('INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp) VALUES(?,?,?,?,?,?)',
+                            (kind, sender, recipient, gid, '', ''))
     message_id = cursor.lastrowid
     db.execute('UPDATE messages SET message=?,timestamp=? WHERE id=?',
                (seal(message, *message_context(message_id, kind, sender, recipient, gid)),
@@ -217,10 +221,11 @@ def save_message(db, kind, sender, recipient, gid, message, timestamp):
 
 
 def decode_message(db, row):
-    mid, kind, sender, recipient, gid, body, timestamp = row
+    mid, kind, sender, recipient, gid, body, timestamp, *encryption = row
     body = open_field(body, *message_context(mid, kind, sender, recipient, gid))
-    return (mid, kind, name(db, sender), name(db, recipient), gid, body,
-            open_field(timestamp, 'messages', 'timestamp', mid))
+    result = (mid, kind, name(db, sender), name(db, recipient), gid, body,
+              open_field(timestamp, 'messages', 'timestamp', mid))
+    return result + tuple(encryption)
 
 
 def decode_group(row):

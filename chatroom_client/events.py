@@ -88,13 +88,21 @@ class ServerEvents:
         session_key = self.controller.connection.session_key
         if not session_key:
             return
-        try:
-            content = decrypt_message(message.get('content'), session_key)
-        except Exception:
-            logging.exception('消息解密失败')
-            content = '[消息解密失败]'
+        encryption = getattr(self.controller, 'encryption', None)
+        protection = 'legacy'
+        if encryption is not None:
+            decoded = encryption.decode_message(message)
+            if decoded is None:
+                return
+            content, protection = decoded
+        else:
+            try:
+                content = decrypt_message(message.get('content'), session_key)
+            except Exception:
+                logging.exception('消息解密失败')
+                content, protection = '[消息解密失败]', 'failed'
         item = Message(message.get('from'), content, message.get('timestamp', ''),
-                       message.get('message_id'), message.get('from') == self.state.username)
+                       message.get('message_id'), message.get('from') == self.state.username, protection)
         conversation = self.state.conversation(key)
         index = conversation.add(item)
         if index is None:

@@ -1,6 +1,7 @@
 """Socket and worker lifetime. Workers exchange data events and never own Tk objects."""
 from dataclasses import dataclass, field
 import base64
+import hmac
 import json
 import queue
 import socket
@@ -31,6 +32,7 @@ class AuthResult:
     error: str | None
     retryable: bool = False
     capabilities: tuple[str, ...] = ()
+    encryption: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class _Authentication:
     password: str = field(repr=False)
     endpoint: tuple[str, int]
     fingerprint: str | None
+    prepare: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -74,10 +77,10 @@ class ConnectionManager:
         worker.start()
         self.workers.append(worker)
 
-    def authenticate(self, username, password, *, register=False):
+    def authenticate(self, username, password, *, register=False, prepare=None):
         authentication = _Authentication(
             username, password, (self.settings.host, self.settings.port),
-            self.settings.expected_fingerprint)
+            self.settings.expected_fingerprint, prepare)
         return self._start_authentication(authentication, register=register)
 
     def _start_authentication(self, authentication, *, register=False, reconnect=False):
@@ -119,10 +122,24 @@ class ConnectionManager:
             self._saved_auth = None
             self._auth_contexts.clear()
 
+    def is_login_password(self, candidate):
+        """Check separation of local and account secrets without exporting one."""
+        if not isinstance(candidate, str):
+            return False
+        with self._lock:
+            authentication = self._saved_auth
+            if authentication is None:
+                return False
+            try:
+                return hmac.compare_digest(candidate.encode('utf-8'),
+                                           authentication.password.encode('utf-8'))
+            except UnicodeError:
+                return False
+
     def _authenticate(self, generation, endpoint, username, password, register, authentication=None):
         sock = None
         key, error, keep = None, None, False
-        retryable, capabilities = False, ()
+        retryable, capabilities, prepared = False, (), None
         context = authentication
         # The fallback supports direct protocol tests. Normal authentication
         # always has a snapshot captured before its worker starts.
@@ -145,9 +162,10 @@ class ConnectionManager:
                 raise ValueError(key_error)
             advertised = public_packet.get('capabilities', ())
             if (isinstance(advertised, (list, tuple))
-                    and all(isinstance(item, str) for item in advertised)
-                    and 'message_sync' in advertised):
-                capabilities = ('message_sync',)
+                    and all(isinstance(item, str) for item in advertised)):
+                capabilities = tuple(item for item in ('message_sync', 'e2ee_v1') if item in advertised)
+            if context is not None and context.prepare is not None and 'e2ee_v1' not in capabilities:
+                raise ValueError('服务器尚不支持端到端加密，请升级服务端；不会降级发送明文消息')
             key = get_random_bytes(16)
             encrypted = PKCS1_OAEP.new(public_key).encrypt(key)
             protocol.send_msg(sock, {'type': 'session_key', 'protocol': transport.VERSION,
@@ -163,6 +181,10 @@ class ConnectionManager:
                 raise ConnectionError('服务器未响应或连接已关闭')
             if not isinstance(response, dict) or response.get('type') != expected or not response.get('success'):
                 raise ValueError(response.get('error', '认证失败') if isinstance(response, dict) else '服务器未响应')
+            if not register and context is not None and context.prepare is not None:
+                if 'e2ee_identity' not in response:
+                    raise ValueError('服务器未提供已登记的端到端身份，连接已停止')
+                prepared = context.prepare(response['e2ee_identity'])
             with self._lock:
                 keep = not register and generation == self.generation and not self.closing
         except Exception as exc:
@@ -171,8 +193,11 @@ class ConnectionManager:
         finally:
             if not keep:
                 self._close_socket(sock)
+                if prepared is not None:
+                    prepared.lock()
+                    prepared = None
             self.events.put(AuthResult(generation, username, register, endpoint, sock, key, error,
-                                       retryable, capabilities))
+                                       retryable, capabilities, prepared))
 
     def accept_auth(self, result):
         """Called by the controller on its owner thread, before starting reception."""
@@ -307,3 +332,5 @@ class ConnectionManager:
                 return
             if isinstance(event, AuthResult):
                 self._close_socket(event.sock)
+                if event.encryption is not None:
+                    event.encryption.lock()

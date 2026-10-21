@@ -28,6 +28,8 @@
 
 ## 本地验证
 
+端到端加密改动需要覆盖 `test_e2ee_crypto.py`、`test_key_vault.py`、`test_encryption_view.py`、`test_e2ee_python.py` 和 `test_e2ee_interop.py`，以及控制器的信任/降级/重放测试。真实互操作用例同时验证两种服务端及共享数据库迁移。请保持 `ChatClient` 的正常入口默认要求端到端加密；旧协议兼容测试明确注入 `encryption=False`，界面不提供关闭加密的开关。不要仅凭服务端的历史标志信任已撤销密钥或旧群成员。
+
 使用 Python 3.11+、Go 1.24.5+。Linux 需要 Tk、Xvfb 和 xauth；Windows 在桌面会话中运行，无需 `xvfb-run`。
 
 ```bash
@@ -59,7 +61,7 @@ python -m unittest discover -s tests -p test_system_reliability.py -v
 
 1. 同步更新根目录和 `go-server/` 的 `VERSION`，版本格式为 `vX.Y.Z`。
 2. 更新两处 `RELEASE_NOTES.md`，说明修复、兼容性和升级方式。
-3. 新增 Python 模块时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件与校验文件清单。PyInstaller 会自动收集静态导入的模块。
+3. 新增 Python 模块时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件与校验文件清单。PyInstaller 会自动收集静态导入的模块；加密库动态加载的曲线模块通过 `--collect-submodules Crypto.PublicKey` 收集。构建和发布流水线必须执行成品的 `--check-encryption-runtime` 自检，验证曲线签名、密钥协商和本机密钥库依赖。
 4. 将验证通过的提交推送到 `master`。版本文件的变更自动触发 `Release Chatroom`。
 5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含源码、可执行文件和 `SHA256SUMS`。
 

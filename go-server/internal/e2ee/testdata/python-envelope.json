@@ -1,0 +1,41 @@
+{
+  "alice_bundle": {
+    "exchange": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ=",
+    "sign": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+    "v": 1
+  },
+  "alice_proof": "EhoyneeueXXlV0mpdWvygOLOVKHF0CDyT+jUFRhEMHKrwkoFA1u6Un/IRpgKe0KJtPzY6VGomFq2H9ODjs4VCg==",
+  "alice_username": "alice\ud83d\ude00",
+  "bob_bundle": {
+    "exchange": "Z13VdO13iTELPS52gfN5C0ZsdzsVIf7PNld5WDcepS8=",
+    "sign": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+    "v": 1
+  },
+  "bob_proof": "VfiHz9Ikk8e1sU5LoxZ2d0hZnlB/pp34+L1ew3g3GwexfvnmRsY21FAwyzLbARKHDF8vUJd2O2Wic+QxCn0QAA==",
+  "bob_username": "\u9ca4\u9c7c\ud834\udd1e",
+  "envelope": {
+    "body": "+rOvfrgtae7mzii0z5iPx9CS6NVumcBhTSEYf0Cjd0GigLNEFlezXIo+75SZ5To=",
+    "ephemeral": "7lJwpBC8hVETx+uddHzQluDPdlkxRY0iUq1JVUzH20E=",
+    "id": "0123456789abcdef0123456789abcdef",
+    "keys": {
+      "alice\ud83d\ude00": "Wy4hOaOY8qL4Kk9oEcZ82ZpMw/YqZJthJyVS+IJwlckDUpinbX9scCS4SGjLTL5A8YAXveSB8eY1QN4B",
+      "\u9ca4\u9c7c\ud834\udd1e": "A3jd5Ui+v9LL27L1h7vOq/Tq9o/e5YlCGRDU+oMG3a5B4UlWXP2E2j9PPO/4eSKuIC8aRBbMXZ+iSmtZ"
+    },
+    "kind": "group",
+    "nonce": "VjA7HtP9dxFC8SBC",
+    "recipients": {
+      "alice\ud83d\ude00": "1eeb2261f7d101b3807fb934c54dc544d441df89d26d7590b31593c6462c8c7e",
+      "\u9ca4\u9c7c\ud834\udd1e": "981616e273578cee76e4ef1599be37081b745ed2e98e952c68f7bbe0cf53b749"
+    },
+    "sender": "alice\ud83d\ude00",
+    "sender_key": {
+      "exchange": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ=",
+      "sign": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "v": 1
+    },
+    "signature": "gO5hUFEjam1kMcF8fx62P63L/9VhgPVSr0sQTLsG1UvRyzaJyzEt/R78XoyD4/xidouf1AKTJOspMsn9x12zCQ==",
+    "target": "\u7fa4\u7ec4<>&\u2028\u2029/\ud83d\udd10",
+    "v": 1
+  },
+  "notice": "PUBLIC TEST-ONLY SEEDS; NEVER USE THESE IDENTITIES FOR REAL MESSAGES"
+}

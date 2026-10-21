@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.5
 
 require (
+	filippo.io/edwards25519 v1.1.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.40.0
 	modernc.org/sqlite v1.38.0

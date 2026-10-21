@@ -185,6 +185,7 @@ func TestLegacyNearLimitMessagesRemainReplayableWithoutTruncation(t *testing.T) 
 			timestamp := "2000-01-01 00:00:00"
 			legacyBase := chatPayload("private_chat", "alice", "bob", "", timestamp, math.MaxInt64)
 			delete(legacyBase, "history") // Old releases did not mark live frames.
+			delete(legacyBase, "encryption")
 			base, err := json.Marshal(legacyBase)
 			if err != nil {
 				t.Fatal(err)
@@ -197,6 +198,7 @@ func TestLegacyNearLimitMessagesRemainReplayableWithoutTruncation(t *testing.T) 
 			}
 			legacy := chatPayload("private_chat", "alice", "bob", content, timestamp, math.MaxInt64)
 			delete(legacy, "history")
+			delete(legacy, "encryption")
 			if err = protocol.ValidateMessage(legacy); err != nil {
 				t.Fatalf("fixture was not accepted by the legacy size check: %v", err)
 			}

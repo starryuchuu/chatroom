@@ -56,11 +56,13 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 ## Current development protocol
 
-When upgrading from an unauthenticated protocol version, upgrade the Python client and the chosen server together. Protocol v2 rejects legacy unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect the entire frame against modification, reflection and replay. Routing/control metadata remains visible. This is **client/server encryption, not end-to-end encryption**: the server decrypts message bodies for delivery and encrypts sensitive fields at rest in SQLite.
+Upgrade the Python client and chosen server together. Protocol v2 rejects unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect each transport frame. Starting with v1.2.0, the desktop client also encrypts private and group messages **end to end** with Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
+
+The client requires a separate local key passphrase, different from the account password. Neither this passphrase nor private keys are uploaded. Compare contact fingerprints through another trusted channel, explicitly approve group recipients, and export an encrypted key backup from the encryption/key window. Restore that backup before logging in on another computer. Lost private keys cannot be recovered from the account password or server database. First-use trust requires independent verification, and this protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](END_TO_END_ENCRYPTION.md).
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
 
-The client requires `client.py`, the complete `chatroom_client/` package, and `transport.py`. Download `chatroom-v1.1.0-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `history_store.py`, `pending_store.py`, and `storage.py`. Protocol v2 and storage format v1 remain unchanged. Clients can still connect to v1.0.10–v1.0.17 servers; complete missed-message recovery requires a v1.1.0 server.
+The client requires `client.py`, the complete `chatroom_client/` package, `transport.py`, and the dependencies. Download `chatroom-v1.2.0-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `e2ee_server.py`, `history_store.py`, `pending_store.py`, `storage.py`, and the client package's public cryptographic validators. Transport v2 and storage encryption v1 remain unchanged; an additive schema upgrade records public identities and marks encrypted message envelopes. The v1.2.0 desktop client requires a v1.2.0 server and never silently downgrades. Back up the database and storage key before upgrading; do not run old servers against the upgraded database.
 
 ## Desktop settings and recovery
 
@@ -107,6 +109,11 @@ chatroom/
 │   ├── models.py                     # Session, conversation and message data
 │   ├── connection.py                 # Authentication, socket workers and shutdown
 │   ├── protocol.py                   # TCP framing, encryption and identity checks
+│   ├── e2ee_crypto.py                # End-to-end envelopes, signatures and public keys
+│   ├── key_vault.py                  # Encrypted local keys, backups and trust records
+│   ├── encryption.py                 # End-to-end messaging and identity coordination
+│   ├── encryption_view.py            # Fingerprints, group approval and key recovery
+│   ├── runtime_check.py              # Frozen encryption dependency self-check
 │   ├── events.py                     # Server event dispatch and handlers
 │   ├── history.py                    # Retry-safe history pagination
 │   ├── sync.py                       # Complete bounded catch-up and durable cursor
@@ -119,6 +126,7 @@ chatroom/
 │   └── group_view.py                 # Group windows
 ├── CLIENT_ARCHITECTURE.md              # Client architecture and ownership rules
 ├── server.py                          # Python server code (group chat/session key/group management/database persistence)
+├── e2ee_server.py                      # Public identity and encrypted envelope validation
 ├── requirements.txt                   # Python dependency list
 ├── go-server/                         # Go language implementation of the server
 │   ├── README.md                      # Go server documentation

@@ -144,7 +144,7 @@ class PythonSyncTests(unittest.TestCase):
         s = self.server
         payload = {'type': 'private_chat', 'from': 'bob', 'to': 'alice',
                    'content': '', 'timestamp': 'now', 'message_id': 9223372036854775807,
-                   'history': True, 'sync': True}
+                   'history': True, 'sync': True, 'encryption': 'legacy'}
         content = 'x' * (s.MAX_MESSAGE_LEN - len(json.dumps(payload).encode('utf-8')))
         s.validate_chat_packet('private_chat', 'bob', 'alice', None, content, 'now')
         with self.assertRaisesRegex(ValueError, '过长'):
