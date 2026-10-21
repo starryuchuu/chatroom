@@ -19,12 +19,15 @@
 | `chatroom_client/reconnect.py` / `sync.py` | 重连退避、取消令牌、断线消息补取和完成游标 |
 | `go-server/internal/` | Go 服务端的协议、存储、业务处理和连接管理 |
 | `tests/` | Python、真实 Tk 窗口及 Python / Go 互操作回归 |
+| `docs/` | 使用指南、设计说明与截图；历史审查和验证记录放在 `docs/reviews/` |
+
+新增技术文档和截图统一放在 `docs/`，并更新[文档导航](docs/README.md)。根目录的 README、贡献指南和发布说明保留为入口。
 
 客户端后台线程由 `ConnectionManager` 创建和跟踪，线程目标不能捕获应用控制器或 Tk 对象。线程通过 `AuthResult` / `ServerEvent` 交付数据，由应用事件泵在主线程处理。关闭时中断网络和发送队列，等待线程退出、清理未消费认证结果后再销毁 Tk。视图在销毁聊天控件前取消排队的滚动回调。
 
 会话统一使用 `ChatKey(kind, target)`，私聊用户名与群 ID 属于不同命名空间。消息、顺序、去重集合、未读编号和历史游标由 `Conversation` 一起管理。历史分页只在收到对应会话的 `history_end` 后推进游标，失败保留请求游标；登录快照或其他会话的完成事件不能清除当前分页请求。手动断开与新账号登录通过 `ClientState.reset_session()` 重置账号数据并保留进程内草稿；异常断线保留模型、视图和输入，重新认证后补取遗漏消息。视图创建函数不能初始化或清空业务数据。设置不得保存密码或正文；同步完成游标必须在未读状态保存成功后推进。
 
-依赖方向、事件流和扩展方式见[客户端结构说明](CLIENT_ARCHITECTURE.md)。修改功能时测试可使用无 Tk 的模型或注入模拟视图；控件行为继续由真实 Tk 测试覆盖，不再绕过构造函数手动拼装 `ChatClient`。
+依赖方向、事件流和扩展方式见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。修改功能时测试可使用无 Tk 的模型或注入模拟视图；控件行为继续由真实 Tk 测试覆盖，不再绕过构造函数手动拼装 `ChatClient`。
 
 ## 本地验证
 
@@ -53,7 +56,7 @@ CHATROOM_STRESS_USERS=8 CHATROOM_STRESS_GROUP=100 CHATROOM_STRESS_PRIVATE=50 \
 python -m unittest discover -s tests -p test_system_reliability.py -v
 ```
 
-压力参数只影响并发收发场景：客户端数范围为 3–32，群消息数为每人 1–300，私聊消息数为每人 1–100。更高并发可设置 `32 / 25 / 10`，每端共 1,120 条消息。此测试文件不创建 Tk 窗口，无需 Xvfb。测试结果和边界见[可靠性验证记录](RELIABILITY_VALIDATION.md)。
+压力参数只影响并发收发场景：客户端数范围为 3–32，群消息数为每人 1–300，私聊消息数为每人 1–100。更高并发可设置 `32 / 25 / 10`，每端共 1,120 条消息。此测试文件不创建 Tk 窗口，无需 Xvfb。测试结果和边界见[可靠性验证记录](docs/reviews/RELIABILITY_VALIDATION.md)。
 
 客户端测试通过 `ChatClient(root, preferences=PreferencesStore(persistent=False))` 注入内存设置，或使用独立临时配置文件，不应读写开发者的个人设置。`test_client_features_integration.py` 使用真实 Tk 客户端与两种服务端，覆盖 205 条离线消息的跨页补取、未读/免打扰、会话和草稿保留、取消重连及不自动重发。
 

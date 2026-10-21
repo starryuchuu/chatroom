@@ -1,6 +1,6 @@
 # Encrypted Chat Room
 
-[中文文档](./README.md) | [Go Server Documentation](./go-server/README.md)
+[中文文档](README.md) | [Documentation](docs/README.md) | [Go Server Documentation](go-server/README.md)
 
 ## Project Overview
 
@@ -39,11 +39,11 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 - 🖼️ **Interface Showcase**
   - Login Interface
-    ![Login Interface](images/login%20in.PNG)
+    ![Login Interface](docs/images/login%20in.PNG)
   - Main Page
-    ![Main Page](images/main%20page.png)
+    ![Main Page](docs/images/main%20page.png)
   - Chat Interface
-    ![Chat Interface](images/chat.PNG)
+    ![Chat Interface](docs/images/chat.PNG)
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
@@ -58,7 +58,7 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 Upgrade the Python client and chosen server together. Protocol v2 rejects unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect each transport frame. Starting with v1.2.0, the desktop client also encrypts private and group messages **end to end** with Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
-The client requires a separate local key passphrase, different from the account password. Neither this passphrase nor private keys are uploaded. Compare contact fingerprints through another trusted channel, explicitly approve group recipients, and export an encrypted key backup from the encryption/key window. Restore that backup before logging in on another computer. Lost private keys cannot be recovered from the account password or server database. First-use trust requires independent verification, and this protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](END_TO_END_ENCRYPTION.md).
+The client requires a separate local key passphrase, different from the account password. Neither this passphrase nor private keys are uploaded. Compare contact fingerprints through another trusted channel, explicitly approve group recipients, and export an encrypted key backup from the encryption/key window. Restore that backup before logging in on another computer. Lost private keys cannot be recovered from the account password or server database. First-use trust requires independent verification, and this protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “加载更早的消息” button retrieves earlier pages for the selected conversation.
 
@@ -103,58 +103,29 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
 
 ```
 chatroom/
-├── client.py                          # Client entry point and server configuration
-├── chatroom_client/                   # Composed desktop client
-│   ├── app.py                        # Application actions and event pump
-│   ├── models.py                     # Session, conversation and message data
-│   ├── connection.py                 # Authentication, socket workers and shutdown
-│   ├── protocol.py                   # TCP framing, encryption and identity checks
-│   ├── e2ee_crypto.py                # End-to-end envelopes, signatures and public keys
-│   ├── key_vault.py                  # Encrypted local keys, backups and trust records
-│   ├── encryption.py                 # End-to-end messaging and identity coordination
-│   ├── encryption_view.py            # Fingerprints, group approval and key recovery
-│   ├── runtime_check.py              # Frozen encryption dependency self-check
-│   ├── events.py                     # Server event dispatch and handlers
-│   ├── history.py                    # Retry-safe history pagination
-│   ├── sync.py                       # Complete bounded catch-up and durable cursor
-│   ├── reconnect.py                  # Retry delays and cancellation tokens
-│   ├── preferences.py                # Private profiles and account metadata
-│   ├── settings_view.py              # Server and notification preferences UI
-│   ├── activity.py                   # Unread/read markers and notification policy
-│   ├── notifications.py              # Native desktop notices and bell fallback
-│   ├── view.py                       # Tk widgets and rendering
-│   └── group_view.py                 # Group windows
-├── CLIENT_ARCHITECTURE.md              # Client architecture and ownership rules
-├── server.py                          # Python server code (group chat/session key/group management/database persistence)
-├── e2ee_server.py                      # Public identity and encrypted envelope validation
-├── requirements.txt                   # Python dependency list
-├── go-server/                         # Go language implementation of the server
-│   ├── README.md                      # Go server documentation
-│   ├── go.mod / go.sum                # Go module definition and checksums
-│   ├── start.bat                      # Windows startup script
-│   ├── cmd/server/main.go             # Server main program entry point
-│   └── internal/
-│       ├── crypto/                    # Encryption module
-│       ├── database/                  # Database operations (incl. Argon2id hashing)
-│       ├── handlers/                  # Request handlers (auth/chat)
-│       ├── models/                    # Data models
-│       ├── protocol/                  # Communication protocol
-│       ├── server/                    # Server core logic
-│       └── types/                     # Type definitions
-├── images/                            # Interface screenshots
-├── transport.py                       # Protocol v2 frame authentication
-├── history_store.py                   # Bounded history pagination
-├── pending_store.py                   # Durable requests and invitations
-├── tests/
-│   ├── test_regressions.py            # Python and Tk regression tests
-│   ├── test_transport.py              # Frame authentication and replay tests
-│   └── test_go_interop.py             # Real Go server interoperability
-├── .github/workflows/                 # GitHub Actions workflows
-│   └── build-executables.yml          # Cross-platform auto build
-├── README.md                          # Chinese documentation
-├── README_en.md                       # English README
-├── GROUP_FEATURES_GUIDE.md            # Group features guide
-└── LICENSE                            # GNU GPL v3 License
+├── client.py                 # Desktop client entry point
+├── server.py                 # Python server entry point
+├── chatroom_client/          # Desktop client components
+├── go-server/                # Go server and build files
+├── docs/                     # Documentation, guides, design notes and screenshots
+│   ├── README.md              # Documentation index
+│   ├── images/                # Interface screenshots
+│   └── reviews/               # Historical reviews and validation
+├── tests/                    # Python, Tk and Go interoperability tests
+├── transport.py              # Shared authenticated transport
+├── storage.py                # Shared encrypted storage
+├── e2ee_server.py            # Public identity and encrypted envelope validation
+├── history_store.py          # History pagination
+├── pending_store.py          # Durable pending requests
+├── requirements.txt          # Python dependencies
+├── VERSION                   # Project version
+├── README.md                 # Chinese project overview
+├── README_en.md              # English project overview
+├── CONTRIBUTING.md           # Development, testing and release conventions
+├── RELEASE_NOTES.md          # Current release notes
+├── .github/                  # CI and release workflows
+├── .gitignore                # Runtime and build exclusions
+└── LICENSE                   # GNU GPL v3 license
 ```
 
 ## Testing
@@ -300,6 +271,6 @@ The independent 32-byte key defaults to `chat.db.key` beside the database. Set `
 
 Stop the old server before upgrading. Startup transactionally migrates legacy data and removes old free pages/WAL before listening. Failed migrations roll back; interrupted cleanup resumes on restart. Missing, corrupt or mismatched keys stop startup. Do not open migrated databases with older servers. Wire protocol v2 is unchanged; v1.0.10 clients remain compatible.
 
-This encrypts sensitive fields rather than the entire SQLite file: table structure, IDs, group IDs, chat types, relationships between opaque indexes, request expiry times and counts remain visible. The running server can decrypt records. Old backups, logs and deleted underlying storage blocks are outside the migration scope. See [storage format and recovery](STORAGE_ENCRYPTION.md).
+This encrypts sensitive fields rather than the entire SQLite file: table structure, IDs, group IDs, chat types, relationships between opaque indexes, request expiry times and counts remain visible. The running server can decrypt records. Old backups, logs and deleted underlying storage blocks are outside the migration scope. See [storage format and recovery](docs/STORAGE_ENCRYPTION.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release instructions.

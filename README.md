@@ -1,6 +1,6 @@
 # 🔐 加密聊天室 / Encrypted Chat Room
 
-[English Version](./README_en.md) | [群组功能指南](./GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](./go-server/README.md)
+[English Version](README_en.md) | [文档目录](docs/README.md) | [群组功能指南](docs/GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](go-server/README.md)
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
@@ -11,7 +11,7 @@
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v1.2.0 桌面客户端使用 Ed25519、X25519 与 AES-256-GCM 对新消息进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v1.2.0 桌面客户端使用 Ed25519、X25519 与 AES-256-GCM 对新消息进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -29,7 +29,7 @@
 
 | 登录界面 | 主界面 | 聊天界面 |
 |---------|--------|---------|
-| ![登录界面](images/login%20in.PNG) | ![主界面](images/main%20page.png) | ![聊天界面](images/chat.PNG) |
+| ![登录界面](docs/images/login%20in.PNG) | ![主界面](docs/images/main%20page.png) | ![聊天界面](docs/images/chat.PNG) |
 
 ---
 
@@ -106,7 +106,7 @@ python client.py
 
 在聊天页 **端到端加密与密钥…** 查看和核对指纹、导出加密备份或更改本机口令。联系人密钥变化会停止发送，必须通过其他可信渠道重新核对。群接收人变化需要明确确认。换电脑时在登录页恢复原备份；丢失私钥和所有备份后，服务端和账号密码无法恢复历史端到端消息。
 
-首次公钥信任需要独立渠道核对；本协议不提供长期接收私钥后来泄露时的前向保密。服务端仍可观察路由与群成员等元数据。完整保护范围、群历史和备份迁移说明见[端到端加密文档](END_TO_END_ENCRYPTION.md)。
+首次公钥信任需要独立渠道核对；本协议不提供长期接收私钥后来泄露时的前向保密。服务端仍可观察路由与群成员等元数据。完整保护范围、群历史和备份迁移说明见[端到端加密文档](docs/END_TO_END_ENCRYPTION.md)。
 
 ### 断线自动重连
 
@@ -154,59 +154,29 @@ python client.py
 
 ```
 chatroom/
-├── client.py                          # 客户端入口及服务器配置
-├── chatroom_client/                   # Python 客户端组件
-│   ├── app.py                        # 应用操作、事件泵及退出协调
-│   ├── models.py                     # 会话、消息与账号状态
-│   ├── connection.py                 # 认证、收发线程和连接生命周期
-│   ├── protocol.py                   # TCP 分帧、正文加密及身份校验
-│   ├── e2ee_crypto.py                # 端到端封装、签名与公钥校验
-│   ├── key_vault.py                  # 本机加密密钥库、备份与信任记录
-│   ├── encryption.py                 # 端到端收发与身份协调
-│   ├── encryption_view.py            # 指纹核对、群确认与密钥恢复
-│   ├── runtime_check.py              # 安装包加密依赖自检
-│   ├── events.py                     # 服务器事件处理表
-│   ├── history.py                    # 历史分页与失败重试
-│   ├── sync.py                       # 断线消息分页补取与完成游标
-│   ├── reconnect.py                  # 重连退避与取消令牌
-│   ├── preferences.py                # 私有配置文件、服务器配置和账号元数据
-│   ├── settings_view.py              # 服务器与提醒设置窗口
-│   ├── activity.py                   # 未读、已读位置与提醒策略
-│   ├── notifications.py              # 原生桌面提醒及提示音回退
-│   ├── view.py                       # Tk 界面与消息渲染
-│   └── group_view.py                 # 群创建及信息窗口
-├── CLIENT_ARCHITECTURE.md              # 客户端结构及维护约定
-├── server.py                          # Python 服务端（数据库/加密/群聊）
-├── e2ee_server.py                      # 服务端公开身份与密文验证
-├── requirements.txt                   # Python 依赖包
-├── go-server/                         # Go 服务端实现
-│   ├── README.md                      # Go 服务端文档
-│   ├── go.mod / go.sum                # Go 模块定义与校验和
-│   ├── start.bat                      # Windows 启动脚本
-│   ├── cmd/server/main.go             # 服务端入口
-│   └── internal/
-│       ├── crypto/                    # 加密模块
-│       ├── database/                  # 数据库操作（含 Argon2 密码哈希）
-│       ├── handlers/                  # 请求处理器（认证/聊天）
-│       ├── models/                    # 数据模型
-│       ├── protocol/                  # 通信协议
-│       ├── server/                    # 服务端核心
-│       └── types/                     # 类型定义
-├── images/                            # 界面截图
-├── storage.py                         # 数据库敏感字段加密及迁移
-├── STORAGE_ENCRYPTION.md              # 存储格式、备份和恢复
-├── transport.py                       # 协议 v2 完整报文认证
-├── history_store.py                   # Python 历史分页查询
-├── pending_store.py                   # Python 申请与邀请持久化
-├── tests/
-│   ├── test_regressions.py            # Python 服务端、客户端和 Tk 回归测试
-│   ├── test_transport.py              # 报文篡改、重放、并发及跨语言向量
-│   └── test_go_interop.py             # 与真实 Go 服务端的网络互操作测试
-├── .github/workflows/                 # GitHub Actions 构建工作流
-│   └── build-executables.yml          # 跨平台自动构建
-├── README.md                          # 中文文档
-├── README_en.md                       # 英文文档
-└── GROUP_FEATURES_GUIDE.md            # 群组功能详解
+├── client.py                 # 客户端启动入口
+├── server.py                 # Python 服务端启动入口
+├── chatroom_client/          # 客户端组件
+├── go-server/                # Go 服务端及其构建文件
+├── docs/                     # 文档导航、使用指南、设计说明与截图
+│   ├── README.md              # 文档导航
+│   ├── images/                # 界面截图
+│   └── reviews/               # 历史审查与验证记录
+├── tests/                    # Python、Tk 及 Go 互操作测试
+├── transport.py              # 共享传输协议
+├── storage.py                # 共享加密存储
+├── e2ee_server.py            # 端到端公开身份与密文校验
+├── history_store.py          # 历史分页查询
+├── pending_store.py          # 待处理申请持久化
+├── requirements.txt          # Python 依赖
+├── VERSION                   # 项目版本
+├── README.md                 # 中文项目入口
+├── README_en.md              # 英文项目入口
+├── CONTRIBUTING.md           # 开发、测试与发布约定
+├── RELEASE_NOTES.md          # 当前发布说明
+├── .github/                  # 持续集成与发布工作流
+├── .gitignore                # 本地运行与构建文件的忽略规则
+└── LICENSE                   # GNU GPL v3 许可证
 ```
 
 ---
@@ -414,7 +384,7 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 本分支采用协议 v2，不接受未认证报文或明文登录。v1.2.0 桌面客户端要求支持端到端加密的 v1.2.0 服务端；旧客户端仅在尚未登记端到端身份的旧账号之间保留兼容。源码运行客户端需要 `client.py`、完整的 `chatroom_client/` 目录、`transport.py` 和依赖，可直接下载 `chatroom-v1.2.0-client.zip`。完整项目请下载源码压缩包；Python 服务端还需要 `e2ee_server.py`、`history_store.py`、`pending_store.py`、`storage.py` 和完整客户端包中的加密校验模块。
 
-客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
+客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
 
 ### 最新功能
 
@@ -434,7 +404,7 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ## 📄 许可证
 
-本项目采用 [GNU GPL v3](./LICENSE) 开源许可证。
+本项目采用 [GNU GPL v3](LICENSE) 开源许可证。
 
 ---
 
@@ -457,6 +427,6 @@ Python / Go 服务端使用相同的字段级存储加密格式。聊天正文�
 
 升级前先停止旧服务端并备份数据库。新版在监听端口之前，按事务迁移旧账号、聊天和群组等数据，再清理旧空闲页及 WAL。迁移失败会回滚；清理中断会在下次启动继续。密钥丢失、损坏或不匹配时停止启动，不生成替代密钥，也不回退到明文读取。迁移后的数据库只能供支持存储 v1 的服务端使用；客户端协议仍是 v2，v1.0.10 客户端可继续使用。
 
-这是敏感字段加密，SQLite 表结构、记录 ID、群 ID、消息类型、关联索引、申请过期时间及记录数量仍可见。服务端运行时会解密数据，属于服务端静态数据保护。原有明文备份、日志以及底层存储已删除块不在此次自动迁移的保护范围内。格式及恢复说明见 [存储说明](STORAGE_ENCRYPTION.md)。
+这是敏感字段加密，SQLite 表结构、记录 ID、群 ID、消息类型、关联索引、申请过期时间及记录数量仍可见。服务端运行时会解密数据，属于服务端静态数据保护。原有明文备份、日志以及底层存储已删除块不在此次自动迁移的保护范围内。格式及恢复说明见 [存储说明](docs/STORAGE_ENCRYPTION.md)。
 
 开发与发布流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。

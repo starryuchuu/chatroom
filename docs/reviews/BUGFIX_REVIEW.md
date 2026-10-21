@@ -1,4 +1,4 @@
-> 本文件记录 2026-10-08 的历史修复。当前开发分支已继续实现完整报文认证、请求持久化、历史分页及 Go 适配，见 [当前发布说明](RELEASE_NOTES.md) 与 [协议 v2](go-server/PROTOCOL_COMPATIBILITY.md)。
+> 本文件记录 2026-10-08 的历史修复。当前开发分支已继续实现完整报文认证、请求持久化、历史分页及 Go 适配，见 [当前发布说明](../../RELEASE_NOTES.md) 与 [协议 v2](../../go-server/PROTOCOL_COMPATIBILITY.md)。
 
 # Python 聊天客户端与服务端审查修复
 
