@@ -39,11 +39,13 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 - 🖼️ **Interface Showcase**
   - Login Interface
-    ![Login Interface](docs/images/login%20in.PNG)
+    ![Login interface with server profiles and local encryption passphrase](docs/images/login.png)
   - Main Page
-    ![Main Page](docs/images/main%20page.png)
+    ![Main interface with unread counts, conversation previews and notifications](docs/images/main.png)
   - Chat Interface
-    ![Chat Interface](docs/images/chat.PNG)
+    ![Chat interface with end-to-end encrypted messages and key management](docs/images/chat.png)
+
+  Captured from the current v1.2.0 Linux client on 2026-10-21, showing server profiles, the local key passphrase, unread previews and end-to-end encrypted chat. All accounts, groups and messages are synthetic demo data; the connection uses a loopback address. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
