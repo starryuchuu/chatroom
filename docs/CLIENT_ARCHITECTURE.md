@@ -91,7 +91,7 @@ v1.2.0 的本机密钥口令由主线程读取，密钥库准备任务不持有 
 
 新增服务器事件时，在 `ServerEvents.handlers` 注册处理函数，更新模型后调用视图接口。修改网络生命周期时，应在连接层验证取消、过期结果和旧连接隔离；控件变化通过真实 Tk 测试验证。避免在连接模块引入控制器 / 视图回调，避免在窗口构造函数里清空业务状态。
 
-测试入口和命令见 [CONTRIBUTING.md](CONTRIBUTING.md)。`test_client_components.py` 不创建 Tk 窗口；`test_regressions.py` 的真实 Tk 测试覆盖选择、输入确认、滚轮、群窗口和退出；`test_history_recovery.py` 检查部分分页失败后的重试；`test_client_drafts.py` 检查账号与端点隔离；`test_go_interop.py` 包含真实客户端到 Go 服务端的登录和发送路径。
+测试入口和命令见 [CONTRIBUTING.md](../CONTRIBUTING.md)。`test_client_components.py` 不创建 Tk 窗口；`test_regressions.py` 的真实 Tk 测试覆盖选择、输入确认、滚轮、群窗口和退出；`test_history_recovery.py` 检查部分分页失败后的重试；`test_client_drafts.py` 检查账号与端点隔离；`test_go_interop.py` 包含真实客户端到 Go 服务端的登录和发送路径。
 
 v1.1.0 在 Linux / Tk 9 上完整 215 项回归通过，未跳过 Go 测试；包括真实客户端断线后补取 205 条消息、未读去重、免打扰、草稿与会话保留、取消重连及配置落盘隔离。发布流水线继续在 Windows / Linux 上执行完整回归。
 
