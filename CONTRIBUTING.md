@@ -61,7 +61,7 @@ python -m unittest discover -s tests -p test_system_reliability.py -v
 
 1. 同步更新根目录和 `go-server/` 的 `VERSION`，版本格式为 `vX.Y.Z`。
 2. 更新两处 `RELEASE_NOTES.md`，说明修复、兼容性和升级方式。
-3. 新增 Python 模块时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件与校验文件清单。PyInstaller 会自动收集静态导入的模块。
+3. 新增 Python 模块时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件与校验文件清单。PyInstaller 会自动收集静态导入的模块；加密库动态加载的曲线模块通过 `--collect-submodules Crypto.PublicKey` 收集。构建和发布流水线必须执行成品的 `--check-encryption-runtime` 自检，验证曲线签名、密钥协商和本机密钥库依赖。
 4. 将验证通过的提交推送到 `master`。版本文件的变更自动触发 `Release Chatroom`。
 5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含源码、可执行文件和 `SHA256SUMS`。
 
