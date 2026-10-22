@@ -74,4 +74,4 @@ python scripts/build_opaque.py
 
 脚本使用锁定依赖构建，并更新 Python 与 Go 的两份模块；发布前需要验证两份 SHA-256 一致。核心使用 `opaque-ke=4.0.1`、[RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html)、Ristretto255 / TripleDH-SHA512 和 Argon2id。上游 [opaque-ke](https://github.com/facebook/opaque-ke#readme) 有历史审计记录，其报告针对早期版本；不能据此声称 4.0.1、WASM 包装或本聊天室集成经过独立审计。OPAQUE 也不能把弱密码变成高熵秘密，或保护已被控制的客户端。
 
-消息密钥、群成员变化、首次信任及无长期前向保密等限制见[端到端加密说明](END_TO_END_ENCRYPTION.md)。现有[截图](images/README.md)来自 v1.2.1，保留的是旧版双口令界面。
+消息密钥、群成员变化、首次信任及无长期前向保密等限制见[端到端加密说明](END_TO_END_ENCRYPTION.md)。现有[截图](images/README.md)于 2026-10-22 从已发布的 v1.3.0 实拍，展示单密码登录、“迁移旧账号…”和“解锁旧密钥…”入口。

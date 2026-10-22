@@ -33,6 +33,6 @@ Run commands from the repository root unless a command explicitly changes direct
 
 These reports document checks for specific releases. Refer to the current guides and release notes for current behavior and limits.
 
-界面截图位于 [images/](images/)，目前保留 v1.2.1 历史界面，不代表 v1.3.0 的单密码流程。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
+界面截图位于 [images/](images/)，于 2026-10-22 从已发布 v1.3.0 实拍，展示单密码登录及迁移、旧密钥解锁入口。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
 
-Screenshots are in [images/](images/); the current captures show the historical v1.2.1 interface, not the v1.3.0 single-password flow. Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.
+Screenshots in [images/](images/) were captured from the released v1.3.0 on 2026-10-22 and show single-password login, legacy migration and legacy-key unlock entries. Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.

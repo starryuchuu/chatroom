@@ -26,6 +26,6 @@
 - Python 新增固定运行时依赖 `wasmtime==50.0.1`；Go 使用 `wazero` 执行同一核心。普通源码包已包含预编译 `.wasm`，运行 Python 只需安装 `requirements.txt`，无需 Rust。开发者重建核心需 Rust 1.87+ 和 `wasm32-unknown-unknown`，执行 `python scripts/build_opaque.py` 后同步更新两份 WASM。
 - 服务端自动建立 `opaque_meta` 与 `opaque_accounts`，OPAQUE setup、账号记录和加密身份备份继续受现有存储密钥保护。已有 OPAQUE 账号却缺少 setup 时拒绝启动；恢复或切换 Python / Go 必须保留同一数据库、存储密钥及 RSA 身份，禁止交给旧服务端运行。
 - 尚未迁移的账号保留显式旧协议兼容路径；原有端到端身份的明文降级限制仍生效。旧历史保留且不会追溯加密。v1.3.0 正常客户端不能连接 v1.2.x 或更早的服务端。
-- Windows / Linux 客户端、Python 服务端和 Go 多平台附件随发布工作流构建，位于 [v1.3.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.0)；源码包为 `chatroom-v1.3.0-client.zip` 和 `chatroom-v1.3.0-source.zip`，下载后使用同页 `SHA256SUMS` 校验。当前 README 截图保留自 v1.2.1，展示旧界面，不作为新版单密码流程截图。
+- Windows / Linux 客户端、Python 服务端和 Go 多平台附件随发布工作流构建，位于 [v1.3.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.0)；源码包为 `chatroom-v1.3.0-client.zip` 和 `chatroom-v1.3.0-source.zip`，下载后使用同页 `SHA256SUMS` 校验。README 截图已于 2026-10-22 从已发布 v1.3.0 源码实拍更新，展示单密码登录、旧账号迁移与旧密钥解锁入口；拍摄环境与演示数据见[截图说明](https://github.com/starryuchuu/chatroom/blob/master/docs/images/README.md)。
 
 使用步骤与恢复边界见[单密码指南](https://github.com/starryuchuu/chatroom/blob/master/docs/SINGLE_PASSWORD.md)和[端到端加密说明](https://github.com/starryuchuu/chatroom/blob/master/docs/END_TO_END_ENCRYPTION.md)。

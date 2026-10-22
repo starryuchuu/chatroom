@@ -40,13 +40,13 @@ This project implements an encrypted desktop chat room with Python and Go server
 
 - 🖼️ **Interface Showcase**
   - Login Interface
-    ![Historical v1.2.1 login interface with a separate local encryption passphrase](docs/images/login.png)
+    ![v1.3.0 single-password login with legacy account migration and old-key unlock actions](docs/images/login.png)
   - Main Page
     ![Main interface with unread counts, conversation previews and notifications](docs/images/main.png)
   - Chat Interface
     ![Chat interface with end-to-end encrypted messages and key management](docs/images/chat.png)
 
-  These are historical v1.2.1 Linux screenshots captured on 2026-10-21. The separate local passphrase shown there is not part of normal v1.3.0 login. They have not yet been replaced with v1.3.0 screenshots. Accounts, groups and messages are synthetic demo data on a loopback connection. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
+  Captured from the released v1.3.0 source (`38699452cda8d5cbdd8d50d1efdb762b18de874d`) on 2026-10-22, using Linux, Python 3.13.5, Tk 8.6.16 and 1120 × 760 windows. The login screen shows one password field and the **迁移旧账号…** and **解锁旧密钥…** actions. The demo uses a temporary local Python server, fresh keys and configuration, and synthetic accounts `demo_alice`, `demo_bob` and `demo_carol`. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
