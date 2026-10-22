@@ -55,6 +55,9 @@ func OpenDB(dataSourceName string) error {
 	if err == nil {
 		err = upgradeE2EESchema()
 	}
+	if err == nil {
+		err = upgradeOpaqueSchema()
+	}
 	if err != nil {
 		DB.Close()
 	}

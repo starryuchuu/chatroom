@@ -40,9 +40,9 @@ jobs:
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y python3-tk
     - name: Build server
-      run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server-${{ matrix.platform }} server.py
+      run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server-${{ matrix.platform }} server.py
     - name: Build client
-      run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --clean --name client-${{ matrix.platform }} client.py
+      run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name client-${{ matrix.platform }} client.py
     - name: Check frozen encryption runtime on Linux
       if: runner.os == 'Linux'
       run: ./dist/client-linux --check-encryption-runtime
@@ -127,6 +127,8 @@ jobs:
         pattern: release-*
         path: release-assets
         merge-multiple: true
+    - name: Check release privacy
+      run: python scripts/check_release_privacy.py
     - name: Publish versioned release
       env:
         GH_TOKEN: ${{ github.token }}
@@ -141,9 +143,10 @@ jobs:
           test -s "release-assets/$binary"
         done
         git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
-        git archive --format=zip --output="release-assets/chatroom-${tag}-client.zip" HEAD client.py chatroom_client transport.py requirements.txt LICENSE
-        cp client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py requirements.txt release-assets/
-        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" "chatroom-${tag}-client.zip" client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py requirements.txt > SHA256SUMS)
+        git archive --format=zip --output="release-assets/chatroom-${tag}-client.zip" HEAD client.py chatroom_client transport.py opaque_runtime.py requirements.txt LICENSE
+        cp client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt release-assets/
+        cp chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt release-assets/
+        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" "chatroom-${tag}-client.zip" client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt OPAQUE_THIRD_PARTY_LICENSES.txt > SHA256SUMS)
         gh release create "$tag" release-assets/* \
           --target "$GITHUB_SHA" --title "$tag — Python 客户端与双服务端" \
           --notes-file RELEASE_NOTES.md --latest

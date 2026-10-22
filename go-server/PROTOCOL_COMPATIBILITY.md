@@ -10,7 +10,24 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 认证覆盖序号及全部 JSON 字节，修改 `to`、`gid`、命令类型或其他字段都会被拒绝。两个方向序号独立从 0 递增，重复或乱序的报文被拒绝。方向密钥分别为 `HMAC-SHA256(session_key, "chatroom/frame/v2/client")` 和 `HMAC-SHA256(session_key, "chatroom/frame/v2/server")`。序号在实际发送顺序中分配，避免并发通知乱序；Python 和 Go 测试使用相同的固定向量。
 
-登录继续使用 `encrypted_login`，注册使用 `encrypted_register`。不接受明文 `login`。v1.2.0 的聊天正文使用下述端到端封装；凭据仍通过传输会话的 AES-GCM 加密，路由元数据可见。旧账号的兼容消息由服务端解密后按存储 v1 保存，界面明确标记为非端到端加密。端到端协议不提供长期接收私钥泄露后的前向保密。
+v1.3.0 正常注册、登录及改密使用下述 OPAQUE 交换，不发送明文统一密码。`encrypted_login` / `encrypted_register` 仅保留显式旧协议兼容，OPAQUE 账号拒绝旧认证；不接受明文 `login`。旧账号兼容正文由服务端解密后按存储 v1 保存，界面明确标记为非端到端加密。路由元数据可见；消息协议不提供长期接收私钥泄露后的前向保密。
+
+## v1.3.0 OPAQUE 单密码认证
+
+握手在 `public_key.capabilities` 中声明 `opaque_v1`，同时保留 `e2ee_v1` 和 `message_sync`。正常桌面客户端必须看到 OPAQUE 和端到端能力，缺少时停止，不能将统一密码送入旧认证路径。尚未迁移的旧账号可以继续使用显式旧客户端认证，迁移后拒绝该账号的全部旧密码验证。
+
+两端使用同一固定 `opaque-ke=4.0.1` WASM：Ristretto255 / TripleDH-SHA512、Argon2id（64 MiB、3 次、并行度 1），协议基于 RFC 9807。Python 用 `wasmtime==50.0.1`，Go 用 `wazero`。OPAQUE 上下文固定为 `chatroom/opaque/v1`，账号名及 `server_id` 绑定认证与身份备份；`server_id` 为服务端 RSA 公钥 SPKI DER 的 SHA-256 小写十六进制。
+
+认证步骤均位于已有已认证传输中，二进制字段采用标准 Base64：
+
+- 注册：`opaque_register_start` → `opaque_register_challenge` → `opaque_register_finish` → `register_result`。finish 携带注册记录和客户端已加密的身份备份；不能注册覆盖已有账号。
+- 登录：`opaque_login_start` → `opaque_login_challenge` → `opaque_login_finish` → `login_result`。只有验证最终 KE3 后才返回成功、原 `e2ee_identity`、`opaque_backup` 和 `opaque_generation`，并开始原好友、在线和历史生命周期。旧账号返回 `migration_required`；未知账号使用假 OPAQUE 响应后统一失败。
+- 显式迁移：`opaque_migrate_start` → `opaque_migrate_challenge` → `opaque_migrate_finish` → `login_result`。start 的 `legacy_data` 用原传输 AES-GCM 单独包装旧登录密码，request 使用新密码生成；不得将 `legacy_password` 明文放入报文。客户端必须先解锁原本机身份并核对已登记公钥；finish 将记录和 identity-only 备份以 CAS 原子提交，保留原公开身份。
+- 改密：在独立短连接中，`opaque_change_start` → `opaque_change_challenge` → `opaque_change_finish` → `opaque_change_verified`，重新认证当前密码；随后 `opaque_change_register_start` → `opaque_change_register_challenge` → `opaque_change_register_finish` → `opaque_change_result`。新注册记录与同一身份的备份一起提交，generation CAS 拒绝并发覆盖；不创建重复在线会话。
+
+一条连接仅允许一次严格有序交换，完整认证共享 30 秒期限及现有认证并发、速率限制，不在中间步骤提前释放认证额度。OPAQUE 字段和身份备份各限制为 128 KiB，WASM 输入输出有相同上限、内存限制 256 MiB。正常密码校验和高成本密码强化在客户端/核心中完成，服务器不能依赖明文密码长度检查替代协议验证。
+
+新增 `opaque_meta` 与 `opaque_accounts`，存储 setup、记录、identity-only 备份与代次，敏感内容沿用加密存储。已有 OPAQUE 账号时缺少 setup 拒绝启动，不能重新生成 setup。云备份不包含信任、群批准或重放状态；双层 v2 本机库保留完整本机记录，离线完整备份仍使用 Argon2id。恢复边界及上游历史审计的适用范围见[单密码指南](../docs/SINGLE_PASSWORD.md)。
 
 ## 历史分页
 
@@ -54,4 +71,4 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 ## 存储格式 v1
 
-网络协议与存储格式分别版本化。此修改仍使用协议 v2，兼容 v1.0.10 客户端。Python 与 Go 可以顺序使用同一迁移后的数据库和 `chat.db.key`，不得同时运行或降级使用旧服务端。详情见 [存储说明](../docs/STORAGE_ENCRYPTION.md)。
+网络协议与存储格式分别版本化。帧格式仍为协议 v2；v1.3.0 的旧客户端认证兼容仅适用于尚未迁移账号，不能按帧版本推断已迁移账号可降级登录。Python 与 Go 可以顺序使用同一迁移后的数据库和 `chat.db.key`，不得同时运行或降级使用旧服务端。详情见 [存储说明](../docs/STORAGE_ENCRYPTION.md)。

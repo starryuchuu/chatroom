@@ -30,6 +30,36 @@ def check_encryption_runtime():
         if identity.fingerprint != fingerprint:
             raise RuntimeError('vault unlock changed the local identity')
 
+        # Exercise the bundled native OPAQUE provider and its identity envelope.
+        from opaque_runtime import call
+        server_id = 'e' * 64
+        setup = call({'op': 'server_setup'})['setup']
+        start = call({'op': 'registration_start', 'password': phrase})
+        challenge = call({'op': 'registration_respond', 'setup': setup, 'request': start['request'],
+                          'username': sender, 'server_id': server_id})
+        registered = call({'op': 'registration_finish', 'password': phrase, 'state': start['state'],
+                           'response': challenge['response'], 'username': sender, 'server_id': server_id})
+        login = call({'op': 'login_start', 'password': phrase})
+        challenge = call({'op': 'login_respond', 'setup': setup, 'record': registered['record'],
+                          'request': login['request'], 'username': sender, 'server_id': server_id})
+        finished = call({'op': 'login_finish', 'password': phrase, 'state': login['state'],
+                         'response': challenge['response'], 'username': sender, 'server_id': server_id})
+        verified = call({'op': 'login_verify', 'state': challenge['state'],
+                         'finalization': finished['finalization']})
+        if (registered['export_key'] != finished['export_key'] or
+                verified['session_key'] != finished['session_key']):
+            raise RuntimeError('OPAQUE authentication round trip failed')
+        vault.unlock_opaque(finished['export_key'], server_id)
+        backup = vault.opaque_backup(finished['export_key'], server_id)
+        restored = KeyVault(None, ('runtime-self-check.invalid', 443), sender)
+        try:
+            restored.unlock_opaque(finished['export_key'], server_id, backup=backup,
+                                   remote_identity=identity.public_bundle())
+            if restored.identity.fingerprint != fingerprint:
+                raise RuntimeError('OPAQUE identity backup changed identity')
+        finally:
+            restored.lock()
+
         other = Identity.generate()
         identity_bundle = identity.public_bundle()
         verify_publication(identity_bundle, sender, publish_proof(identity, sender))

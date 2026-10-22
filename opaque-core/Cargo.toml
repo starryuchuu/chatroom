@@ -1,0 +1,26 @@
+[package]
+name = "chatroom-opaque-core"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+opaque-ke = { version = "=4.0.1", features = ["argon2"] }
+base64 = "0.22"
+getrandom = { version = "0.2", features = ["custom"] }
+rand = "0.8"
+serde_json = "1"
+sha2 = "0.10"
+zeroize = "1.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

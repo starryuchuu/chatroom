@@ -4,7 +4,7 @@ import queue
 import time
 import uuid
 
-from .connection import AuthResult, ServerEvent
+from .connection import AuthResult, PasswordChangeResult, ServerEvent
 from .activity import ActivityController
 from .events import ServerEvents
 from .history import HistoryController
@@ -78,18 +78,24 @@ class ChatApplication:
     def connect_server(self, username, password):
         self.start_auth(username, password)
 
-    def start_auth(self, username, password, register=False, window=None):
+    def start_auth(self, username, password, register=False, window=None,
+                   migration_password=None, legacy_passphrase=None):
         options = {'register': register}
-        if self.encryption is not None and not register:
+        if self.encryption is not None:
             try:
                 endpoint = (self.connection.settings.host, self.connection.settings.port)
                 options['prepare'] = self.encryption.prepare_login(username, password, endpoint)
+                if legacy_passphrase is not None:
+                    options['prepare'].passphrase = legacy_passphrase
+                if migration_password is not None:
+                    options['migration_password'] = migration_password
             except (ValueError, OSError) as error:
                 self.view.notify('本机密钥', str(error))
                 return
         if self.connection.authenticate(username, password, **options):
             self.auth_window = window
-            self.view.set_auth_busy(True, '正在注册…' if register else '正在连接…')
+            self.view.set_auth_busy(True, '正在迁移旧账号…' if migration_password is not None else
+                                    ('正在注册…' if register else '正在连接…'))
 
     def cancel_auth(self):
         if self.reconnecting:
@@ -305,6 +311,10 @@ class ChatApplication:
                 try:
                     if isinstance(event, AuthResult):
                         self.finish_auth(event)
+                    elif isinstance(event, PasswordChangeResult):
+                        if event.generation == self.connection.generation and event.sock is self.connection.sock:
+                            self.view.notify('修改账号密码', event.error or event.warning or
+                                             '统一密码已更新。原离线备份仍使用导出时的密码，请重新导出备份。')
                     elif isinstance(event, ServerEvent) and self.connection.running and self.connection.sock is event.sock:
                         if event.message is None:
                             self.lost_connection()
@@ -353,10 +363,17 @@ class ChatApplication:
         if not self.closing:
             self.view.build_login()
 
-    def export_encryption_keys(self, path):
+    def export_encryption_keys(self, path, passphrase=None):
         if self.encryption is None:
             raise ValueError('此客户端实例未启用端到端加密')
-        return self.encryption.export_keys(path)
+        return self.encryption.export_keys(path, passphrase)
+
+    def change_account_password(self, current_password, new_password):
+        if self.encryption is None or self.encryption.vault is None:
+            raise ValueError('请先登录并解锁加密身份')
+        if not self.connection.change_password(current_password, new_password, self.encryption.vault):
+            raise ValueError('密码更新正在进行，或当前连接不支持统一密码；请稍后重试')
+        self.view.notify('修改账号密码', '正在验证并更新统一密码，请等待结果。')
 
     def change_encryption_passphrase(self, value):
         if self.encryption is None:

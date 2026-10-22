@@ -1,5 +1,9 @@
 # 界面截图 / Interface screenshots
 
+**历史截图：以下为 v1.2.1，包含旧版独立本机口令输入，不作为 v1.3.0 单密码界面截图。新版操作见[单密码指南](../SINGLE_PASSWORD.md)。**
+
+**Historical captures: these v1.2.1 images include the former separate local passphrase and do not illustrate the v1.3.0 single-password interface. See the [single-password guide](../SINGLE_PASSWORD.md).**
+
 这些图片是 v1.2.1 雾白与石墨桌面界面的真实窗口截图，展示统一的登录表单、双栏会话布局、可收起的在线用户面板及端到端加密消息。
 
 These real window captures show the v1.2.1 fog-white and graphite desktop interface: a consistent login form, two-column conversations, a collapsible online-users panel and end-to-end encrypted messages.

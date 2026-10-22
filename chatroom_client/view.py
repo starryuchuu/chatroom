@@ -356,15 +356,20 @@ class TkClientView:
         self.encryption_entry = None
         row = 7
         if self.controller.encryption is not None:
-            self.encryption_entry = field(row, '本机加密密钥口令', show='•')
-            row += 2
             note = tk.Frame(form, bg=c['bg'])
             note.grid(row=row, column=0, sticky='ew', pady=(0, 4))
-            self.label(note, '至少 8 个字符，与登录密码不同', muted=True, font='small').pack(side=tk.LEFT)
+            self.label(note, '一个密码登录并解锁加密身份', muted=True, font='small').pack(side=tk.LEFT)
             self.import_keys_button = self.theme.button(
                 note, '恢复密钥…', lambda: import_keys(self), variant='quiet',
                 font=self.fonts['small'], padx=5, pady=2)
             self.import_keys_button.pack(side=tk.RIGHT)
+            row += 1
+            self.migrate_button = self.theme.button(form, '迁移旧账号…', self.migrate_account,
+                                                    variant='quiet', font=self.fonts['small'])
+            self.migrate_button.grid(row=row, column=0, sticky='w', pady=(0, 6))
+            self.legacy_unlock_button = self.theme.button(form, '解锁旧密钥…', self.unlock_legacy_keys,
+                                                         variant='quiet', font=self.fonts['small'])
+            self.legacy_unlock_button.grid(row=row, column=0, sticky='e', pady=(0, 6))
             row += 1
         self.port_entry = field(row, '端口 · 仅用于本次连接')
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
@@ -685,9 +690,10 @@ class TkClientView:
         entry = getattr(self, 'encryption_entry', None)
         if entry is not None and entry.winfo_exists():
             entry.configure(state=tk.DISABLED if busy else tk.NORMAL)
-        button = getattr(self, 'import_keys_button', None)
-        if button is not None and button.winfo_exists():
-            button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        for name in ('import_keys_button', 'migrate_button', 'legacy_unlock_button'):
+            button = getattr(self, name, None)
+            if button is not None and button.winfo_exists():
+                button.configure(state=tk.DISABLED if busy else tk.NORMAL)
 
     def encryption_passphrase(self):
         entry = getattr(self, 'encryption_entry', None)
@@ -703,6 +709,14 @@ class TkClientView:
             label.configure(text=encryption.status, fg=self.colors['success' if encryption.ready else 'warning'])
         if getattr(self, 'chat_title', None) is not None and self.chat_title.winfo_exists():
             self.refresh_controls()
+
+    def unlock_legacy_keys(self):
+        from .encryption_view import unlock_legacy_keys
+        unlock_legacy_keys(self)
+
+    def migrate_account(self):
+        from .encryption_view import migrate_account
+        migrate_account(self)
 
     def register(self):
         """

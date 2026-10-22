@@ -233,9 +233,12 @@ class EncryptedScenarios:
 
             try:
                 app.view.username_entry.insert(0, 'alice')
-                app.view.password_entry.insert(0, PASSWORD)
-                app.view.encryption_entry.insert(0, 'separate local vault passphrase')
-                app.login()
+                unified_password = 'synthetic-unified-gui-password'
+                app.view.password_entry.insert(0, unified_password)
+                # This fixture deliberately begins with a legacy account.
+                # Upgrade it explicitly; the modern login never sends its new
+                # password through the legacy credential route.
+                app.start_auth('alice', unified_password, migration_password=PASSWORD)
                 pump(lambda: app.connection.running and app.encryption.ready and 'bob' in app.state.friends)
                 fingerprint = app.encryption.fingerprint
                 self.identities['alice'] = app.encryption.vault.identity

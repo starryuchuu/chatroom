@@ -1,9 +1,8 @@
-"""Local, passphrase-encrypted E2EE identities and trust decisions.
+"""Encrypted local identities and trust, with portable offline recovery backups.
 
-This file is never uploaded to the chat server. Its independent passphrase is
-deliberately unrelated to the password sent to the server for authentication.
-Public fingerprints can be compared out of band; a first-use pin is not proof
-that the directory supplied the intended person's key.
+The v2 identity envelope uses the client's OPAQUE export secret. Local trust and
+replay state use a separate identity-derived key and are never uploaded. Legacy
+v1 files and offline backups use Argon2id and AES-GCM with an explicit password.
 """
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
@@ -19,6 +18,8 @@ import tempfile
 from argon2.low_level import Type, hash_secret_raw
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+from Crypto.Hash import SHA256
+from Crypto.Protocol.KDF import HKDF
 
 from .e2ee_crypto import Identity, bundle_fingerprint, validate_public_bundle
 from .preferences import _preferences_lock
@@ -27,6 +28,7 @@ from .preferences import _preferences_lock
 MAX_VAULT_BYTES = 8 * 1024 * 1024
 MAX_TRUST_HISTORY = 64
 _KDF = {'name': 'argon2id', 'memory': 65536, 'time': 3, 'parallelism': 1}
+_OPAQUE_KDF = {'name': 'opaque-export-hkdf-sha256'}
 _HEX = re.compile(r'[0-9a-f]{64}')
 _UNSET = object()
 _REPLAY_KEY = re.compile(r'[0-9a-f]{64}:[0-9a-f]{32}')
@@ -170,6 +172,7 @@ class KeyVault:
         self.scope = _scope(endpoint, username)
         self._memory_blob = None
         self._data = self._identity = self._secret = self._salt = self._key = None
+        self._server_id = self._opaque_backup = None
 
     @property
     def exists(self):
@@ -257,6 +260,8 @@ class KeyVault:
 
     def _decode(self, blob, secret, *, cached=True):
         document = _json(blob)
+        if isinstance(document, dict) and document.get('v') == 2:
+            return self._decode_opaque(document, secret)
         required = {'v', 'scope', 'kdf', 'salt', 'nonce', 'data'}
         if (not isinstance(document, dict) or set(document) != required or
                 type(document['v']) is not int or document['v'] != 1 or
@@ -283,6 +288,18 @@ class KeyVault:
 
     def _encode(self, data, key, salt):
         self._validate_data(data)
+        if self._server_id is not None:
+            header = {'v': 2, 'scope': deepcopy(self.scope), 'kdf': dict(_OPAQUE_KDF),
+                      'server_id': self._server_id, 'identity_backup': deepcopy(self._opaque_backup),
+                      'nonce': _b64(get_random_bytes(12))}
+            cipher = AES.new(key, AES.MODE_GCM, nonce=_unb64(header['nonce'], length=12))
+            cipher.update(_canonical(header))
+            body, tag = cipher.encrypt_and_digest(json.dumps(data, separators=(',', ':'),
+                                                 ensure_ascii=True, allow_nan=False).encode('ascii'))
+            blob = _canonical(dict(header, data=_b64(body + tag))) + b'\n'
+            if len(blob) > MAX_VAULT_BYTES:
+                raise VaultError('本地密钥文件超过大小限制')
+            return blob
         header = {'v': 1, 'scope': deepcopy(self.scope), 'kdf': dict(_KDF),
                   'salt': _b64(salt), 'nonce': _b64(get_random_bytes(12))}
         cipher = AES.new(key, AES.MODE_GCM, nonce=_unb64(header['nonce'], length=12))
@@ -297,6 +314,142 @@ class KeyVault:
         if len(blob) > MAX_VAULT_BYTES:
             raise VaultError('本地密钥文件超过大小限制')
         return blob
+
+    @property
+    def single_password(self):
+        return self._server_id is not None
+
+    @staticmethod
+    def _export_secret(value):
+        if isinstance(value, str):
+            return _unb64(value, length=64)
+        if isinstance(value, (bytes, bytearray)) and len(value) == 64:
+            return bytes(value)
+        raise VaultError('账号导出密钥格式错误')
+
+    def _backup_key(self, secret, salt, server_id):
+        if not isinstance(server_id, str) or not _HEX.fullmatch(server_id) or len(secret) != 64:
+            raise VaultError('账号密钥上下文格式错误')
+        info = b'chatroom/opaque/identity-backup/v1\0' + _canonical(
+            {'server_id': server_id, 'username': self.scope['username']})
+        return HKDF(secret, 32, salt, SHA256, context=info)
+
+    def _make_backup(self, identity, secret, server_id):
+        salt, nonce = get_random_bytes(16), get_random_bytes(12)
+        header = {'v': 1, 'kind': 'opaque-identity', 'server_id': server_id,
+                  'username': self.scope['username'], 'salt': _b64(salt), 'nonce': _b64(nonce)}
+        cipher = AES.new(self._backup_key(secret, salt, server_id), AES.MODE_GCM, nonce=nonce)
+        cipher.update(_canonical(header))
+        ciphertext, tag = cipher.encrypt_and_digest(_canonical(identity.export_private()))
+        return dict(header, data=_b64(ciphertext + tag))
+
+    def _open_backup(self, document, secret, server_id):
+        required = {'v', 'kind', 'server_id', 'username', 'salt', 'nonce', 'data'}
+        if (not isinstance(document, dict) or set(document) != required or
+                type(document['v']) is not int or document['v'] != 1 or
+                document['kind'] != 'opaque-identity' or document['server_id'] != server_id or
+                document['username'] != self.scope['username'] or len(_canonical(document)) > 128 * 1024):
+            raise VaultError('账号加密备份格式或所属身份不匹配')
+        salt, nonce = _unb64(document['salt'], length=16), _unb64(document['nonce'], length=12)
+        ciphertext = _unb64(document['data'])
+        if len(ciphertext) < 16:
+            raise VaultError('账号加密备份格式错误')
+        header = {name: value for name, value in document.items() if name != 'data'}
+        cipher = AES.new(self._backup_key(secret, salt, server_id), AES.MODE_GCM, nonce=nonce)
+        cipher.update(_canonical(header))
+        try:
+            return Identity.from_private(_json(cipher.decrypt_and_verify(ciphertext[:-16], ciphertext[-16:])))
+        except (ValueError, KeyError, TypeError) as error:
+            raise VaultError('账号加密备份无法验证；未替换原密钥') from error
+
+    def _local_data_key(self, identity, server_id):
+        context = b'chatroom/local-vault/v2\0' + _canonical(self.scope)
+        return HKDF(_canonical(identity.export_private()), 32, bytes.fromhex(server_id), SHA256,
+                    context=context)
+
+    def _decode_opaque(self, document, secret, *, backup=None):
+        required = {'v', 'scope', 'kdf', 'server_id', 'identity_backup', 'nonce', 'data'}
+        if (set(document) != required or type(document['v']) is not int or document['v'] != 2 or
+                document['scope'] != self.scope or document['kdf'] != _OPAQUE_KDF or
+                document['server_id'] != self._server_id):
+            raise VaultError('本机密钥版本、服务器或账号不匹配')
+        identity = self._open_backup(backup or document['identity_backup'], bytes(secret), self._server_id)
+        key = self._local_data_key(identity, self._server_id)
+        header = {name: value for name, value in document.items() if name != 'data'}
+        cipher = AES.new(key, AES.MODE_GCM, nonce=_unb64(document['nonce'], length=12))
+        cipher.update(_canonical(header))
+        ciphertext = _unb64(document['data'])
+        try:
+            data = _json(cipher.decrypt_and_verify(ciphertext[:-16], ciphertext[-16:]))
+            actual = self._validate_data(data)
+            if actual.fingerprint != identity.fingerprint:
+                raise VaultError('本机密钥身份不匹配')
+        except (ValueError, TypeError, KeyError) as error:
+            raise VaultError('本机密钥文件无法验证；原文件未修改') from error
+        return data, identity, key, b''
+
+    def unlock_opaque(self, export_key, server_id, *, backup=None, remote_identity=None,
+                      create=False):
+        secret = self._export_secret(export_key)
+        self._backup_key(secret, b'\0' * 16, server_id)  # Validate bounded context first.
+        previous_server, previous_backup = self._server_id, self._opaque_backup
+        try:
+            with self._guard(create=True):
+                document = _json(self._blob()) if self.exists else None
+                if document is not None and document.get('v') == 1:
+                    if not self.unlocked:
+                        raise VaultError('请先解锁旧本机密钥，再迁移统一密码')
+                    data, identity, _, _ = self._decode(self._blob(), self._secret)
+                elif document is not None:
+                    self._server_id = server_id
+                    try:
+                        data, identity, _, _ = self._decode_opaque(document, secret)
+                    except VaultError:
+                        if backup is None:
+                            raise
+                        # Recover the same identity after a password change, then authenticate
+                        # existing local trust with its stable identity-derived data key.
+                        data, identity, _, _ = self._decode_opaque(document, secret, backup=backup)
+                else:
+                    if backup is not None:
+                        identity = self._open_backup(backup, secret, server_id)
+                    elif create and remote_identity is None:
+                        identity = Identity.generate()
+                    else:
+                        raise VaultError('原加密身份缺失，请恢复原备份；不会重新生成身份')
+                    data = {'v': 1, 'identity': identity.export_private(), 'peers': {},
+                            'groups': {}, 'replays': {}}
+                if remote_identity is not None and identity.fingerprint != bundle_fingerprint(remote_identity):
+                    raise VaultError('本机身份与服务器登记身份不一致；未替换原密钥')
+                self._server_id = server_id
+                self._opaque_backup = self._make_backup(identity, secret, server_id)
+                key = self._local_data_key(identity, server_id)
+                self._write(self._encode(data, key, b''))
+                self._accept(data, identity, key, b'', secret)
+            return self.identity
+        except Exception:
+            self._server_id, self._opaque_backup = previous_server, previous_backup
+            raise
+
+    def opaque_backup(self, export_key, server_id):
+        self.identity
+        return self._make_backup(self.identity, self._export_secret(export_key), server_id)
+
+    def rewrap_opaque(self, export_key, server_id):
+        self.identity
+        secret = self._export_secret(export_key)
+        with self._guard():
+            data, identity, _, _ = self._current()
+            previous_server, previous_backup = self._server_id, self._opaque_backup
+            try:
+                self._server_id = server_id
+                self._opaque_backup = self._make_backup(identity, secret, server_id)
+                key = self._local_data_key(identity, server_id)
+                self._write(self._encode(data, key, b''))
+                self._accept(data, identity, key, b'', secret)
+            except Exception:
+                self._server_id, self._opaque_backup = previous_server, previous_backup
+                raise
 
     def _write(self, blob):
         if self.path is None:
@@ -341,6 +494,7 @@ class KeyVault:
         if self._secret is not None:
             self._secret[:] = b'\0' * len(self._secret)
         self._data = self._identity = self._secret = self._salt = self._key = None
+        self._server_id = self._opaque_backup = None
 
     def _current(self):
         self.identity
@@ -652,14 +806,25 @@ class KeyVault:
 
         return self._mutate(mutation)
 
-    def export_to(self, path):
+    def export_to(self, path, passphrase=None):
         self.identity
         try:
             with self._guard():
                 data, identity, key, salt = self._current()
-                blob = self._encode(data, key, salt)
-                _atomic_write(Path(path), blob)
-                self._accept(data, identity, key, salt)
+                if self.single_password:
+                    if passphrase is None:
+                        raise VaultError('导出离线备份需要统一密码或恢复口令')
+                    secret = _passphrase(passphrase)
+                    salt = get_random_bytes(16)
+                    key = hash_secret_raw(secret, salt, time_cost=3, memory_cost=65536,
+                                          parallelism=1, hash_len=32, type=Type.ID, version=19)
+                    offline = KeyVault(None, self.scope['endpoint'], self.scope['username'])
+                    blob = offline._encode(data, key, salt)
+                    _atomic_write(Path(path), blob)
+                else:
+                    blob = self._encode(data, key, salt)
+                    _atomic_write(Path(path), blob)
+                    self._accept(data, identity, key, salt)
             return Path(path)
         except VaultError:
             raise
@@ -699,6 +864,8 @@ class KeyVault:
 
     def change_passphrase(self, new_passphrase):
         self.identity
+        if self.single_password:
+            raise VaultError('统一密码请使用“修改账号密码”，不能单独修改本机口令')
         secret = _passphrase(new_passphrase)
         try:
             with self._guard():

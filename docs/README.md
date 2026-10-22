@@ -6,6 +6,7 @@
 
 | 文档 / Guide | 内容 / Contents |
 | --- | --- |
+| [单密码登录与迁移](SINGLE_PASSWORD.md) | OPAQUE、旧账号迁移、改密、云身份与离线备份 / OPAQUE, migration, password changes and recovery |
 | [群组功能](GROUP_FEATURES_GUIDE.md) | 创建、邀请、成员与群主操作 / Group management |
 | [端到端加密与恢复](END_TO_END_ENCRYPTION.md) | 首次使用、指纹核对、密钥备份与保护范围 / Encryption, key recovery and limits |
 | [加密存储](STORAGE_ENCRYPTION.md) | 数据格式、数据库迁移、备份与恢复 / Storage format, migration and recovery |
@@ -32,6 +33,6 @@ Run commands from the repository root unless a command explicitly changes direct
 
 These reports document checks for specific releases. Refer to the current guides and release notes for current behavior and limits.
 
-界面截图位于 [images/](images/)。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
+界面截图位于 [images/](images/)，目前保留 v1.2.1 历史界面，不代表 v1.3.0 的单密码流程。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
 
-Screenshots are in [images/](images/). Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.
+Screenshots are in [images/](images/); the current captures show the historical v1.2.1 interface, not the v1.3.0 single-password flow. Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.

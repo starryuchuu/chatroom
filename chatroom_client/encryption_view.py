@@ -121,7 +121,63 @@ def import_keys(view):
     if entry is not None and entry.winfo_exists():
         entry.delete(0, tk.END)
         entry.insert(0, passphrase)
-    view.notify('恢复密钥', '备份已恢复，请使用该密钥口令登录。')
+    view.notify('恢复密钥', '备份已恢复。本次启动已解锁原身份，请使用统一密码登录；旧账号请先迁移。')
+
+
+def unlock_legacy_keys(view):
+    controller = view.controller
+    if controller.connection.running or controller.connection.auth_busy or controller.reconnecting:
+        view.show_error('解锁旧密钥', '请先断开连接，再解锁旧本机密钥。')
+        return
+    username = view.username_entry.get().strip()
+    port = view.read_port()
+    if not username or port is None:
+        view.show_error('解锁旧密钥', '请先填写原账号用户名和有效端口。')
+        return
+    secret = simpledialog.askstring('解锁旧密钥', '请输入原本机密钥口令；随后使用当前统一密码登录：',
+                                    show='*', parent=view.master)
+    if secret is None:
+        return
+    try:
+        controller.encryption.prepare_legacy_unlock(username, (controller.connection.settings.host, port), secret)
+    except ValueError as error:
+        view.show_error('解锁旧密钥', str(error))
+        return
+    view.notify('解锁旧密钥', '已准备本次解锁，请使用当前统一密码登录。原文件只会在验证成功后升级。')
+
+
+def migrate_account(view):
+    controller = view.controller
+    if controller.connection.running or controller.connection.auth_busy or controller.reconnecting:
+        view.show_error('迁移旧账号', '请先断开连接，再迁移旧账号。')
+        return
+    username = view.username_entry.get().strip()
+    if not username:
+        view.show_error('迁移旧账号', '请先填写原账号用户名。')
+        return
+    old = simpledialog.askstring('迁移旧账号', '请输入旧账号登录密码（只在本次迁移中验证）：',
+                                 show='*', parent=view.master)
+    if old is None:
+        return
+    local = simpledialog.askstring('迁移旧账号', '请输入原本机密钥口令；从未启用端到端加密的账号可留空：',
+                                   show='*', parent=view.master)
+    if local is None:
+        return
+    new = simpledialog.askstring('设置统一密码', '请输入新的统一密码（8–128 个字符，须与旧登录密码不同）：',
+                                 show='*', parent=view.master)
+    if new is None:
+        return
+    again = simpledialog.askstring('设置统一密码', '请再次输入新的统一密码：', show='*', parent=view.master)
+    if again is None:
+        return
+    if new != again or new == old or not 8 <= len(new) <= 128 or (local and not 8 <= len(local) <= 1024):
+        view.show_error('迁移旧账号', '请确认新密码长度、两次输入一致，且不同于旧登录密码；旧本机口令至少 8 个字符。')
+        return
+    port = view.read_port()
+    if port is None:
+        return
+    controller.connection.settings.port = port
+    controller.start_auth(username, new, migration_password=old, legacy_passphrase=local or None)
 
 
 class EncryptionWindow(tk.Toplevel):
@@ -141,12 +197,14 @@ class EncryptionWindow(tk.Toplevel):
         fingerprint.insert('1.0', fingerprint_text(encryption.fingerprint or ''))
         fingerprint.configure(state=tk.DISABLED)
         fingerprint.pack(fill=tk.X, padx=24, pady=8)
-        tk.Label(self, text='私钥仅保存在本机加密文件中。请导出并妥善保管备份；遗失密钥后无法解密历史消息。',
+        tk.Label(self, text='身份私钥始终加密保存。请导出离线备份；密码与全部恢复材料都丢失后无法恢复历史消息。',
                  wraplength=910, justify=tk.LEFT).pack(fill=tk.X, padx=24, pady=6)
         controls = tk.Frame(self)
         controls.pack(fill=tk.X, padx=24, pady=(8, 12))
         tk.Button(controls, text='导出加密密钥备份…', command=self.export).pack(side=tk.LEFT)
-        tk.Button(controls, text='更改本机密钥口令…', command=self.change_passphrase).pack(side=tk.LEFT, padx=8)
+        modern = bool(getattr(getattr(encryption, 'vault', None), 'single_password', False))
+        tk.Button(controls, text='修改账号密码…' if modern else '更改本机密钥口令…',
+                  command=self.change_passphrase).pack(side=tk.LEFT, padx=8)
         frame = tk.Frame(self)
         frame.pack(fill=tk.BOTH, expand=True, padx=24, pady=(0, 16))
         self.tree = ttk.Treeview(frame, columns=('name', 'verified', 'fingerprint'), show='headings')
@@ -222,10 +280,43 @@ class EncryptionWindow(tk.Toplevel):
     def export(self):
         path = filedialog.asksaveasfilename(parent=self, title='导出加密密钥备份', defaultextension='.json',
                                            initialfile='chatroom-e2ee-keys.json', filetypes=[('密钥备份', '*.json')])
-        if path and self.perform(lambda: self.controller.export_encryption_keys(path)):
-            messagebox.showinfo('密钥备份', '加密备份已导出。解密时仍需要本机密钥口令，请分开妥善保管。', parent=self)
+        if not path:
+            return
+        vault = getattr(self.controller.encryption, 'vault', None)
+        password = None
+        if vault is not None and vault.single_password:
+            password = simpledialog.askstring('导出离线备份', '请输入当前统一密码，用于离线备份加密：',
+                                              show='*', parent=self)
+            if password is None:
+                return
+            if not self.controller.connection.is_login_password(password):
+                messagebox.showerror('离线备份', '统一密码不正确，未导出备份。', parent=self)
+                return
+        operation = (lambda: self.controller.export_encryption_keys(path, password)) if password is not None else (
+            lambda: self.controller.export_encryption_keys(path))
+        if self.perform(operation):
+            messagebox.showinfo('密钥备份', '离线备份已加密导出，恢复时需要导出时的密码。改密后请重新导出备份。', parent=self)
 
     def change_passphrase(self):
+        vault = getattr(self.controller.encryption, 'vault', None)
+        if vault is not None and vault.single_password:
+            current = simpledialog.askstring('修改账号密码', '请输入当前统一密码：', show='*', parent=self)
+            if current is None:
+                return
+            first = simpledialog.askstring('修改账号密码', '请输入新的统一密码（8–128 个字符）：', show='*', parent=self)
+            if first is None:
+                return
+            second = simpledialog.askstring('修改账号密码', '请再次输入新的统一密码：', show='*', parent=self)
+            if second is None:
+                return
+            if first != second or not 8 <= len(first) <= 128:
+                messagebox.showerror('密码不一致', '请确认密码长度以及两次输入一致。', parent=self)
+                return
+            try:
+                self.controller.change_account_password(current, first)
+            except ValueError:
+                messagebox.showerror('修改账号密码', '无法启动密码更新，请检查连接状态。', parent=self)
+            return
         first = simpledialog.askstring('更改本机密钥口令', '请输入新的本机密钥口令（至少 8 个字符，建议 12 个以上）：', show='*', parent=self)
         if first is None:
             return

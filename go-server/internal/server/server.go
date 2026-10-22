@@ -10,7 +10,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1" // 导入 SHA-1
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"log"
 	"net"
 	"time"
@@ -67,7 +70,8 @@ func handleConnection(conn net.Conn) {
 		tcpConn.SetKeepAlivePeriod(3 * time.Minute)
 	}
 	conn = protocol.WrapConn(conn)
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	authDeadline := time.Now().Add(30 * time.Second)
+	conn.SetReadDeadline(authDeadline)
 
 	var currentUsername string // 用于在连接关闭时移除客户端
 	defer func() {
@@ -88,7 +92,7 @@ func handleConnection(conn net.Conn) {
 		"type":         "public_key",
 		"key":          string(publicKeyPEM),
 		"protocol":     protocol.Version,
-		"capabilities": []string{"message_sync", "e2ee_v1"},
+		"capabilities": []string{"message_sync", "e2ee_v1", "opaque_v1"},
 	}
 	if err := protocol.SendMsg(conn, pubKeyMsg); err != nil {
 		log.Printf("发送公钥失败: %v", err)
@@ -137,7 +141,12 @@ func handleConnection(conn net.Conn) {
 	log.Printf("与 %s 的会话密钥已成功建立", conn.RemoteAddr().String())
 
 	// 3. 处理认证
-	username, err := handlers.HandleAuth(conn, sessionKey, clientManager)
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return
+	}
+	publicDigest := sha256.Sum256(publicDER)
+	username, err := handlers.HandleAuth(conn, sessionKey, clientManager, handlers.AuthOptions{ServerID: hex.EncodeToString(publicDigest[:]), Deadline: authDeadline})
 	if err != nil || username == "" {
 		log.Printf("认证失败或连接关闭: %v", err)
 		return // 认证失败或客户端断开，关闭连接
@@ -170,7 +179,16 @@ func handleConnection(conn net.Conn) {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "加密身份加载失败，请重试"})
 		return
 	}
-	if err := protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": true, "e2ee_identity": identity}); err != nil {
+	loginResult := map[string]interface{}{"type": "login_result", "success": true, "e2ee_identity": identity}
+	account, err := database.GetOpaqueAccount(username)
+	if err != nil {
+		return
+	}
+	if account != nil {
+		loginResult["opaque_backup"] = account.Backup
+		loginResult["opaque_generation"] = account.Generation
+	}
+	if err := protocol.SendMsg(conn, loginResult); err != nil {
 		return
 	}
 	protocol.EnableQueuedWrites(conn)

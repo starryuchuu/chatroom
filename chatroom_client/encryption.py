@@ -1,6 +1,7 @@
 """Client-owned E2EE keys, trust decisions, and correlated recipient lookup.
 
-Only public bundles and encrypted envelopes leave this component. A directory
+Only public bundles, encrypted identity backups and message envelopes leave this
+component. A directory
 response is never permission to add an unapproved group recipient or replace a
 previously pinned contact identity.
 """
@@ -13,7 +14,7 @@ from .e2ee_crypto import (
     E2EEError, bundle_fingerprint, canonical_json, decrypt_message, encrypt_message,
     publish_proof, validate_envelope, validate_public_bundle, verify_signature,
 )
-from .key_vault import KeyVault, vault_path
+from .key_vault import KeyVault, VaultError, vault_path
 from .protocol import decrypt_message as decrypt_legacy
 
 
@@ -28,11 +29,48 @@ class _VaultPreparation:
     username: str
     passphrase: str | None = field(repr=False)
     vault: object | None = field(default=None, repr=False)
+    single_password: bool = True
+    _destination: object | None = field(default=None, repr=False)
+    _original_blob: bytes | None = field(default=None, repr=False)
+    _owns_vault: bool = field(default=False, repr=False)
 
-    def __call__(self, remote_identity):
+    def __call__(self, remote_identity, *, export_key=None, backup=None, server_id=None,
+                 registration=False):
         remote = (validate_public_bundle(remote_identity)
                   if remote_identity is not None else None)
         candidate = self.vault or KeyVault(self.path, self.endpoint, self.username)
+        if export_key is not None:
+            source = candidate
+            snapshot = source._blob() if source.exists else None
+            # Every worker owns its candidate. Cancelling an older attempt must
+            # never lock a vault accepted by a newer authentication generation.
+            candidate = KeyVault(None if registration else source.path, self.endpoint, self.username)
+            if registration or source.path is None:
+                candidate._memory_blob = snapshot
+            if source.unlocked:
+                candidate._data = deepcopy(source._data)
+                candidate._identity = source.identity
+                candidate._secret = bytearray(source._secret)
+                candidate._key, candidate._salt = source._key, source._salt
+                candidate._server_id, candidate._opaque_backup = source._server_id, deepcopy(source._opaque_backup)
+            if registration:
+                self._destination, self._original_blob = source, snapshot
+            self.vault = candidate
+            self._owns_vault = True
+            try:
+                if candidate.exists and not candidate.unlocked:
+                    from .key_vault import _json
+                    if _json(candidate._blob()).get('v') == 1:
+                        if self.passphrase is None:
+                            raise VaultError('检测到旧本机密钥，请先点“解锁旧密钥”，再用统一密码登录；尚未升级的账号请迁移')
+                        candidate.unlock(self.passphrase)
+                candidate.unlock_opaque(export_key, server_id, backup=backup,
+                                        remote_identity=remote, create=remote is None)
+            except Exception:
+                candidate.lock()
+                raise
+            self.passphrase = None
+            return candidate
         if not candidate.unlocked:
             if remote is not None and not candidate.exists:
                 raise ValueError('此账号已经登记端到端加密密钥，但本机没有原密钥。'
@@ -48,6 +86,29 @@ class _VaultPreparation:
         self.vault = candidate
         self.passphrase = None
         return candidate
+
+    def abort(self):
+        self.passphrase = None
+        if self._owns_vault and self.vault is not None:
+            self.vault.lock()
+        self.vault = None
+        self._owns_vault = False
+        self._destination = self._original_blob = None
+
+    def commit(self):
+        if self._destination is None:
+            return
+        target, candidate = self._destination, self.vault
+        with target._guard(create=True):
+            actual = target._blob() if target.exists else None
+            if actual != self._original_blob:
+                raise VaultError('本机密钥已由其他实例更改；账号已升级，请恢复原备份后重新登录')
+            target._write(candidate._blob())
+        candidate.path = target.path
+        if candidate.path is not None:
+            candidate._memory_blob = None
+        self._destination = None
+        self._original_blob = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +130,7 @@ class EncryptionController:
         self._publication = self._lookup = None
         self._peer_changes = {}
         self._denied_groups = set()
+        self._legacy_unlock = None
 
     @property
     def fingerprint(self):
@@ -98,14 +160,24 @@ class EncryptionController:
 
     def prepare_login(self, username, login_password, endpoint):
         passphrase = self.application.view.encryption_passphrase()
-        if not isinstance(passphrase, str) or not 8 <= len(passphrase) <= 1024:
-            raise ValueError('请输入 8–1024 个字符的本机密钥口令，建议至少 12 个字符')
-        if passphrase == login_password:
+        if passphrase and (not isinstance(passphrase, str) or not 8 <= len(passphrase) <= 1024):
+            raise ValueError('旧本机密钥口令须为 8–1024 个字符')
+        if passphrase and passphrase == login_password:
             raise ValueError('本机密钥口令必须与账号密码不同；它只用于本机密钥，不会发送给服务器')
+        if self._legacy_unlock is not None:
+            saved_username, saved_endpoint, saved_passphrase = self._legacy_unlock
+            if saved_username == username and saved_endpoint == tuple(endpoint):
+                passphrase = saved_passphrase
+                self._legacy_unlock = None
         path = vault_path(self.application.preferences.path, endpoint, username)
         existing = self.vault if (self.vault is not None and self.vault.scope == {
             'endpoint': [endpoint[0].lower(), endpoint[1]], 'username': username}) else None
-        return _VaultPreparation(path, tuple(endpoint), username, passphrase, existing)
+        return _VaultPreparation(path, tuple(endpoint), username, passphrase or None, existing)
+
+    def prepare_legacy_unlock(self, username, endpoint, passphrase):
+        if not isinstance(passphrase, str) or not 8 <= len(passphrase) <= 1024:
+            raise ValueError('旧本机密钥口令须为 8–1024 个字符')
+        self._legacy_unlock = (username, tuple(endpoint), passphrase)
 
     def discard_result(self, result):
         vault = getattr(result, 'encryption', None)
@@ -155,6 +227,7 @@ class EncryptionController:
 
     def reset(self):
         self.pause()
+        self._legacy_unlock = None
         if self.vault is not None:
             self.vault.lock()
         self.vault = None
@@ -391,10 +464,10 @@ class EncryptionController:
         except (ValueError, TypeError, KeyError, OSError) as error:
             return '[端到端加密验证失败：' + str(error) + ']', 'failed'
 
-    def export_keys(self, path):
+    def export_keys(self, path, passphrase=None):
         if self.vault is None or not self.vault.unlocked:
             raise ValueError('请先登录并解锁本机密钥，再导出加密备份')
-        return self.vault.export_to(path)
+        return self.vault.export_to(path, passphrase)
 
     def change_passphrase(self, value):
         if self.vault is None or not self.vault.unlocked:
@@ -414,9 +487,9 @@ class EncryptionController:
         if self.vault is not None:
             self.vault.lock()
         self.vault = candidate
-        # Keeping the encrypted in-memory object allows injected memory-only
-        # stores to be restored too; its private material still starts locked.
-        candidate.lock()
+        # An explicit restore has already authenticated the backup. Keep it
+        # unlocked only in this process so its v1 data can be rewrapped at login.
+        # No recovery password is saved in preferences or sent to the server.
         return fingerprint
 
     def verify_peer(self, username):

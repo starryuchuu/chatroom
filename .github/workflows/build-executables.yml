@@ -40,10 +40,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build server (EXE)
-        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server server.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server server.py
 
       - name: Build client (EXE)
-        run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --clean --name client client.py
+        run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name client client.py
 
       - name: Check frozen encryption runtime
         shell: pwsh
@@ -86,10 +86,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build server
-        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name server server.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server server.py
 
       - name: Build client
-        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --clean --name client client.py
+        run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name client client.py
 
       - name: Check frozen encryption runtime
         run: ./dist/client --check-encryption-runtime

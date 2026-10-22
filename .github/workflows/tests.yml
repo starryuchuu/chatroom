@@ -32,6 +32,11 @@ jobs:
           cache: pip
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
+      - name: Rebuild shared OPAQUE core from locked sources
+        if: runner.os == 'Linux'
+        run: |
+          python scripts/build_opaque.py
+          git diff --exit-code -- chatroom_client/opaque_core.wasm go-server/internal/opaqueauth/opaque_core.wasm
       - name: Go static checks
         working-directory: go-server
         run: go vet ./...

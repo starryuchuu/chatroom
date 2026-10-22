@@ -16,13 +16,24 @@ import (
 // 成功后返回用户名，否则返回空字符串
 var errRegistered = errors.New("注册成功，请重新登录")
 
-func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientManager) (username string, resultErr error) {
+type AuthOptions struct {
+	ServerID string
+	Deadline time.Time
+}
+
+func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientManager, options ...AuthOptions) (username string, resultErr error) {
+	settings := AuthOptions{Deadline: time.Now().Add(30 * time.Second)}
+	if len(options) == 1 {
+		settings = options[0]
+	}
 	ip := authIP(conn)
 	if !reserveAuth(ip, time.Now()) {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "请求过于频繁，请稍后再试"})
 		return "", errors.New("authentication rate/concurrency limit")
 	}
-	defer func() { releaseAuth(ip, resultErr != nil && !errors.Is(resultErr, errRegistered)) }()
+	defer func() {
+		releaseAuth(ip, resultErr != nil && !errors.Is(resultErr, errRegistered) && !errors.Is(resultErr, errOpaqueHandled))
+	}()
 	// 循环以处理认证消息
 	for {
 		msg, err := protocol.RecvMsg(conn)
@@ -37,6 +48,8 @@ func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientMana
 		}
 
 		switch msgType {
+		case "opaque_register_start", "opaque_login_start", "opaque_migrate_start", "opaque_change_start":
+			return handleOpaque(conn, sessionKey, clientManager, msg, settings.ServerID, settings.Deadline)
 		case "encrypted_register":
 			return handleRegister(conn, sessionKey, msg)
 		case "login":
@@ -45,7 +58,7 @@ func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientMana
 		case "encrypted_login":
 			return handleEncryptedLogin(conn, sessionKey, clientManager, msg)
 		default:
-			log.Printf("未知的认证消息类型: %s", msgType)
+			log.Printf("Unknown authentication message rejected")
 			// 可以选择发送一个错误消息给客户端
 			protocol.SendMsg(conn, map[string]interface{}{
 				"type":    "login_result",
@@ -66,14 +79,14 @@ func handleRegister(conn net.Conn, sessionKey []byte, msg map[string]interface{}
 
 	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
 	if err != nil {
-		log.Printf("解密注册信息失败: %v", err)
+		log.Printf("Legacy registration decryption failed")
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册处理失败"})
 		return "", errors.New("认证未通过")
 	}
 
 	var regInfo map[string]interface{}
 	if err := json.Unmarshal([]byte(decryptedData), &regInfo); err != nil {
-		log.Printf("解析注册JSON失败: %v", err)
+		log.Printf("Legacy registration data rejected")
 		protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": false, "error": "注册处理失败"})
 		return "", errors.New("认证未通过")
 	}
@@ -96,7 +109,7 @@ func handleRegister(conn net.Conn, sessionKey []byte, msg map[string]interface{}
 	}
 
 	protocol.SendMsg(conn, map[string]interface{}{"type": "register_result", "success": true})
-	log.Printf("用户 %s 注册成功", username)
+	log.Printf("Legacy registration completed")
 	// 注册后，客户端会断开连接，所以这里返回错误以便上层关闭连接
 	return "", errRegistered
 }
@@ -116,19 +129,19 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 	// 检查用户是否已在线，防止重复登录造成身份混淆/劫持
 	if clientManager.IsUserOnline(username) {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "该用户已登录"})
-		log.Printf("用户 %s 已在其他连接登录，拒绝重复登录", username)
+		log.Printf("Duplicate login rejected")
 		return "", errors.New("该用户已登录")
 	}
 
 	valid, err := database.ValidateUser(username, password)
 	if err != nil {
-		log.Printf("验证用户 %s 时出错: %v", username, err)
+		log.Printf("Legacy credential verification failed")
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "服务器内部错误"})
 		return "", err // 内部错误，关闭连接
 	}
 
 	if valid {
-		log.Printf("用户 %s 登录成功", username)
+		log.Printf("Legacy authentication completed")
 		return username, nil // 登录成功，返回用户名
 	}
 
@@ -147,14 +160,14 @@ func handleEncryptedLogin(conn net.Conn, sessionKey []byte, clientManager types.
 
 	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
 	if err != nil {
-		log.Printf("解密登录信息失败: %v", err)
+		log.Printf("Legacy login decryption failed")
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据处理失败"})
 		return "", errors.New("认证未通过")
 	}
 
 	var loginInfo map[string]interface{}
 	if err := json.Unmarshal([]byte(decryptedData), &loginInfo); err != nil {
-		log.Printf("解析登录JSON失败: %v", err)
+		log.Printf("Legacy login data rejected")
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据处理失败"})
 		return "", errors.New("认证未通过")
 	}

@@ -4,6 +4,7 @@ __pycache__/
 dist/
 build/
 *.spec
+opaque-core/target/
 
 # ---- 运行时生成的文件 ----
 chat.db
@@ -20,6 +21,7 @@ public_key.pem
 
 # ---- 可执行文件与 Go 构建产物 ----
 *.exe
+go-interop-server
 go-server/server-linux-*
 go-server/server-darwin-*
 

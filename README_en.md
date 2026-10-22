@@ -4,17 +4,18 @@
 
 ## Project Overview
 
-This project is a secure encrypted chat room system implemented in both Python and Go, using RSA session-key exchange, AES-GCM content encryption and HMAC-SHA256 authentication of complete frames. The system supports multiple features including user registration, login, group chat, private chat, friend management, and group management. All messages are persisted in SQLite database, and sensitive information (such as passwords) is securely stored using the Argon2 hashing algorithm.
+This project implements an encrypted desktop chat room with Python and Go servers. It supports registration, login, private and group chat, friends, and group management. v1.3.0 uses one password for OPAQUE account authentication and unlocking the encrypted chat identity. RSA session-key exchange, AES-GCM and HMAC-SHA256 protect transport frames; clients encrypt chat bodies end to end. Servers persist records in SQLite with encrypted sensitive fields.
 
 ## Key Features
 
 - 🔒 **Security**
   - Client/server communication using RSA-3072 for key exchange
   - AES-GCM encryption for message bodies and credentials; HMAC-SHA256 authenticates routing and control fields
-  - Argon2id password hashing with random salt
+  - OPAQUE single-password authentication and encrypted identity recovery
+  - Argon2id for OPAQUE password stretching and explicit offline backups
   - Secure session key management
   - Server public key fingerprint verification (anti-MITM)
-  - Encrypted login (credentials transmitted via AES-GCM)
+  - Normal registration and login do not send the account password to the server
 
 - 💬 **Social Features**
   - Support for private and group chat
@@ -39,32 +40,42 @@ This project is a secure encrypted chat room system implemented in both Python a
 
 - 🖼️ **Interface Showcase**
   - Login Interface
-    ![Login interface with server profiles and local encryption passphrase](docs/images/login.png)
+    ![Historical v1.2.1 login interface with a separate local encryption passphrase](docs/images/login.png)
   - Main Page
     ![Main interface with unread counts, conversation previews and notifications](docs/images/main.png)
   - Chat Interface
     ![Chat interface with end-to-end encrypted messages and key management](docs/images/chat.png)
 
-  Captured from the current v1.2.1 Linux client on 2026-10-21, showing server profiles, the local key passphrase, unread previews and end-to-end encrypted chat. All accounts, groups and messages are synthetic demo data; the connection uses a loopback address. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
+  These are historical v1.2.1 Linux screenshots captured on 2026-10-21. The separate local passphrase shown there is not part of normal v1.3.0 login. They have not yet been replaced with v1.3.0 screenshots. Accounts, groups and messages are synthetic demo data on a loopback connection. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
   - Tkinter (GUI interface)
   - pycryptodome (Encryption features)
-  - argon2-cffi (Password hashing)
+  - argon2-cffi (Offline backup encryption and legacy password verification)
+  - wasmtime 50.0.1 (Runs the bundled OPAQUE WebAssembly core)
   - Go 1.24+ (Server, toolchain `go1.24.5`)
+  - wazero (Runs the same embedded OPAQUE core in the Go server)
   - SQLite3 (Data storage)
   - Built-in modules (socket, threading, datetime, logging, etc.)
 
 ## Current development protocol
 
-When upgrading from versions without end-to-end encryption, upgrade the Python client and chosen server together. Protocol v2 rejects unauthenticated frames and plaintext login. A directional HMAC key and uint64 sequence counter protect each transport frame. Starting with v1.2.0, the desktop client also encrypts private and group messages **end to end** with Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
+Upgrade the Python client and chosen server together to v1.3.0. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
-The client requires a separate local key passphrase, different from the account password. Neither this passphrase nor private keys are uploaded. Compare contact fingerprints through another trusted channel, explicitly approve group recipients, and export an encrypted key backup from the encryption/key window. Restore that backup before logging in on another computer. Lost private keys cannot be recovered from the account password or server database. First-use trust requires independent verification, and this protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
+Normal registration and login use one unified password. OPAQUE derives a client-only export key, which unlocks a randomly generated chat identity rather than deriving that identity from the username or password. The cloud backup contains only the encrypted identity; it does not synchronize contact verification, group approvals, or replay state. A new device can recover the same identity after successful authentication, but contacts must be verified again. The two-layer local v2 vault retains its full trust state across password changes, including recovery with the new password after another device changes it. Never overwrite newer local trust with a cloud snapshot.
+
+Use **迁移旧账号…** on the login screen for a one-time upgrade of an existing account. Prepare its old login password, original local key passphrase and a new unified password of 8–128 characters. The local passphrase may be left empty only if the account never enabled end-to-end encryption; the new password must differ from the old login password. Only this explicit migration sends the old login password inside the authenticated encrypted transport for legacy verification. Keep the original vault or import its encrypted offline backup first; a missing or incorrect original identity stops migration. Unmigrated accounts remain usable by legacy clients; migrated and newly registered accounts reject legacy authentication. See the [single-password migration and recovery guide](docs/SINGLE_PASSWORD.md).
+
+If the server committed a migration but its reply was lost, the local vault may still be v1. On the login screen, choose **解锁旧密钥…**, enter the original local passphrase, then log in normally with the new unified password. Successful authentication upgrades the original local vault while preserving its identity and full trust state; do not repeat the account migration.
+
+Use **修改账号密码…** in the encryption/key window to authenticate the current password and set a new one. The identity and chat keys are retained. Explicit offline exports still use Argon2id and AES-GCM with the password at export time; re-export after changing it. A raw v2 vault file cannot be unlocked offline using the password alone. If the password and all usable recovery materials are lost, the server cannot guarantee recovery. Compare contact fingerprints through another trusted channel and explicitly approve group recipients. First-use trust requires independent verification; the chat protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
 
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “更早的消息” button retrieves earlier pages for the selected conversation.
 
-The client requires `client.py`, the complete `chatroom_client/` package, `transport.py`, and the dependencies. Download `chatroom-v1.2.1-client.zip` for a runnable client source bundle, or the complete source archive for the entire project. The Python server additionally requires `e2ee_server.py`, `history_store.py`, `pending_store.py`, `storage.py`, and the client package's public cryptographic validators. Transport v2 and storage encryption v1 remain unchanged; the additive schema upgrade introduced in v1.2.0 records public identities and marks encrypted message envelopes. The v1.2.1 desktop client supports v1.2.0 and newer servers with `e2ee_v1` and never silently downgrades. This interface update does not change the database schema. Back up the database and storage key before upgrading; do not run old servers against the upgraded database.
+Download [chatroom-v1.3.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.0/chatroom-v1.3.0-client.zip) for the client source bundle, or [chatroom-v1.3.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.0/chatroom-v1.3.0-source.zip) for both servers and development files. Executables and `SHA256SUMS` are available on the [v1.3.0 release page](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.0). Keep `opaque_runtime.py`, the complete `chatroom_client/` package including `opaque_core.wasm`, and the other bundled Python modules together. Ordinary source packages include the precompiled WASM: run `python -m pip install -r requirements.txt`; Rust is not needed to run them. Rebuilding the shared core with `python scripts/build_opaque.py` requires Rust 1.87+ and the `wasm32-unknown-unknown` target.
+
+The shared core uses `opaque-ke` 4.0.1 and RFC 9807 OPAQUE, executed by Python Wasmtime and Go wazero. The upstream library has an audit history; that does not establish an independent audit of this exact version, its WASM build, or Chatroom's integration. v1.3.0 adds persistent OPAQUE setup and account tables while retaining transport v2 and storage encryption v1. Back up the database, storage key, server RSA key pair and client offline key backup before upgrading. Preserve the OPAQUE setup together with its account records, and do not run old servers against the upgraded database.
 
 ## Desktop settings and recovery
 
@@ -80,9 +91,9 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
 
 ## Security Design
 
-- Message bodies and credentials are encrypted with AES-GCM; all post-key-exchange frames are authenticated, with independent keys and counters per direction
+- Chat bodies use end-to-end AES-GCM; all post-key-exchange frames are authenticated, with independent keys and counters per direction
 - Session key is securely exchanged using RSA public key encryption between client and server
-- User passwords are stored using Argon2 hash algorithm
+- Modern accounts store OPAQUE registration records and encrypted identity-only backups; legacy Argon2 password verification remains only for unmigrated accounts and explicit migration
 - All user, message, friend, and group info are persisted in SQLite database
 
 ## Environment Requirements
@@ -93,7 +104,8 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
   - socket, threading, datetime, sqlite3, hashlib, logging (built-in)
   - struct, json (built-in)
   - pycryptodome (AES, RSA encryption/decryption, install via `pip install pycryptodome`)
-  - argon2-cffi (password hashing, install via `pip install argon2-cffi`)
+  - argon2-cffi (offline backups and legacy password verification)
+  - wasmtime==50.0.1 (bundled OPAQUE WASM runtime)
   - Tkinter (GUI, usually built-in, may require separate installation on some systems)
 
 ### Go Server
@@ -102,6 +114,7 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
   - github.com/google/uuid (for generating group IDs)
   - golang.org/x/crypto (for Argon2 password hashing)
   - modernc.org/sqlite (for SQLite database support)
+  - github.com/tetratelabs/wazero (shared OPAQUE WASM runtime, embedded in the executable)
 
 ## Directory Structure
 
@@ -122,6 +135,10 @@ chatroom/
 ├── e2ee_server.py            # Public identity and encrypted envelope validation
 ├── history_store.py          # History pagination
 ├── pending_store.py          # Durable pending requests
+├── opaque_runtime.py         # Bounded Wasmtime host for the shared OPAQUE core
+├── opaque_server.py          # Python OPAQUE authentication and account transactions
+├── opaque-core/              # Locked Rust source for the shared core
+├── scripts/build_opaque.py   # Rebuilds Python and Go WASM artifacts
 ├── requirements.txt          # Python dependencies
 ├── VERSION                   # Project version
 ├── README.md                 # Chinese project overview
@@ -155,7 +172,7 @@ The system uses an SQLite database to store user, message, friend, and group inf
 1. `users` table: Stores user information
    - id: User ID
    - username: Username (unique)
-   - password: Password (Argon2 hash)
+   - password: Encrypted legacy Argon2 hash, or the encrypted OPAQUE account marker
 
 2. `messages` table: Stores chat messages
    - id: Message ID
@@ -176,6 +193,8 @@ The system uses an SQLite database to store user, message, friend, and group inf
    - owner: Group owner
    - members: Group members (JSON format)
    - created_at: Creation time
+
+5. `opaque_meta` and `opaque_accounts`: Persist encrypted OPAQUE setup, registration records, identity-only backups and account generations. Keep the setup and account records together when backing up or restoring.
 
 ## Running Instructions
 
@@ -219,17 +238,7 @@ Both servers only listen on `127.0.0.1` by default for security.
 python client.py
 ```
 
-The client connects to `127.0.0.1:12345` (Python server) by default. Modify the constants at the top of `client.py`:
-
-| Scenario | Change |
-|----------|--------|
-| Connect to Go server | `SERVER_PORT = 12346` |
-| Connect to a remote server | Set `SERVER_HOST` to the target IP or domain |
-| Connect to a non-local server (production) | Set `EXPECTED_SERVER_KEY_FINGERPRINT` to the server's public key fingerprint |
-
-> ⚠️ When connecting to a non-local server, you **must** set
-> `EXPECTED_SERVER_KEY_FINGERPRINT`, otherwise the client will refuse the connection
-> (anti-MITM). Obtain the fingerprint from the server log after your first local connection.
+The client defaults to the local Python server at `127.0.0.1:12345`. Select the Go profile or use **连接设置…** on the login screen to save another endpoint and its verified public-key fingerprint. For remote servers, obtain the SHA-256 fingerprint through a trusted channel and save it in that profile. Source constants only supply first-launch defaults; existing saved profiles take precedence.
 
 ## Notes
 
@@ -238,8 +247,8 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 - The database file (`chat.db`) will be automatically created on first run
 - All messages are AES-GCM encrypted for security
 - Session key is exchanged via RSA-3072 public key encryption
-- Login credentials are transmitted encrypted (`encrypted_login` protocol)
-- User passwords are stored using Argon2id + random salt hash algorithm
+- Normal v1.3.0 authentication uses OPAQUE; `encrypted_login` is limited to unmigrated legacy accounts
+- OPAQUE registration records replace legacy password hashes after account migration
 - Friend relationships are bidirectional
 - Group owners cannot directly leave the group chat and must disband the group or transfer ownership first
 - Security limits: max message 1 MB, auth timeout 30s, session timeout 30min, rate limit 5/60s
@@ -249,15 +258,15 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 
 - Port occupied: Check if the port is in use or change the port constant (`server.py` / `main.go`)
 - Connection failure: Ensure the server is running and the network is operational, and that client port matches the server (Python `12345`, Go `12346`)
-- "Server public key fingerprint not configured" refusal: set `EXPECTED_SERVER_KEY_FINGERPRINT` when connecting to a non-local server
+- "Server public key fingerprint not configured" refusal: save the independently verified fingerprint in the selected profile through **连接设置…**
 - Database errors: Verify write permissions or check sqlite3 installation
 - Group chat issues: Ensure group members are correct, owner cannot leave group directly
 
 ## Highlights
 - Client/server protection: AES-GCM message bodies, RSA-3072 session keys, HMAC-SHA256 authenticated frames
-- Password security: Argon2id + random salt hash for user passwords
+- Password security: OPAQUE authentication, client-only export keys, and Argon2id-protected offline backups
 - Anti-MITM: server public key fingerprint verification
-- Encrypted login: credentials transmitted via AES-GCM
+- Single-password login: normal account passwords are not sent to the server
 - Security hardening: rate limiting, message length limit, connection timeouts
 - Group features: group creation, invitation, join, kick, owner management, persistent group info
 - Advanced group features: group disbanding, ownership transfer, group name modification
@@ -270,11 +279,11 @@ The client connects to `127.0.0.1:12345` (Python server) by default. Modify the 
 
 ## Encrypted server storage
 
-Both servers use storage v1: randomized AES-256-GCM encrypts message bodies and timestamps, username mappings, Argon2 password hashes, and group names, owners, members and creation times. HMAC-SHA256 username indexes replace readable identities in message routing, friendships and pending requests.
+Both servers use storage v1: randomized AES-256-GCM encrypts message bodies and timestamps, username mappings, legacy password hashes, OPAQUE setup/account records and identity backups, and group names, owners, members and creation times. HMAC-SHA256 username indexes replace readable identities in message routing, friendships and pending requests.
 
 The independent 32-byte key defaults to `chat.db.key` beside the database. Set `CHATROOM_STORAGE_KEY_FILE` to keep it outside the database directory. Back up the key securely and separately; a lost key cannot be replaced to recover the database. POSIX file permissions default to 0600; protect the key with account permissions on Windows.
 
-Stop the old server before upgrading. Startup transactionally migrates legacy data and removes old free pages/WAL before listening. Failed migrations roll back; interrupted cleanup resumes on restart. Missing, corrupt or mismatched keys stop startup. Do not open migrated databases with older servers. Wire protocol v2 is unchanged; v1.0.10 clients remain compatible.
+Stop the old server before upgrading. Startup transactionally migrates legacy storage and removes old free pages/WAL before listening. Failed migrations roll back; interrupted cleanup resumes on restart. Missing, corrupt or mismatched keys stop startup. Existing OPAQUE accounts without their setup also stop startup. Do not open upgraded databases with older servers. Transport v2 remains, but v1.3.0 clients require the new OPAQUE capability; legacy clients can authenticate only accounts that have not migrated.
 
 This encrypts sensitive fields rather than the entire SQLite file: table structure, IDs, group IDs, chat types, relationships between opaque indexes, request expiry times and counts remain visible. The running server can decrypt records. Old backups, logs and deleted underlying storage blocks are outside the migration scope. See [storage format and recovery](docs/STORAGE_ENCRYPTION.md).
 

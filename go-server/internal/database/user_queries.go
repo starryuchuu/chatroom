@@ -126,6 +126,13 @@ func RegisterUser(username, password string) error {
 
 // ValidateUser 验证用户名和密码
 func ValidateUser(username, password string) (bool, error) {
+	var upgraded int
+	if err := DB.QueryRow("SELECT COUNT(*) FROM opaque_accounts WHERE username=?", storage.token(username)).Scan(&upgraded); err != nil {
+		return false, err
+	}
+	if upgraded != 0 {
+		return false, nil
+	}
 	var storedPassword string
 	err := DB.QueryRow("SELECT password FROM users WHERE username = ?", storage.token(username)).Scan(&storedPassword)
 	if err != nil {
@@ -139,7 +146,15 @@ func ValidateUser(username, password string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return verifyPassword(password, storedPassword, username)
+	valid, err := verifyPassword(password, storedPassword, username)
+	if err != nil || !valid {
+		return valid, err
+	}
+	// A migration may commit while the expensive legacy hash is being checked.
+	if err := DB.QueryRow("SELECT COUNT(*) FROM opaque_accounts WHERE username=?", storage.token(username)).Scan(&upgraded); err != nil {
+		return false, err
+	}
+	return upgraded == 0, nil
 }
 
 // UserExists 检查用户是否存在

@@ -4,6 +4,7 @@ import pending_store
 import history_store
 import storage
 import e2ee_server
+import opaque_server
 import threading
 import time
 import datetime
@@ -454,6 +455,7 @@ def init_db():
         storage.initialize(conn)
     finally:
         conn.close()
+    opaque_server.initialize()
     restore_pending_requests()
     # 设置数据库文件权限为仅所有者可读写 (600)
     if os.path.exists("chat.db"):
@@ -565,6 +567,8 @@ def validate_user(username, password):
         password: 密码
         验证成功返回True，否则返回False
     """
+    if opaque_server.has_account(username):
+        return False
     conn = storage.connect("chat.db")
     cursor = conn.cursor()
     cursor.execute("SELECT password FROM users WHERE username=?", (storage.token(username),))
@@ -574,12 +578,16 @@ def validate_user(username, password):
         from argon2 import PasswordHasher, exceptions
         ph = PasswordHasher()
         try:
-            return ph.verify(storage.open_field(row[0], "users", "password", storage.token(username)), password)
+            encoded = storage.open_field(row[0], "users", "password", storage.token(username))
+            if encoded == opaque_server.LEGACY_DISABLED:
+                return False
+            valid = ph.verify(encoded, password)
+            return valid and not opaque_server.has_account(username)
         except exceptions.VerifyMismatchError:
             return False
         except (exceptions.InvalidHashError, exceptions.VerificationError, exceptions.InvalidHash) as e:
             # 哈希损坏/格式无效等异常也应视为验证失败，而不是导致线程崩溃
-            logging.error("Password hash verification error for user '%s': %s", username, e)
+            logging.error("Stored legacy credential verification failed")
             return False
     return False
 
@@ -1033,12 +1041,12 @@ def transfer_group_ownership_db(gid, new_owner):
 
 # 处理客户端连接
 def handle_client(client_sock, addr):
-    logging.info(f"Client connected from {addr}")
+    logging.info("Client connection opened")
     
     # 速率限制检查（仅统计认证失败次数，见 is_rate_limited）
     ip_address = addr[0]
     if is_rate_limited(ip_address):
-        logging.warning(f"Rate limit exceeded for IP {ip_address}")
+        logging.warning("Authentication rate limit exceeded")
         send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
         client_sock.close()
         remove_send_lock(client_sock)
@@ -1064,12 +1072,12 @@ def handle_client(client_sock, addr):
 
         # 1. 发送公钥
         send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION,
-                               "capabilities": ["message_sync", "e2ee_v1"], "key": public_key_pem.decode('utf-8')})
+                               "capabilities": ["message_sync", "e2ee_v1", "opaque_v1"], "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
         encrypted_session_key_data = recv_msg(client_sock, auth_deadline)
         if not isinstance(encrypted_session_key_data, dict) or encrypted_session_key_data.get("type") != "session_key":
-            logging.error(f"Failed to receive session key from {addr}")
+            logging.error("Session key exchange rejected")
             return
         
         if encrypted_session_key_data.get("protocol") != transport.VERSION:
@@ -1080,25 +1088,50 @@ def handle_client(client_sock, addr):
         # 会话密钥必须是合法的 AES 密钥长度，防止畸形密钥导致后续解密行为混乱
         if len(session_key) not in (16, 24, 32):
             send_msg(client_sock, {"type": "error", "message": "无效的会话密钥"})
-            logging.error(f"Invalid session key length ({len(session_key)}) from {addr}")
+            logging.error("Invalid session key length")
             return
         transport.configure(client_sock, session_key, server=True)
         with session_keys_lock:
             session_keys[client_sock] = session_key
-        logging.info(f"Session key established with {addr}")
+        logging.info("Session key established")
 
         auth_data = recv_msg(client_sock, auth_deadline)
         if not isinstance(auth_data, dict):
             record_auth_failure(ip_address)
             send_msg(client_sock, {"type": "login_result", "success": False, "error": "协议错误"})
-            logging.error(f"Protocol error during authentication from {addr}")
+            logging.error("Authentication protocol rejected")
             return
 
         if is_rate_limited(ip_address):
             send_msg(client_sock, {"type": "error", "message": "请求过于频繁，请稍后再试"})
             return
 
-        if auth_data.get("type") == "encrypted_register":
+        opaque_fields = {}
+        if auth_data.get('type') in opaque_server.START_TYPES:
+            if auth_data.get('type') == 'opaque_migrate_start':
+                with usernames_lock:
+                    already_online = auth_data.get('from') in usernames.values()
+                if already_online:
+                    record_auth_failure(ip_address)
+                    send_msg(client_sock, {'type': 'login_result', 'success': False,
+                                           'error': '请先退出此账号的其他连接再迁移'})
+                    return
+            outcome = opaque_server.authenticate(
+                auth_data, receive=lambda: recv_msg(client_sock, auth_deadline),
+                send=lambda packet: send_msg(client_sock, packet),
+                server_id=hashlib.sha256(private_key.publickey().export_key(format='DER')).hexdigest(),
+                decrypt_legacy=lambda encoded: decrypt_message(encoded, session_key),
+                verify_legacy=validate_user, get_identity=e2ee_server.get_identity,
+                deadline=auth_deadline)
+            if outcome.failed:
+                record_auth_failure(ip_address)
+                logging.warning("OPAQUE authentication rejected")
+                return
+            if outcome.username is None:
+                return
+            username = outcome.username
+            opaque_fields = outcome.fields
+        elif auth_data.get("type") == "encrypted_register":
             try:
                 encrypted_data = auth_data.get("data")
                 decrypted_data = decrypt_message(encrypted_data, session_key)
@@ -1110,13 +1143,13 @@ def handle_client(client_sock, addr):
                 reg_ok, reg_err = register_user(username, password)
                 if reg_ok:
                     send_msg(client_sock, {"type": "register_result", "success": True})
-                    logging.info(f"User {username} registered successfully from {addr}")
+                    logging.info("Account registration completed")
                 else:
                     record_auth_failure(ip_address)
                     send_msg(client_sock, {"type": "register_result", "success": False, "error": reg_err})
-                    logging.warning(f"Registration failed for {username} from {addr}: {reg_err}")
+                    logging.warning("Account registration rejected")
             except Exception as e:
-                logging.error(f"Error processing encrypted_register from {addr}: {e}")
+                logging.error("Legacy account registration failed")
                 record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "register_result", "success": False, "error": "注册处理失败"})
             return
@@ -1128,7 +1161,7 @@ def handle_client(client_sock, addr):
                 username = login_info.get("from")
                 password = login_info.get("password")
             except Exception as e:
-                logging.error(f"Error processing login data from {addr}: {e}")
+                logging.error("Legacy credential decoding failed")
                 record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "登录数据处理失败"})
                 return
@@ -1136,61 +1169,62 @@ def handle_client(client_sock, addr):
             if not isinstance(username, str) or not isinstance(password, str) or not username or not password:
                 record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "用户名或密码错误"})
-                logging.warning(f"Login failed from {addr}: invalid username/password format")
+                logging.warning("Legacy credential format rejected")
                 return
 
             if not validate_user(username, password):
                 record_auth_failure(ip_address)
                 send_msg(client_sock, {"type": "login_result", "success": False, "error": "用户名或密码错误"})
-                logging.error(f"Login failed for {username} from {addr}: 用户名或密码错误")
+                logging.warning("Legacy authentication rejected")
                 return
 
-            # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
-            client_sock.settimeout(SEND_TIMEOUT_SECONDS)
-            # 接受好友的数据库提交也持有 pending_friend_requests_lock。
-            # 先加载并入队好友快照，再发布在线连接，增量通知必定排在快照后。
-            # ready 在全局锁释放后才放行发送线程，锁内只做有界队列的非阻塞入队。
-            ready = threading.Event()
-            duplicate_login = False
-            try:
-                with pending_friend_requests_lock:
-                    with usernames_lock:
-                        if username in usernames.values():
-                            duplicate_login = True
-                        else:
-                            friends = load_friends(username)
-                            session_timestamps[client_sock] = datetime.datetime.now().timestamp()
-                            send_msg(client_sock, {"type": "login_result", "success": True,
-                                                   "e2ee_identity": e2ee_server.get_identity(username)}, ready=ready)
-                            send_msg(client_sock, {"type": "friends_list", "friends": list(friends)}, ready=ready)
-                            with user_friends_lock:
-                                user_friends[username] = friends
-                            current_username = username
-                            usernames[client_sock] = username
-            finally:
-                ready.set()
-            if duplicate_login:
-                send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
-                logging.warning(f"Login failed for {username} from {addr}: 用户已登录")
-                return
-            authentication_slots.release()
-            auth_reserved = False
-            logging.info(f"User {username} logged in from {addr}")
-
-            # 发送用户所属的群组列表
-            send_user_groups(client_sock, username)
-
-            send_history(client_sock, username)
-            # 补发离线期间收到的好友请求与群邀请（对方离线时积压的请求）
-            send_pending_friend_requests(client_sock, username)
-            send_pending_group_invites(client_sock, username)
-            broadcast_online_users()
         else:
             record_auth_failure(ip_address)
             send_msg(client_sock, {"type": "login_result", "success": False, "error": "协议错误"})
-            logging.error(f"Protocol error during authentication from {addr}")
+            logging.error("Authentication protocol rejected")
             return
 
+        # 登录成功后设置空闲超时，防止空闲连接无限期占用资源
+        client_sock.settimeout(SEND_TIMEOUT_SECONDS)
+        # 接受好友的数据库提交也持有 pending_friend_requests_lock。
+        # 先加载并入队好友快照，再发布在线连接，增量通知必定排在快照后。
+        # ready 在全局锁释放后才放行发送线程，锁内只做有界队列的非阻塞入队。
+        ready = threading.Event()
+        duplicate_login = False
+        try:
+            with pending_friend_requests_lock:
+                with usernames_lock:
+                    if username in usernames.values():
+                        duplicate_login = True
+                    else:
+                        friends = load_friends(username)
+                        session_timestamps[client_sock] = datetime.datetime.now().timestamp()
+                        send_msg(client_sock, {"type": "login_result", "success": True,
+                                               "e2ee_identity": e2ee_server.get_identity(username),
+                                               **opaque_fields}, ready=ready)
+                        send_msg(client_sock, {"type": "friends_list", "friends": list(friends)}, ready=ready)
+                        with user_friends_lock:
+                            user_friends[username] = friends
+                        current_username = username
+                        usernames[client_sock] = username
+        finally:
+            ready.set()
+        if duplicate_login:
+            send_msg(client_sock, {"type": "login_result", "success": False, "error": "该用户已登录"})
+            logging.warning("Duplicate login rejected")
+            return
+        authentication_slots.release()
+        auth_reserved = False
+        logging.info("Account login completed")
+
+        # 发送用户所属的群组列表
+        send_user_groups(client_sock, username)
+
+        send_history(client_sock, username)
+        # 补发离线期间收到的好友请求与群邀请（对方离线时积压的请求）
+        send_pending_friend_requests(client_sock, username)
+        send_pending_group_invites(client_sock, username)
+        broadcast_online_users()
         while True:
             # 检查会话是否过期（时间戳在每次收到消息时刷新，属滑动过期：活跃会话不会被强制踢出）
             if is_session_expired(client_sock):
