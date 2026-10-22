@@ -1,5 +1,6 @@
 """Desktop interactions introduced by the simplified client layout."""
 import gc
+from time import monotonic
 from tkinter import font as tkfont
 from types import SimpleNamespace
 import unittest
@@ -24,6 +25,25 @@ class ClientLayoutTests(unittest.TestCase):
         self.app.close()
         self.app = self.root = None
         gc.collect()
+
+    def wait_for_mapped_geometry(self, *widgets):
+        """Process native mapping events before measuring the 900x700 window."""
+        deadline = monotonic() + 2
+        previous = None
+        while monotonic() < deadline:
+            # On Windows, idle tasks alone do not dispatch the native mapping
+            # and Configure events that replace provisional 1px widget sizes.
+            self.root.update()
+            geometry = tuple((widget.winfo_ismapped(), widget.winfo_width(),
+                              widget.winfo_height(), widget.winfo_rootx(), widget.winfo_rooty())
+                             for widget in (self.root, *widgets))
+            ready = geometry[0][1:3] == (900, 700) and all(
+                mapped and width > 1 and height > 1
+                for mapped, width, height, _left, _top in geometry)
+            if ready and geometry == previous:
+                return
+            previous = geometry
+        self.fail(f'Window did not finish mapping and sizing within 2 seconds: {geometry}')
 
     def test_online_panel_toggle_preserves_the_latest_snapshot_and_draft(self):
         view = self.app.view
@@ -79,7 +99,7 @@ class ClientLayoutTests(unittest.TestCase):
         group.add(Message(name, '这是完整的群聊消息摘要，仅在侧栏按可用像素省略显示。' * 3, message_id=2))
         group.unread_ids.update(range(1, 10))
         view.refresh_activity()
-        self.root.update_idletasks()
+        self.wait_for_mapped_geometry(view.friends_listbox, view.group_listbox)
         for widget, badge in ((view.friends_listbox, '[123]'), (view.group_listbox, '[9]')):
             row = widget.get(0)
             font = tkfont.Font(root=self.root, font=widget.cget('font'))
@@ -141,10 +161,11 @@ class ClientLayoutTests(unittest.TestCase):
         self.root.geometry('900x700')
         self.root.deiconify()
         view.set_auth_busy(False, '暂时无法连接服务器，请检查地址和端口。\n原有输入与密钥保持完整，可以稍后重试。')
-        self.root.update_idletasks()
+        controls = ('login_button', 'register_button', 'migrate_button', 'legacy_unlock_button',
+                    'import_keys_button', 'theme_button', 'login_status')
+        self.wait_for_mapped_geometry(*(getattr(view, name) for name in controls))
         width, height = self.root.winfo_width(), self.root.winfo_height()
-        for name in ('login_button', 'register_button', 'migrate_button', 'legacy_unlock_button',
-                     'import_keys_button', 'theme_button', 'login_status'):
+        for name in controls:
             widget = getattr(view, name)
             left = widget.winfo_rootx() - self.root.winfo_rootx()
             top = widget.winfo_rooty() - self.root.winfo_rooty()

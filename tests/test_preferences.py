@@ -156,9 +156,9 @@ class PreferencesTests(unittest.TestCase):
 
     def test_legacy_config_defaults_theme_without_rewriting_until_account_save(self):
         self.store.select_profile('Go 本机')
-        legacy = json.loads(self.path.read_text())
+        legacy = json.loads(self.path.read_text(encoding='utf-8'))
         legacy.pop('theme', None)
-        original = json.dumps(legacy).encode()
+        original = json.dumps(legacy).encode('utf-8')
         self.path.write_bytes(original)
 
         reopened = PreferencesStore(self.path)
@@ -167,7 +167,7 @@ class PreferencesTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), original)
         reopened.update_account(('localhost', 12346), 'alice', {'sync_cursor': 7})
 
-        saved = json.loads(self.path.read_text())
+        saved = json.loads(self.path.read_text(encoding='utf-8'))
         self.assertEqual(saved['version'], 1)
         self.assertEqual(saved['theme'], 'light')
         after_save = PreferencesStore(self.path)
