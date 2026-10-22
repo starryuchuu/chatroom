@@ -4,6 +4,32 @@ import tkinter as tk
 from tkinter import font as tkfont, ttk
 
 
+PALETTES = {
+    'light': {
+        'bg': '#FBFBFC', 'surface': '#FFFFFF', 'sidebar': '#F2F3F5',
+        'text': '#22252B', 'muted': '#656B75', 'subtle': '#737A85',
+        'line': '#E3E5E9', 'accent': '#343A43', 'accent_hover': '#4B535E',
+        'selected': '#E0E4EA', 'self': '#E9EDF2', 'field': '#F6F7F9',
+        'success': '#357058', 'warning': '#946126', 'danger': '#9B3C40',
+    },
+    'dark': {
+        'bg': '#171A20', 'surface': '#20242C', 'sidebar': '#1B1F26',
+        'text': '#E7EAF0', 'muted': '#ADB5C2', 'subtle': '#9AA4B3',
+        'line': '#353D49', 'accent': '#CDD8E8', 'accent_hover': '#E1E8F2',
+        'selected': '#364458', 'self': '#2D3A4D', 'field': '#272D37',
+        'success': '#8BC6A7', 'warning': '#E4BC7F', 'danger': '#F0A0A6',
+    },
+}
+
+_COLOR_OPTIONS = (
+    'background', 'foreground', 'activebackground', 'activeforeground',
+    'disabledbackground', 'disabledforeground', 'highlightbackground',
+    'highlightcolor', 'insertbackground', 'selectbackground',
+    'selectforeground', 'selectcolor', 'readonlybackground', 'troughcolor',
+    'inactiveselectbackground',
+)
+
+
 class AutoScrollbar(ttk.Scrollbar):
     """Show a scrollbar only when its view has content outside the viewport."""
 
@@ -58,15 +84,12 @@ class _ThemedButton(tk.Button):
 class DesktopTheme:
     """A theme belongs to one Tcl interpreter, including its child windows."""
 
-    def __init__(self, root):
+    def __init__(self, root, mode='light'):
+        if mode not in PALETTES:
+            raise ValueError('未知的界面主题')
         self.root = root
-        self.colors = {
-            'bg': '#FBFBFC', 'surface': '#FFFFFF', 'sidebar': '#F2F3F5',
-            'text': '#22252B', 'muted': '#656B75', 'subtle': '#737A85',
-            'line': '#E3E5E9', 'accent': '#343A43', 'accent_hover': '#4B535E',
-            'selected': '#E0E4EA', 'self': '#E9EDF2', 'field': '#F6F7F9',
-            'success': '#357058', 'warning': '#946126', 'danger': '#9B3C40',
-        }
+        self.mode = mode
+        self.colors = dict(PALETTES[mode])
         families = set(tkfont.families(root))
         candidates = {
             'darwin': ('PingFang SC', 'SF Pro Text', 'Helvetica Neue'),
@@ -75,15 +98,122 @@ class DesktopTheme:
         family = next((name for name in candidates if name in families),
                       tkfont.nametofont('TkDefaultFont', root=root).actual('family'))
         self.fonts = {
-            'body': (family, 11), 'small': (family, 9),
+            'body': (family, 11), 'small': (family, 9), 'list': (family, 10),
             'title': (family, 17, 'bold'), 'heading': (family, 11, 'bold'),
             'hero': (family, 30, 'bold'),
         }
         root._chatroom_theme = self
         self._install_ttk()
 
+    def set_mode(self, mode):
+        """Recolor existing widgets in place, retaining focus, content and state."""
+        if mode not in PALETTES:
+            raise ValueError('未知的界面主题')
+        if mode == self.mode:
+            return
+        replacements = {color.lower(): PALETTES[mode][role]
+                        for role, color in self.colors.items()}
+        # Views and dialogs hold this dictionary, so keep its identity stable.
+        self.colors.update(PALETTES[mode])
+        self.mode = mode
+        self._install_ttk()
+        self._recolor(self.root, replacements)
+
+    @staticmethod
+    def _replacement(value, replacements):
+        return replacements.get(str(value).lower())
+
+    def _recolor(self, widget, replacements):
+        options = {}
+        available = widget.configure()
+        for option in _COLOR_OPTIONS:
+            if option in available:
+                color = self._replacement(widget.cget(option), replacements)
+                if color is not None:
+                    options[option] = color
+        if isinstance(widget, _ThemedButton):
+            # A disabled primary button displays its disabled background. Its
+            # remembered normal background must follow the palette as well.
+            options['background'] = (self._replacement(widget._normal_background, replacements)
+                                     or widget._normal_background)
+            widget._disabled_background = self.colors['selected']
+            widget._disabled_foreground = self.colors['muted']
+        if options:
+            widget.configure(**options)
+        if isinstance(widget, tk.Canvas):
+            for item in widget.find_all():
+                changes = {}
+                item_options = widget.itemconfigure(item)
+                for option in ('fill', 'outline', 'activefill', 'activeoutline',
+                               'disabledfill', 'disabledoutline'):
+                    if option in item_options:
+                        color = self._replacement(widget.itemcget(item, option), replacements)
+                        if color is not None:
+                            changes[option] = color
+                if changes:
+                    widget.itemconfigure(item, **changes)
+        elif isinstance(widget, tk.Text):
+            for tag in widget.tag_names():
+                changes = {option: color for option in ('background', 'foreground')
+                           if (color := self._replacement(widget.tag_cget(tag, option), replacements))}
+                if changes:
+                    widget.tag_configure(tag, **changes)
+        elif isinstance(widget, tk.Listbox):
+            for item in range(widget.size()):
+                changes = {option: color for option in ('background', 'foreground',
+                           'selectbackground', 'selectforeground')
+                           if (color := self._replacement(widget.itemcget(item, option), replacements))}
+                if changes:
+                    widget.itemconfigure(item, **changes)
+        elif isinstance(widget, tk.Menu):
+            end = widget.index('end')
+            for item in range(end + 1 if end is not None else 0):
+                if widget.type(item) in ('separator', 'tearoff', 'none', None):
+                    continue
+                changes = {option: color for option in ('background', 'foreground',
+                           'activebackground', 'activeforeground')
+                           if (color := self._replacement(widget.entrycget(item, option), replacements))}
+                if changes:
+                    widget.entryconfigure(item, **changes)
+        elif isinstance(widget, ttk.Treeview):
+            for tag in self.root.tk.splitlist(self.root.tk.call(widget, 'tag', 'names')):
+                changes = {option: color for option in ('background', 'foreground')
+                           if (color := self._replacement(widget.tag_configure(tag, option), replacements))}
+                if changes:
+                    widget.tag_configure(tag, **changes)
+        elif isinstance(widget, ttk.Combobox):
+            # Tk owns these popup widgets; they have no Python widget wrapper.
+            popdown = str(self.root.tk.call('ttk::combobox::PopdownWindow', widget))
+            listbox = popdown + '.f.l'
+            # Aqua uses a native menu instead of the listbox used on X11/Win32.
+            if self.root.tk.call('winfo', 'exists', listbox):
+                self.root.tk.call(listbox, 'configure',
+                                  '-background', self.colors['surface'],
+                                  '-foreground', self.colors['text'],
+                                  '-selectbackground', self.colors['selected'],
+                                  '-selectforeground', self.colors['text'])
+        # Python-owned children include hidden panels, menus and Toplevels.
+        # Avoid winfo_children(), which also returns unwrapped Tk popup widgets.
+        for child in list(widget.children.values()):
+            self._recolor(child, replacements)
+
     def _install_ttk(self):
         c, f = self.colors, self.fonts
+        # Tk's built-in input dialogs use classic widgets. Give new widgets
+        # palette defaults too; explicitly styled application controls win.
+        defaults = {
+            '*background': c['bg'], '*foreground': c['text'],
+            '*activeBackground': c['selected'], '*activeForeground': c['text'],
+            '*disabledForeground': c['subtle'], '*highlightBackground': c['line'],
+            '*highlightColor': c['accent'], '*insertBackground': c['text'],
+            '*selectBackground': c['selected'], '*selectForeground': c['text'],
+            '*selectColor': c['field'], '*Entry.background': c['surface'],
+            '*Entry.disabledBackground': c['field'], '*Text.background': c['field'],
+            '*Listbox.background': c['surface'], '*Menu.background': c['surface'],
+            '*Button.background': c['field'],
+        }
+        for option, color in defaults.items():
+            self.root.option_add(option, color, 60)
         style = ttk.Style(self.root)
         # Clam exposes field and focus colors consistently on all Tk platforms.
         style.theme_use('clam')
@@ -111,8 +241,11 @@ class DesktopTheme:
                       bordercolor=[('focus', c['accent'])],
                       background=[('readonly', c['surface'])])
         style.configure('TCheckbutton', background=c['bg'], padding=(0, 3),
-                        focuscolor=c['accent'])
-        style.map('TCheckbutton', background=[('active', c['bg'])])
+                        focuscolor=c['accent'], indicatorbackground=c['field'],
+                        indicatorforeground=c['text'])
+        style.map('TCheckbutton', background=[('active', c['bg'])],
+                  indicatorbackground=[('selected', c['accent']), ('active', c['selected'])],
+                  indicatorforeground=[('selected', c['surface'])])
         style.configure('Treeview', background=c['surface'], fieldbackground=c['surface'],
                         foreground=c['text'], rowheight=34, borderwidth=0)
         style.map('Treeview', background=[('selected', c['selected'])],
@@ -121,8 +254,16 @@ class DesktopTheme:
                         padding=(8, 8), font=f['small'], relief='flat')
         style.map('Treeview.Heading', background=[('active', c['selected'])])
         style.configure('TSeparator', background=c['line'])
-        style.configure('Vertical.TScrollbar', background=c['selected'],
-                        troughcolor=c['bg'], borderwidth=0, arrowsize=12)
+        for orientation in ('Vertical', 'Horizontal'):
+            name = orientation + '.TScrollbar'
+            style.configure(name, background=c['subtle'], arrowcolor=c['text'],
+                            troughcolor=c['bg'], bordercolor=c['bg'],
+                            lightcolor=c['bg'], darkcolor=c['bg'], borderwidth=0, arrowsize=12)
+            style.map(name, background=[('pressed', c['accent']), ('active', c['muted'])])
+        # Also applies to newly created combobox dropdowns.
+        for option, color in (('background', c['surface']), ('foreground', c['text']),
+                              ('selectBackground', c['selected']), ('selectForeground', c['text'])):
+            self.root.option_add('*TCombobox*Listbox.' + option, color)
         self.style = style
 
     def _button_options(self, parent, variant):

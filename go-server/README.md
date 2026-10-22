@@ -1,8 +1,8 @@
 # Go Chatroom Server
 
-## 当前版本：v1.3.0，传输协议 v2 + OPAQUE 单密码认证
+## 当前版本：v1.3.1，传输协议 v2 + OPAQUE 单密码认证
 
-升级时需要配套更新 Python 客户端和 Go 服务端到 v1.3.0。正常注册、登录只输入一个统一密码，通过 OPAQUE 认证后在客户端解锁随机生成的聊天身份，服务器不接收正常登录密码，也不接收明文身份私钥。新版客户端要求 `e2ee_v1` 与 `opaque_v1`；连接旧服务器会停止，不回退到旧密码登录。
+单密码认证需要 v1.3.0 或更新的 Python 客户端和 Go 服务端；v1.3.1 增加客户端深浅色主题并保持协议兼容。正常注册、登录只输入一个统一密码，通过 OPAQUE 认证后在客户端解锁随机生成的聊天身份，服务器不接收正常登录密码，也不接收明文身份私钥。新版客户端要求 `e2ee_v1` 与 `opaque_v1`；连接旧服务器会停止，不回退到旧密码登录。
 
 完整传输报文继续使用 HMAC-SHA256 认证及独立方向序号，RSA/AES-GCM 用于传输密钥交换与加密。私聊和群聊保持端到端加密，Go 服务端只验证公开签名并保存、转发密文，不能解开正文。路由及成员元数据仍可见，旧历史仍标记为非端到端加密；此聊天协议仍不提供针对长期接收私钥日后泄露的前向保密。详情见[端到端加密、备份与限制](../docs/END_TO_END_ENCRYPTION.md)。
 
@@ -22,7 +22,7 @@ Go 与 Python 共用 `opaque-ke` 4.0.1 的 RFC 9807 OPAQUE WASM 核心（Ristret
 
 ## 下载与验证
 
-在 [v1.3.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.0) 下载，详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，应使用配套 v1.3.0 Python 客户端；OPAQUE WASM 已嵌入可执行文件，无需另外安装 WASM 运行时。
+在 [v1.3.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.1) 下载，详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，可使用 v1.3.0 或更新的 Python 客户端；OPAQUE WASM 已嵌入可执行文件，无需另外安装 WASM 运行时。
 
 ```bash
 go test ./...
@@ -180,7 +180,7 @@ go test ./...
 
 ### 使用 Python 客户端联调
 
-在 Python 客户端登录页选择 Go 服务器配置，或填入端口 `12346`。使用 v1.3.0 客户端验证新账号注册、登录、显式迁移、改密及同一数据库在 Python/Go 间切换后的身份恢复。
+在 Python 客户端登录页选择 Go 服务器配置，或填入端口 `12346`。使用 v1.3.1 客户端验证新账号注册、登录、显式迁移、改密及同一数据库在 Python/Go 间切换后的身份恢复。
 
 > 注意：Go 服务端仅监听 `127.0.0.1`，请确保客户端与服务端在同一主机上运行。
 

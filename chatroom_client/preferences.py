@@ -194,7 +194,7 @@ class PreferencesStore:
             if first.name == go.name:
                 go = ServerProfile('Go 本机（12346）', go.host, go.port)
             profiles.append(asdict(go))
-        self._data = {'version': 1, 'profiles': profiles, 'selected_profile': first.name,
+        self._data = {'version': 1, 'theme': 'light', 'profiles': profiles, 'selected_profile': first.name,
                       'notifications': {'enabled': True, 'do_not_disturb': False}, 'accounts': {}}
         self.warning = None
         self._blocked = False
@@ -225,8 +225,12 @@ class PreferencesStore:
     def _validate(data):
         if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1:
             raise PreferencesError('不支持的客户端配置格式')
-        if data.keys() - {'version', 'profiles', 'selected_profile', 'notifications', 'accounts'}:
+        if data.keys() - {'version', 'theme', 'profiles', 'selected_profile', 'notifications', 'accounts'}:
             raise PreferencesError('配置文件包含不支持的字段')
+        theme = data.get('theme', 'light')
+        if not isinstance(theme, str) or theme not in ('light', 'dark'):
+            raise PreferencesError('主题须为 light 或 dark')
+        data['theme'] = theme
         profiles = data.get('profiles')
         if not isinstance(profiles, list) or not 1 <= len(profiles) <= 100:
             raise PreferencesError('服务器配置列表格式错误')
@@ -374,6 +378,20 @@ class PreferencesStore:
 
         self._mutate(mutation, explicit=True)
         return self.selected_profile
+
+    @property
+    def theme(self):
+        return self._data['theme']
+
+    def set_theme(self, mode):
+        if not isinstance(mode, str) or mode not in ('light', 'dark'):
+            raise PreferencesError('主题须为 light 或 dark')
+
+        def mutation(candidate):
+            candidate['theme'] = mode
+            return mode
+
+        return self._mutate(mutation, explicit=True)
 
     @property
     def notifications(self):

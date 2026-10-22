@@ -11,7 +11,7 @@ from unittest.mock import patch
 from chatroom_client.preferences import PreferencesError, PreferencesStore, ServerProfile, default_config_path
 
 
-def _update_preferences_worker(path, username, ready, start):
+def _update_preferences_worker(path, username, ready, start, update_theme=False):
     store = PreferencesStore(path)
     ready.send(True)
     ready.close()
@@ -19,6 +19,8 @@ def _update_preferences_worker(path, username, ready, start):
         raise RuntimeError('preferences worker did not receive start signal')
     for cursor in range(1, 11):
         store.update_account(('localhost', 12345), username, {'sync_cursor': cursor})
+        if update_theme:
+            store.set_theme('light' if cursor % 2 else 'dark')
 
 
 def _hold_preferences_lock(path, ready, release):
@@ -152,18 +154,93 @@ class PreferencesTests(unittest.TestCase):
         self.assertFalse(reopened.notifications_enabled)
         self.assertTrue(reopened.do_not_disturb)
 
+    def test_legacy_config_defaults_theme_without_rewriting_until_account_save(self):
+        self.store.select_profile('Go 本机')
+        legacy = json.loads(self.path.read_text())
+        legacy.pop('theme', None)
+        original = json.dumps(legacy).encode()
+        self.path.write_bytes(original)
+
+        reopened = PreferencesStore(self.path)
+        self.assertIsNone(reopened.warning)
+        self.assertEqual(reopened.theme, 'light')
+        self.assertEqual(self.path.read_bytes(), original)
+        reopened.update_account(('localhost', 12346), 'alice', {'sync_cursor': 7})
+
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved['version'], 1)
+        self.assertEqual(saved['theme'], 'light')
+        after_save = PreferencesStore(self.path)
+        self.assertEqual(after_save.selected_profile.name, 'Go 本机')
+        self.assertEqual(after_save.account(('localhost', 12346), 'alice'), {'sync_cursor': 7})
+
+    def test_light_and_dark_theme_survive_restart_without_schema_change(self):
+        self.assertEqual(self.store.theme, 'light')
+        self.assertFalse(self.path.exists())
+        for mode in ('dark', 'light'):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.store.set_theme(mode), mode)
+                self.assertEqual(self.store.theme, mode)
+                reopened = PreferencesStore(self.path)
+                self.assertIsNone(reopened.warning)
+                self.assertEqual(reopened.theme, mode)
+                saved = json.loads(self.path.read_text())
+                self.assertEqual(saved['theme'], mode)
+                self.assertEqual(saved['version'], 1)
+
+    def test_invalid_theme_input_preserves_disk_and_memory(self):
+        self.store.set_theme('dark')
+        original = self.path.read_bytes()
+        for mode in (None, True, False, 0, [], {}, '', 'system', 'Dark'):
+            with self.subTest(mode=mode):
+                with self.assertRaises(PreferencesError):
+                    self.store.set_theme(mode)
+                self.assertEqual(self.store.theme, 'dark')
+                self.assertEqual(self.path.read_bytes(), original)
+
+    def test_invalid_theme_on_disk_is_preserved_until_explicit_theme_save(self):
+        self.store.set_theme('dark')
+        valid = json.loads(self.path.read_text())
+        for mode in (None, True, False, 0, [], {}, '', 'system', 'Dark'):
+            with self.subTest(mode=mode):
+                invalid = dict(valid, theme=mode)
+                original = json.dumps(invalid).encode()
+                self.path.write_bytes(original)
+                reopened = PreferencesStore(self.path)
+                self.assertIsNotNone(reopened.warning)
+                self.assertEqual(reopened.theme, 'light')
+                self.assertEqual(self.path.read_bytes(), original)
+                reopened.set_theme('dark')
+                self.assertIsNone(reopened.warning)
+                self.assertEqual(PreferencesStore(self.path).theme, 'dark')
+
+    def test_failed_theme_write_preserves_disk_and_memory(self):
+        self.store.set_theme('dark')
+        original = self.path.read_bytes()
+        with patch('chatroom_client.preferences.os.replace', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(PreferencesError, 'disk full'):
+                self.store.set_theme('light')
+        self.assertEqual(self.store.theme, 'dark')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(PreferencesStore(self.path).theme, 'dark')
+        self.assertEqual(list(self.path.parent.glob('.client-*.tmp')), [])
+
     def test_stale_instances_preserve_profiles_settings_and_account_fields(self):
         second = PreferencesStore(self.path)
         remote = ServerProfile('远程', 'chat.example', 443, 'ab' * 32)
         activity = {'initialized': True, 'conversations': []}
         self.store.save_profile(remote)
         self.store.set_notifications(enabled=False)
+        second.set_theme('dark')
         second.set_notifications(do_not_disturb=True)
         second.update_account(('localhost', 12345), 'alice', {'sync_cursor': 42})
         self.store.update_account(('localhost', 12345), 'alice', {'activity': activity})
         second.update_account(('localhost', 12345), 'bob', {'sync_cursor': 99})
-        self.store.set_notifications(do_not_disturb=True)
+        self.assertEqual(PreferencesStore(self.path).theme, 'dark')
+        self.store.set_theme('light')
+        second.set_notifications(do_not_disturb=True)
         reopened = PreferencesStore(self.path)
+        self.assertEqual(reopened.theme, 'light')
         self.assertEqual(reopened.selected_profile, remote)
         self.assertEqual(reopened.notifications, {'enabled': False, 'do_not_disturb': True})
         self.assertEqual(reopened.account(('localhost', 12345), 'alice'),
@@ -203,7 +280,7 @@ class PreferencesTests(unittest.TestCase):
         self.assertIsNone(blocked.warning)
         self.assertEqual(blocked.selected_profile.name, 'Go 本机')
 
-    def test_spawned_processes_preserve_each_others_account_updates(self):
+    def test_spawned_processes_preserve_theme_and_each_others_account_updates(self):
         self.store.select_profile('Go 本机')
         context = multiprocessing.get_context('spawn')
         start = context.Event()
@@ -212,7 +289,7 @@ class PreferencesTests(unittest.TestCase):
         for username in ('alice', 'bob'):
             receiver, sender = context.Pipe(duplex=False)
             process = context.Process(target=_update_preferences_worker,
-                                      args=(str(self.path), username, sender, start))
+                                      args=(str(self.path), username, sender, start, username == 'alice'))
             process.start()
             sender.close()
             self.addCleanup(receiver.close)
@@ -229,6 +306,7 @@ class PreferencesTests(unittest.TestCase):
             self.assertEqual(process.exitcode, 0)
         reopened = PreferencesStore(self.path)
         self.assertEqual(reopened.selected_profile.name, 'Go 本机')
+        self.assertEqual(reopened.theme, 'dark')
         for username in ('alice', 'bob'):
             self.assertEqual(reopened.account(('localhost', 12345), username), {'sync_cursor': 10})
 
@@ -260,10 +338,16 @@ class PreferencesTests(unittest.TestCase):
     def test_memory_store_never_resolves_or_reads_user_config(self):
         with patch('chatroom_client.preferences.default_config_path', side_effect=AssertionError('home lookup')):
             store = PreferencesStore(persistent=False)
+            self.assertEqual(store.theme, 'light')
+            self.assertEqual(store.set_theme('dark'), 'dark')
+            with self.assertRaises(PreferencesError):
+                store.set_theme(None)
             store.select_profile('Go 本机')
             store.update_account(('localhost', 12346), 'alice', {'sync_cursor': 1})
         self.assertIsNone(store.path)
+        self.assertEqual(store.theme, 'dark')
         self.assertEqual(store.selected_profile.port, 12346)
+        self.assertEqual(store.account(('localhost', 12346), 'alice'), {'sync_cursor': 1})
 
     def test_config_override_is_used_for_packaged_and_source_clients(self):
         with patch.dict(os.environ, {'CHATROOM_CONFIG_DIR': self.tmp.name}):

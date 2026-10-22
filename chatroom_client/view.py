@@ -1,7 +1,7 @@
 """Tk widgets and rendering. Network and domain updates belong to the controller."""
 import logging
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import font as tkfont, messagebox, simpledialog
 
 from .group_view import GroupWindows
 from .models import ChatKey
@@ -22,6 +22,8 @@ class TkClientView:
         self._scheduled = set()
         self._destroyed = False
         self._friend_keys = []
+        self._list_widths = {}
+        self._row_fonts = {}
         self.profile_selector = None
         self.theme = DesktopTheme(master)
         self.colors, self.fonts = self.theme.colors, self.theme.fonts
@@ -35,6 +37,7 @@ class TkClientView:
 
     def bind_controller(self, controller):
         self.controller = controller
+        self.theme.set_mode(controller.preferences.theme)
         self.groups_ui = GroupWindows(self.master, controller)
         self.master.protocol('WM_DELETE_WINDOW', controller.close)
         self.master.bind('<FocusIn>', lambda event: self.schedule(0, self.controller.activity.focus_changed), add='+')
@@ -68,6 +71,7 @@ class TkClientView:
         self.chat_frames.clear()
         self.current_chat_frame = None
         self._friend_keys.clear()
+        self._list_widths.clear()
         self.profile_selector = None
         self.master.title('chatroom')
 
@@ -255,13 +259,79 @@ class TkClientView:
             if label is not None and label.winfo_exists():
                 label.configure(text=text)
 
+    @staticmethod
+    def _ellipsize(text, pixels, font):
+        if font.measure(text) <= pixels:
+            return text
+        marker = '…'
+        if pixels < font.measure(marker):
+            return ''
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if font.measure(text[:middle] + marker) <= pixels:
+                low = middle
+            else:
+                high = middle - 1
+        return text[:low].rstrip() + marker
+
     def conversation_label(self, key, title):
+        widget = getattr(self, 'group_listbox' if key.kind == 'group' else 'friends_listbox', None)
+        pixels = max(40, widget.winfo_width() - 12) if widget is not None and widget.winfo_width() > 2 else 232
+        font_name = str(widget.cget('font')) if widget is not None else str(self.fonts['body'])
+        if font_name not in self._row_fonts:
+            self._row_fonts[font_name] = tkfont.Font(root=self.master,
+                                                    font=widget.cget('font') if widget is not None else self.fonts['body'])
+        font = self._row_fonts[font_name]
+        title = ' '.join(str(title).split())
         conversation = self.state.conversations.get(key)
-        if conversation is None:
-            return title
-        badge = f' [{conversation.unread_count}]' if conversation.unread_count else ''
-        preview = ' '.join(conversation.preview.split())[:34]
-        return f'{title}{badge}' + (f' · {preview}' if preview else '')
+        badge = f' [{conversation.unread_count}]' if conversation is not None and conversation.unread_count else ''
+        preview = ' '.join(conversation.preview.split()) if conversation is not None else ''
+        title_space = max(0, pixels - font.measure(badge))
+        if not preview:
+            return self._ellipsize(title, title_space, font) + badge
+        # Keep the unread count intact; share the remaining row deliberately
+        # between the identity and the latest-message preview.
+        separator = '  ·  '
+        name_budget = min(font.measure(title), max(36, int((title_space - font.measure(separator)) * .52)))
+        name = self._ellipsize(title, name_budget, font)
+        preview_space = pixels - font.measure(name + badge + separator)
+        summary = self._ellipsize(preview, preview_space, font)
+        if not summary:
+            return self._ellipsize(title, title_space, font) + badge
+        return name + badge + separator + summary
+
+    def resize_conversation_list(self, kind, width):
+        if self._list_widths.get(kind) == width:
+            return
+        self._list_widths[kind] = width
+        widget = self.group_listbox if kind == 'group' else self.friends_listbox
+        if not widget.winfo_exists():
+            return
+        if kind == 'group':
+            rows = [(ChatKey('group', gid), info.get('group_name', gid))
+                    for gid, info in self.state.groups.items()]
+        else:
+            rows = [(ChatKey('private', name), name) for name in self._friend_keys]
+        selected = widget.curselection()
+        active = widget.index(tk.ACTIVE) if widget.size() else None
+        anchor = widget.index(tk.ANCHOR) if widget.size() else None
+        position = widget.yview()[0]
+        for index, (key, title) in enumerate(rows):
+            if index >= widget.size():
+                break
+            text = self.conversation_label(key, title)
+            if widget.get(index) != text:
+                widget.delete(index)
+                widget.insert(index, text)
+        for index in selected:
+            widget.selection_set(index)
+        if widget.size():
+            if active is not None:
+                widget.activate(min(active, widget.size() - 1))
+            if anchor is not None:
+                widget.selection_anchor(min(anchor, widget.size() - 1))
+        widget.yview_moveto(position)
 
     def refresh_activity(self):
         if getattr(self, 'friends_listbox', None) is None or not self.friends_listbox.winfo_exists():
@@ -324,31 +394,62 @@ class TkClientView:
             self.do_not_disturb.set(self.controller.preferences.do_not_disturb)
             self.notify('提醒设置保存失败', str(error))
 
+    def set_theme(self, mode):
+        try:
+            self.controller.preferences.set_theme(mode)
+        except (OSError, ValueError) as error:
+            self.notify('主题设置保存失败', str(error))
+            return False
+        self.theme.set_mode(mode)
+        self.theme_button.configure(text='浅色模式' if mode == 'dark' else '深色模式')
+        return True
+
+    def add_theme_button(self, parent):
+        self.theme_button = self.theme.button(
+            parent, '浅色模式' if self.theme.mode == 'dark' else '深色模式',
+            lambda: self.set_theme('light' if self.theme.mode == 'dark' else 'dark'),
+            variant='quiet')
+        return self.theme_button
+
     def build_login(self):
-        """A quiet, compact form, using the same controls as the chat view."""
+        """A focused login card keeps primary and recovery actions distinct."""
         self.clear_window()
         c = self.colors
         self.master.configure(bg=c['bg'])
         header = tk.Frame(self.master, bg=c['bg'])
-        header.pack(fill=tk.X, padx=32, pady=(22, 0))
+        header.pack(fill=tk.X, padx=28, pady=(18, 0))
         self.brand(header).pack(side=tk.LEFT)
-        self.label(header, '桌面客户端', muted=True, font='small').pack(side=tk.RIGHT)
+        self.add_theme_button(header).pack(side=tk.RIGHT)
+        self.label(header, '桌面客户端', muted=True, font='small').pack(side=tk.RIGHT, padx=12)
 
-        # The form scales naturally with the platform font and Tk's DPI setting.
-        form = tk.Frame(self.master, bg=c['bg'])
-        form.pack(expand=True, padx=32, pady=(8, 12))
+        stage = tk.Frame(self.master, bg=c['bg'])
+        stage.pack(fill=tk.BOTH, expand=True, padx=24, pady=(12, 18))
+        self.login_canvas = tk.Canvas(stage, bg=c['bg'], highlightthickness=0,
+                                      yscrollincrement=20, takefocus=False)
+        self.login_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.login_scrollbar = AutoScrollbar(stage, orient=tk.VERTICAL, command=self.login_canvas.yview)
+        self.login_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.login_canvas.configure(yscrollcommand=self.login_scrollbar.set)
+        self.login_card = tk.Frame(self.login_canvas, bg=c['surface'], highlightthickness=1,
+                                   highlightbackground=c['line'], highlightcolor=c['line'], bd=0)
+        self._login_window = self.login_canvas.create_window((0, 0), window=self.login_card, anchor=tk.NW)
+        self._login_overflow = False
+        self.login_canvas.bind('<Configure>', self.layout_login_card)
+        self.login_card.bind('<Configure>', self.layout_login_card)
+        form = tk.Frame(self.login_card, bg=c['surface'], padx=28, pady=18)
+        form.pack(fill=tk.BOTH, expand=True)
         form.columnconfigure(0, weight=1)
         self.label(form, '欢迎回来', font='title').grid(row=0, column=0, sticky='w')
-        self.label(form, '登录账号，继续你的对话。', muted=True).grid(
+        self.label(form, '登录账号，继续你的对话。', muted=True, font='small').grid(
             row=1, column=0, sticky='w', pady=(4, 12))
         self.profile_selector = ServerProfileSelector(form, self.controller)
         self.profile_selector.grid(row=2, column=0, sticky='ew', pady=(0, 10))
 
         def field(row, title, **kwargs):
             self.label(form, title, font='small', muted=True).grid(
-                row=row, column=0, sticky='w', pady=(0, 5))
+                row=row, column=0, sticky='w', pady=(0, 4))
             widget = self.theme.entry(form, width=38, **kwargs)
-            widget.grid(row=row+1, column=0, sticky='ew', ipady=7, pady=(0, 8))
+            widget.grid(row=row+1, column=0, sticky='ew', ipady=4, pady=(0, 8))
             return widget
 
         self.username_entry = field(3, '用户名')
@@ -356,35 +457,103 @@ class TkClientView:
         self.encryption_entry = None
         row = 7
         if self.controller.encryption is not None:
-            note = tk.Frame(form, bg=c['bg'])
-            note.grid(row=row, column=0, sticky='ew', pady=(0, 4))
-            self.label(note, '一个密码登录并解锁加密身份', muted=True, font='small').pack(side=tk.LEFT)
+            note = tk.Frame(form, bg=c['surface'])
+            note.grid(row=row, column=0, sticky='ew', pady=(0, 6))
+            self.label(note, '登录即解锁加密身份', muted=True, font='small').pack(side=tk.LEFT)
             self.import_keys_button = self.theme.button(
                 note, '恢复密钥…', lambda: import_keys(self), variant='quiet',
                 font=self.fonts['small'], padx=5, pady=2)
             self.import_keys_button.pack(side=tk.RIGHT)
             row += 1
-            self.migrate_button = self.theme.button(form, '迁移旧账号…', self.migrate_account,
-                                                    variant='quiet', font=self.fonts['small'])
-            self.migrate_button.grid(row=row, column=0, sticky='w', pady=(0, 6))
-            self.legacy_unlock_button = self.theme.button(form, '解锁旧密钥…', self.unlock_legacy_keys,
-                                                         variant='quiet', font=self.fonts['small'])
-            self.legacy_unlock_button.grid(row=row, column=0, sticky='e', pady=(0, 6))
-            row += 1
-        self.port_entry = field(row, '端口 · 仅用于本次连接')
+        self.port_entry = field(row, '连接端口 · 仅本次有效')
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
         row += 2
-        self.login_button = self.theme.button(form, '登录', self.controller.login, variant='primary')
-        self.login_button.grid(row=row, column=0, sticky='ew', pady=(0, 4))
-        actions = tk.Frame(form, bg=c['bg'])
+        self.login_button = self.theme.button(form, '登录', self.controller.login, variant='primary', pady=9)
+        self.login_button.grid(row=row, column=0, sticky='ew', pady=(2, 6))
+        actions = tk.Frame(form, bg=c['surface'])
         actions.grid(row=row+1, column=0, sticky='ew')
-        self.register_button = self.theme.button(actions, '创建账号', self.register, variant='quiet')
+        self.register_button = self.theme.button(actions, '创建账号', self.register, variant='quiet',
+                                                 font=self.fonts['small'], padx=4, pady=4)
         self.register_button.pack(side=tk.LEFT)
-        self.theme.button(actions, '取消连接', self.controller.cancel_auth, variant='quiet').pack(side=tk.RIGHT)
-        self.login_status = self.label(form, '', muted=True, font='small', wraplength=440)
-        self.login_status.grid(row=row+2, column=0, sticky='ew', pady=(4, 0))
+        self.theme.button(actions, '取消连接', self.controller.cancel_auth, variant='quiet',
+                          font=self.fonts['small'], padx=4, pady=4).pack(side=tk.RIGHT)
+        row += 2
+        if self.controller.encryption is not None:
+            recovery = tk.Frame(form, bg=c['surface'])
+            recovery.grid(row=row, column=0, sticky='ew', pady=(6, 0))
+            tk.Frame(recovery, bg=c['line'], height=1).pack(fill=tk.X, pady=(0, 7))
+            self.migrate_button = self.theme.button(recovery, '迁移旧账号…', self.migrate_account,
+                                                    variant='quiet', font=self.fonts['small'], padx=4, pady=3)
+            self.migrate_button.pack(side=tk.LEFT)
+            self.legacy_unlock_button = self.theme.button(recovery, '解锁旧密钥…', self.unlock_legacy_keys,
+                                                         variant='quiet', font=self.fonts['small'], padx=4, pady=3)
+            self.legacy_unlock_button.pack(side=tk.RIGHT)
+            row += 1
+        self.login_status = self.label(form, '', muted=True, font='small', wraplength=410)
+        self.login_status.grid(row=row, column=0, sticky='ew', pady=(4, 0))
+        self.bind_login_scrolling(self.login_canvas)
         self.username_entry.focus_set()
         self.master.bind('<Return>', lambda event: self.controller.login())
+
+    def layout_login_card(self, event=None):
+        canvas, card = self.login_canvas, self.login_card
+        if not canvas.winfo_exists() or not card.winfo_exists():
+            return
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        card_width, card_height = min(card.winfo_reqwidth(), width), card.winfo_reqheight()
+        self._login_overflow = card_height > height
+        # Keep the usual centered composition, but align overflowing content at
+        # the top so every action remains reachable at large text/DPI settings.
+        canvas.itemconfigure(self._login_window, width=card_width, height=card_height)
+        canvas.coords(self._login_window, max(0, (width-card_width)//2), max(0, (height-card_height)//2))
+        canvas.configure(scrollregion=(0, 0, width, max(height, card_height)))
+        if not self._login_overflow:
+            canvas.yview_moveto(0)
+
+    def bind_login_scrolling(self, widget):
+        widget.bind('<MouseWheel>', self.on_login_wheel, add='+')
+        widget.bind('<Button-4>', lambda event: self.on_login_wheel(event, units=-3), add='+')
+        widget.bind('<Button-5>', lambda event: self.on_login_wheel(event, units=3), add='+')
+        if widget.winfo_class() in ('Entry', 'Button', 'Text', 'Listbox', 'TEntry',
+                                    'TCombobox', 'TButton', 'TCheckbutton'):
+            widget.bind('<FocusIn>', self.reveal_login_focus, add='+')
+        for child in list(widget.children.values()):
+            self.bind_login_scrolling(child)
+
+    def on_login_wheel(self, event, units=None):
+        canvas = getattr(self, 'login_canvas', None)
+        if canvas is None or not canvas.winfo_exists() or not self._login_overflow:
+            return None
+        if units is None:
+            delta = getattr(event, 'delta', 0)
+            if not delta:
+                return None
+            units = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+            units *= 3
+        canvas.yview_scroll(units, 'units')
+        return 'break'
+
+    def reveal_login_focus(self, event):
+        canvas = getattr(self, 'login_canvas', None)
+        if canvas is None or not canvas.winfo_exists() or not self._login_overflow:
+            return
+        widget = event.widget
+        if not widget.winfo_exists():
+            return
+        top = widget.winfo_rooty() - canvas.winfo_rooty()
+        bottom = top + widget.winfo_height()
+        height = canvas.winfo_height()
+        offset = canvas.canvasy(0)
+        destination = None
+        if top < 12:
+            destination = offset + top - 12
+        elif bottom > height - 12:
+            destination = offset + bottom - height + 12
+        if destination is not None:
+            extent = max(height, self.login_card.winfo_reqheight())
+            canvas.yview_moveto(max(0, destination) / extent)
 
     def build_chat(self):
         """Two columns keep conversations and their contents in focus."""
@@ -394,19 +563,28 @@ class TkClientView:
         self.master.configure(bg=c['line'])
         toolbar = tk.Frame(self.master, bg=c['surface'])
         toolbar.pack(side=tk.TOP, fill=tk.X, pady=(0, 1))
-        self.brand(toolbar).pack(side=tk.LEFT, padx=(22, 24), pady=14)
-        self.connection_status = self.label(toolbar, '已连接', font='small', fg=c['success'],
-                                            wraplength=230)
+        self.brand(toolbar).pack(side=tk.LEFT, padx=(22, 18), pady=13)
+        connection_chip = tk.Frame(toolbar, bg=c['field'], padx=9, pady=4)
+        connection_chip.pack(side=tk.LEFT)
+        self.connection_status = self.label(connection_chip, '已连接', font='small', fg=c['success'],
+                                            wraplength=180)
         self.connection_status.pack(side=tk.LEFT)
+        toolbar_actions = tk.Frame(toolbar, bg=c['surface'])
+        toolbar_actions.pack(side=tk.RIGHT, padx=(12, 16))
         self.disconnect_button = self.theme.button(
-            toolbar, '断开连接', self.controller.disconnect, variant='quiet')
-        self.disconnect_button.pack(side=tk.RIGHT, padx=(8, 20))
+            toolbar_actions, '断开连接', self.controller.disconnect, variant='quiet',
+            font=f['small'], padx=10, pady=6)
+        self.disconnect_button.pack(side=tk.RIGHT, padx=(6, 0))
+        theme_button = self.add_theme_button(toolbar_actions)
+        theme_button.configure(font=f['small'], padx=10, pady=6)
+        theme_button.pack(side=tk.RIGHT)
         self.sync_retry_button = self.theme.button(
-            toolbar, '重试补取', self.controller.retry_sync, variant='quiet')
+            toolbar_actions, '重试补取', self.controller.retry_sync, variant='quiet',
+            font=f['small'], padx=10, pady=6)
         self.notifications_enabled = tk.BooleanVar(self.master, self.controller.preferences.notifications_enabled)
         self.do_not_disturb = tk.BooleanVar(self.master, self.controller.preferences.do_not_disturb)
-        notifications = tk.Menubutton(toolbar, text='通知设置', bg=c['surface'], fg=c['muted'],
-                                      font=f['body'], relief=tk.FLAT, bd=0, padx=12, pady=7,
+        notifications = tk.Menubutton(toolbar_actions, text='通知设置', bg=c['surface'], fg=c['muted'],
+                                      font=f['small'], relief=tk.FLAT, bd=0, padx=10, pady=6,
                                       activebackground=c['selected'], takefocus=True,
                                       highlightthickness=1, highlightbackground=c['surface'],
                                       highlightcolor=c['accent'], cursor='hand2')
@@ -418,24 +596,26 @@ class TkClientView:
                              command=self.save_notification_preferences)
         notifications.configure(menu=menu)
         notifications.pack(side=tk.RIGHT)
-        self.online_button = self.theme.button(toolbar, '在线用户 · 0', self.toggle_online, variant='quiet')
+        self.online_button = self.theme.button(toolbar_actions, '在线用户 · 0', self.toggle_online, variant='quiet',
+                                               font=f['small'], padx=10, pady=6)
         self.online_button.pack(side=tk.RIGHT, padx=4)
 
         body = tk.Frame(self.master, bg=c['line'])
         body.pack(fill=tk.BOTH, expand=True)
-        sidebar = tk.Frame(body, bg=c['sidebar'], width=256)
+        sidebar = tk.Frame(body, bg=c['sidebar'], width=272)
         sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 1))
         sidebar.pack_propagate(False)
         account = tk.Frame(sidebar, bg=c['sidebar'])
-        account.pack(fill=tk.X, padx=20, pady=(22, 18))
-        self.label(account, self.state.username, font='heading', wraplength=210).pack(fill=tk.X)
+        account.pack(fill=tk.X, padx=20, pady=(20, 16))
+        self.label(account, '当前账号', muted=True, font='small').pack(fill=tk.X, pady=(0, 6))
+        self.label(account, self.state.username, font='heading', wraplength=232).pack(fill=tk.X)
         endpoint = self.controller.connection.endpoint or (
             self.controller.connection.settings.host, self.controller.connection.settings.port)
         host = f'[{endpoint[0]}]' if ':' in endpoint[0] else endpoint[0]
-        self.label(account, f'{host}:{endpoint[1]}', muted=True, font='small', wraplength=210).pack(
+        self.label(account, f'{host}:{endpoint[1]}', muted=True, font='small', wraplength=232).pack(
             fill=tk.X, pady=(4, 0))
         actions = tk.Frame(sidebar, bg=c['sidebar'])
-        actions.pack(fill=tk.X, padx=16, pady=(0, 18))
+        actions.pack(fill=tk.X, padx=16, pady=(0, 20))
         self.theme.button(actions, '添加好友', self.add_friend, variant='secondary',
                           padx=10, font=f['small']).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         self.theme.button(actions, '创建群聊', self.groups_ui.create, variant='secondary',
@@ -452,6 +632,7 @@ class TkClientView:
             holder = tk.Frame(lists, bg=c['sidebar'])
             holder.grid(row=row+1, column=0, sticky='nsew', pady=(0, 18))
             widget = self.theme.listbox(holder, width=23, height=4, bg=c['sidebar'],
+                                       font=f['list'],
                                        highlightbackground=c['sidebar'], selectborderwidth=0)
             widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar = AutoScrollbar(holder, orient=tk.VERTICAL, command=widget.yview)
@@ -461,10 +642,12 @@ class TkClientView:
 
         self.friends_heading, self.friends_listbox = conversation_list(0, '好友  ·  0')
         self.groups_heading, self.group_listbox = conversation_list(2, '群聊  ·  0')
+        self.friends_listbox.bind('<Configure>', lambda event: self.resize_conversation_list('private', event.width))
+        self.group_listbox.bind('<Configure>', lambda event: self.resize_conversation_list('group', event.width))
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
         self.group_listbox.bind('<<ListboxSelect>>', self.select_group)
         self.group_listbox.bind('<Double-1>', self.show_group_info_on_double_click)
-        self.label(sidebar, '双击群聊查看成员与设置', muted=True, font='small').pack(
+        self.label(sidebar, '双击群聊，查看成员与设置', muted=True, font='small').pack(
             anchor=tk.W, padx=20, pady=(0, 18))
 
         workspace = tk.Frame(body, bg=c['bg'])
@@ -522,22 +705,26 @@ class TkClientView:
         tk.Frame(composer, bg=c['line'], height=1).pack(fill=tk.X)
         self.status_label = self.label(composer, '', muted=True, font='small', wraplength=550)
         self.status_label.pack(fill=tk.X, padx=24, pady=(8, 4))
-        self.msg_entry = tk.Text(composer, height=3, wrap=tk.WORD, undo=True, font=f['body'],
+        input_shell = tk.Frame(composer, bg=c['field'], highlightthickness=1,
+                               highlightbackground=c['line'], highlightcolor=c['line'], bd=0)
+        input_shell.pack(fill=tk.X, padx=24, pady=(2, 18))
+        self.msg_entry = tk.Text(input_shell, height=3, wrap=tk.WORD, undo=True, font=f['body'],
                                  bg=c['field'], fg=c['text'], insertbackground=c['text'],
                                  selectbackground=c['selected'], selectforeground=c['text'],
                                  relief=tk.FLAT, bd=0, padx=12, pady=10,
-                                 highlightthickness=1, highlightbackground=c['line'],
-                                 highlightcolor=c['accent'])
-        self.msg_entry.pack(fill=tk.X, padx=24)
+                                 highlightthickness=0)
+        self.msg_entry.pack(fill=tk.X)
+        self.msg_entry.bind('<FocusIn>', lambda event: input_shell.configure(highlightbackground=self.colors['accent']))
+        self.msg_entry.bind('<FocusOut>', lambda event: input_shell.configure(highlightbackground=self.colors['line']))
         draft = self.controller.take_draft()
         if draft:
             self.msg_entry.insert('1.0', draft)
-        composer_actions = tk.Frame(composer, bg=c['surface'])
-        composer_actions.pack(fill=tk.X, padx=24, pady=(10, 16))
+        composer_actions = tk.Frame(input_shell, bg=c['field'])
+        composer_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
         self.label(composer_actions, 'Enter 发送 · Shift / Ctrl + Enter 换行',
-                   muted=True, font='small').pack(side=tk.LEFT)
+                   muted=True, font='small').pack(side=tk.LEFT, padx=(2, 8))
         self.send_button = self.theme.button(composer_actions, '发送', self.controller.send_message,
-                                              variant='primary', state=tk.DISABLED, width=7)
+                                              variant='primary', state=tk.DISABLED, width=6, padx=12, pady=6)
         self.send_button.pack(side=tk.RIGHT)
         self.msg_entry.bind('<Return>', self.on_message_entry_key)
 
@@ -556,6 +743,15 @@ class TkClientView:
         self.bind_chat_wheel(self.chat_canvas)
         self.bind_chat_wheel(self.chat_container)
         self.empty_state = tk.Frame(self.chat_canvas, bg=c['bg'])
+        empty_mark = tk.Canvas(self.empty_state, width=92, height=76, bg=c['bg'],
+                               highlightthickness=0, takefocus=False)
+        empty_mark.pack(pady=(0, 16))
+        empty_mark.create_polygon(28, 8, 82, 8, 82, 45, 70, 45, 70, 56, 57, 45, 28, 45,
+                                  fill=c['selected'], outline='')
+        empty_mark.create_polygon(10, 25, 65, 25, 65, 62, 35, 62, 22, 72, 22, 62, 10, 62,
+                                  fill=c['field'], outline=c['line'], width=1)
+        for x in (27, 39, 51):
+            empty_mark.create_oval(x-2, 42, x+2, 46, fill=c['muted'], outline='')
         self.empty_title = self.label(self.empty_state, '给对话，一点空间', font='title', anchor=tk.CENTER)
         self.empty_title.pack()
         self.empty_subtitle = self.label(self.empty_state, '选择一位好友或一个群聊，\n让交流从这里开始。',
