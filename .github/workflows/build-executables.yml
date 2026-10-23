@@ -126,6 +126,7 @@ jobs:
     timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,6 +138,7 @@ jobs:
           # go.mod 要求 go 1.26.0 + toolchain go1.27.3，必须使用 1.27.3 及以上版本
           go-version: '1.27.3'
           cache: true
+          cache-dependency-path: go-server/go.sum
 
       - name: Run Go tests
         working-directory: go-server
@@ -144,7 +146,7 @@ jobs:
 
       - name: Build server (EXE)
         working-directory: go-server
-        run: go build -o server.exe ./cmd/server/main.go
+        run: go build -trimpath -o server.exe ./cmd/server/main.go
 
       - name: Check executable privacy
         run: python scripts/check_release_privacy.py --assets go-server/server.exe
@@ -163,6 +165,7 @@ jobs:
     timeout-minutes: 30
     env:
       GOTOOLCHAIN: local
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -174,30 +177,31 @@ jobs:
           # go.mod 要求 go 1.26.0 + toolchain go1.27.3，必须使用 1.27.3 及以上版本
           go-version: '1.27.3'
           cache: true
+          cache-dependency-path: go-server/go.sum
 
       - name: Build for Windows (amd64)
         working-directory: go-server
-        run: GOOS=windows GOARCH=amd64 go build -o server-windows-amd64.exe ./cmd/server/main.go
+        run: GOOS=windows GOARCH=amd64 go build -trimpath -o server-windows-amd64.exe ./cmd/server/main.go
 
       - name: Build for Linux (amd64)
         working-directory: go-server
-        run: GOOS=linux GOARCH=amd64 go build -o server-linux-amd64 ./cmd/server/main.go
+        run: GOOS=linux GOARCH=amd64 go build -trimpath -o server-linux-amd64 ./cmd/server/main.go
 
       - name: Build for macOS (amd64)
         working-directory: go-server
-        run: GOOS=darwin GOARCH=amd64 go build -o server-darwin-amd64 ./cmd/server/main.go
+        run: GOOS=darwin GOARCH=amd64 go build -trimpath -o server-darwin-amd64 ./cmd/server/main.go
 
       - name: Build for Windows (arm64)
         working-directory: go-server
-        run: GOOS=windows GOARCH=arm64 go build -o server-windows-arm64.exe ./cmd/server/main.go
+        run: GOOS=windows GOARCH=arm64 go build -trimpath -o server-windows-arm64.exe ./cmd/server/main.go
 
       - name: Build for Linux (arm64)
         working-directory: go-server
-        run: GOOS=linux GOARCH=arm64 go build -o server-linux-arm64 ./cmd/server/main.go
+        run: GOOS=linux GOARCH=arm64 go build -trimpath -o server-linux-arm64 ./cmd/server/main.go
 
       - name: Build for macOS (arm64)
         working-directory: go-server
-        run: GOOS=darwin GOARCH=arm64 go build -o server-darwin-arm64 ./cmd/server/main.go
+        run: GOOS=darwin GOARCH=arm64 go build -trimpath -o server-darwin-arm64 ./cmd/server/main.go
 
       - name: Check executable privacy
         shell: bash
