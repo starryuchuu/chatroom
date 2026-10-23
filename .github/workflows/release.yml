@@ -9,12 +9,16 @@ name: Release Chatroom
   workflow_dispatch: null
 permissions:
   contents: read
+
+env:
+  PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
 concurrency:
   group: release-chatroom-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   tests:
     uses: ./.github/workflows/tests.yml
+    secrets: inherit
   build-python:
     strategy:
       fail-fast: false
@@ -30,12 +34,14 @@ jobs:
     timeout-minutes: 25
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: pip
     - name: Install dependencies
-      run: python -m pip install -r requirements.txt pyinstaller
+      run: python -m pip install -r requirements-build.txt
     - name: Install Linux GUI runtime dependencies
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y python3-tk
@@ -43,6 +49,8 @@ jobs:
       run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server-${{ matrix.platform }} server.py
     - name: Build client
       run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name client-${{ matrix.platform }} client.py
+    - name: Check built release privacy
+      run: python scripts/check_release_privacy.py --require-alias-head --assets dist
     - name: Check frozen encryption runtime on Linux
       if: runner.os == 'Linux'
       run: ./dist/client-linux --check-encryption-runtime
@@ -90,9 +98,11 @@ jobs:
       GOTOOLCHAIN: local
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     - uses: actions/setup-go@v5
       with:
-        go-version: 1.24.5
+        go-version: 1.27.3
         cache-dependency-path: go-server/go.sum
     - name: Build platform binary
       working-directory: go-server
@@ -106,6 +116,11 @@ jobs:
         mkdir -p ../release-assets
         go build -trimpath -ldflags="-s -w -X main.version=$version" \
           -o "../release-assets/go-server-${GOOS}-${GOARCH}${{ matrix.suffix }}" ./cmd/server
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Check built release privacy
+      run: python scripts/check_release_privacy.py --require-alias-head --assets release-assets
     - uses: actions/upload-artifact@v4
       with:
         name: release-go-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -122,13 +137,18 @@ jobs:
     timeout-minutes: 5
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
     - uses: actions/download-artifact@v4
       with:
         pattern: release-*
         path: release-assets
         merge-multiple: true
     - name: Check release privacy
-      run: python scripts/check_release_privacy.py
+      run: python scripts/check_release_privacy.py --require-alias-head
     - name: Publish versioned release
       env:
         GH_TOKEN: ${{ github.token }}
@@ -147,6 +167,7 @@ jobs:
         cp client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt release-assets/
         cp chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt release-assets/
         (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" "chatroom-${tag}-client.zip" client.py server.py e2ee_server.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt OPAQUE_THIRD_PARTY_LICENSES.txt > SHA256SUMS)
+        python scripts/check_release_privacy.py --require-alias-head --assets release-assets
         gh release create "$tag" release-assets/* \
           --target "$GITHUB_SHA" --title "$tag — Python 客户端与双服务端" \
           --notes-file RELEASE_NOTES.md --latest

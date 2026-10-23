@@ -4,9 +4,13 @@ v1.3.0 的正常注册和登录只需用户名与一份统一密码。客户端�
 
 This guide describes v1.3.0 single-password registration and login, explicit legacy migration, password changes, and the different scopes of cloud and offline recovery. The normal client requires an upgraded Python or Go server; it never falls back to sending the password through legacy authentication.
 
+本指南适用于当前 v1.3.2；单密码认证自 v1.3.0 引入。v1.3.2 保持既有协议、数据库结构和密钥格式，已有 OPAQUE 账号无需再次迁移；推荐同时升级客户端和服务端以取得并发认证、日志与群容量修复。
+
+This guide also applies to v1.3.2. OPAQUE accounts introduced in v1.3.0 keep their protocol, database schema and key formats; upgrading an existing OPAQUE account does not require another migration. Upgrade both ends to receive the server and client fixes.
+
 ## 新用户与正常登录
 
-1. 先升级 Python 或 Go 服务端至 v1.3.0，再启动同版本客户端。远程连接仍须通过其他可信渠道核对服务器 SHA-256 公钥指纹。
+1. 推荐先升级 Python 或 Go 服务端至 v1.3.2，再启动新版客户端；协议兼容 v1.3.0 或更新服务端。远程连接仍须通过其他可信渠道核对服务器 SHA-256 公钥指纹。
 2. 注册时设置 8–128 个字符的统一密码。选择强且不复用的密码；用户名是公开标识，不会增加密码强度。
 3. 正常登录输入用户名和统一密码。本机没有密钥时，客户端使用账号的加密身份备份恢复原身份，并核对服务端已登记公钥；不会静默创建替代身份。
 4. 在“加密与密钥…”核对自己的指纹和联系人指纹。联系人也必须建立端到端身份；群接收人需要明确确认。
@@ -32,6 +36,8 @@ This guide describes v1.3.0 single-password registration and login, explicit leg
 
 若迁移已在服务端提交但成功回包丢失，本机可能仍保留 v1 文件。此时不要再次迁移：在登录页点击“解锁旧密钥…”，输入原本机密钥口令，再用**新统一密码正常登录**。客户端保留原身份和完整本机信任并重新包装为 v2；不是重新注册或替换身份。
 
+v1.3.2 服务端在凭据验证通过后、提交迁移前预留账号的在线登录位置，旧认证登录、OPAQUE 登录与迁移竞争时先拒绝冲突，失败或断开后释放预留。它修复提交迁移后才报重复登录的情况；网络中断时结果仍可能未知，恢复步骤不变。
+
 ## 修改统一密码
 
 登录后在“加密与密钥…”选择“修改账号密码…”，输入当前统一密码及两次新密码。客户端用独立短连接重新认证，再登记新 OPAQUE 凭据和同一身份的加密备份；服务器用账号代次检查拒绝并发覆盖。原聊天连接不需要再创建一个在线会话。
@@ -52,18 +58,22 @@ This guide describes v1.3.0 single-password registration and login, explicit leg
 
 离线导出仍是可凭导出密码解锁的 v1 风格完整备份。直接复制 v2 本机文件或云端密文，不等于拥有可离线通过密码解锁的备份，因为它们需要正确 OPAQUE 上下文产生的导出密钥。原有 v1 备份可以导入，成功登录或迁移后重新包装为 v2。备份属于同一账号；地址或端口变更需要明确确认，服务器身份变更也不能静默接受。
 
+导出时选择独立的备份文件。v1.3.2 拒绝本机密钥库自身路径及其符号链接或硬链接别名，防止用离线备份覆盖正在使用的 v2 库。联系人核验在保存时比较窗口所见指纹与最新本机记录；并发换钥会停止旧确认，需要刷新并通过可信渠道重新核对。
+
 忘记统一密码时，云端备份没有提供绕过密码的“找回”通道。仍可解锁的本机或离线备份能保留端到端私钥，但不保证重置服务器账号认证。**统一密码、所有可解锁的密钥文件、备份及其恢复凭据都丢失后，服务端不能保证恢复账号或历史端到端消息。**
 
 ## 服务端升级与兼容
 
 - 传输帧仍为 v2，端到端消息封装仍为 `e2ee_v1`。新客户端另外要求 `opaque_v1`；缺少能力时立即停止，不能通过旧密码登录绕过。
 - 旧客户端只保留对尚未迁移账号的显式兼容认证；账号迁移后拒绝旧认证。已经登记端到端身份的账号仍拒绝明文聊天降级；旧历史不会追溯加密。
-- 新增 `opaque_meta` 保存 setup，`opaque_accounts` 保存账号记录、加密身份备份及代次；敏感字段继续由原数据库存储密钥加密。已有账号却缺少 setup 时服务器停止启动，不能重新生成 setup 来“修复”。
+- v1.3.0 新增 `opaque_meta` 保存 setup，`opaque_accounts` 保存账号记录、加密身份备份及代次；敏感字段继续由原数据库存储密钥加密。已有账号却缺少 setup 时服务器停止启动，不能重新生成 setup 来“修复”。v1.3.2 沿用这些表，不新增结构迁移。
 - Python / Go 可以顺序使用同一数据库，但必须保留数据库、对应存储密钥及原 RSA 身份，并使用同版本的认证实现。`server_id` 绑定 RSA 公钥 SPKI DER 的 SHA-256 指纹。不要同时写入同一数据库，不要用旧服务端打开升级后的库。
 
 ## 依赖与开发构建
 
 普通源码发布包已经包含 `chatroom_client/opaque_core.wasm`；Python 客户端和服务端安装 `requirements.txt` 后即可使用，无需安装 Rust。运行时新增固定依赖 `wasmtime==50.0.1`。Go 的 `wazero` 运行同一份内嵌 WASM，不需要系统 WebAssembly 运行器。
+
+运行依赖和传递依赖固定在 `requirements.txt`，开发者打包另用 `requirements-build.txt`；Go 发布工具链固定为 1.27.3。依赖更新、漏洞检查的实际范围及维护命令见[贡献指南](../CONTRIBUTING.md)，这些检查不改变下述审计与恢复限制。
 
 修改核心的开发者需要 Rust 1.87+、Cargo 和 `wasm32-unknown-unknown` 目标，从仓库根目录执行：
 
@@ -74,4 +84,4 @@ python scripts/build_opaque.py
 
 脚本使用锁定依赖构建，并更新 Python 与 Go 的两份模块；发布前需要验证两份 SHA-256 一致。核心使用 `opaque-ke=4.0.1`、[RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html)、Ristretto255 / TripleDH-SHA512 和 Argon2id。上游 [opaque-ke](https://github.com/facebook/opaque-ke#readme) 有历史审计记录，其报告针对早期版本；不能据此声称 4.0.1、WASM 包装或本聊天室集成经过独立审计。OPAQUE 也不能把弱密码变成高熵秘密，或保护已被控制的客户端。
 
-消息密钥、群成员变化、首次信任及无长期前向保密等限制见[端到端加密说明](END_TO_END_ENCRYPTION.md)。现有[截图](images/README.md)于 2026-10-22 从 v1.3.1 源码实拍，展示单密码登录、“迁移旧账号…”、“解锁旧密钥…”和深浅色切换入口。
+消息密钥、群成员变化、首次信任及无长期前向保密等限制见[端到端加密说明](END_TO_END_ENCRYPTION.md)。现有[截图](images/README.md)于 2026-10-23 从 v1.3.2 源码实拍，展示单密码登录、“迁移旧账号…”、“解锁旧密钥…”和深浅色切换入口。

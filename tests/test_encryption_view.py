@@ -64,7 +64,25 @@ class EncryptionViewTests(unittest.TestCase):
         self.assertEqual(ask.call_args.kwargs['default'], 'no')
         with patch('chatroom_client.encryption_view.messagebox.askyesno', return_value=True):
             window.verify_peer()
-        controller.verify_encryption_peer.assert_called_once_with('bob')
+        controller.verify_encryption_peer.assert_called_once_with('bob', bundle_fingerprint(self.bundle))
+
+    def test_contact_verification_passes_the_fingerprint_displayed_before_confirmation(self):
+        fingerprint = self.identity.fingerprint
+        peer = {'username': 'bob', 'fingerprint': fingerprint, 'verified': False}
+        encryption = SimpleNamespace(status='ready', fingerprint=fingerprint,
+                                     peers=lambda: [dict(peer)], peer_change=lambda name: None)
+        controller = SimpleNamespace(encryption=encryption, verify_encryption_peer=Mock())
+        view = SimpleNamespace(master=self.root, controller=controller, refresh_encryption=Mock())
+        window = EncryptionWindow(view)
+        window.tree.selection_set('bob')
+
+        def confirm(*args, **kwargs):
+            peer['fingerprint'] = Identity.generate().fingerprint
+            return True
+
+        with patch('chatroom_client.encryption_view.messagebox.askyesno', side_effect=confirm):
+            window.verify_peer()
+        controller.verify_encryption_peer.assert_called_once_with('bob', fingerprint)
 
     def test_import_is_blocked_during_an_active_connection(self):
         controller = SimpleNamespace(connection=SimpleNamespace(running=True, auth_busy=False), reconnecting=False)

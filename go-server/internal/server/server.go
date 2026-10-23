@@ -60,7 +60,7 @@ func handleConnection(conn net.Conn) {
 	// 防御性 recover：即使某个 handler 出现 panic，也不能让整个服务器进程崩溃
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("handleConnection panic recovered: %v", r)
+			log.Printf("event=connection_panic error_type=%T", r)
 		}
 	}()
 
@@ -108,7 +108,7 @@ func handleConnection(conn net.Conn) {
 
 	sessionKeyType, ok := sessionKeyMsg["type"].(string)
 	if !ok || sessionKeyType != "session_key" {
-		log.Printf("期望接收会话密钥，但收到了: %v", sessionKeyMsg["type"])
+		log.Printf("event=invalid_session_key_message")
 		return
 	}
 
@@ -146,19 +146,22 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 	publicDigest := sha256.Sum256(publicDER)
-	username, err := handlers.HandleAuth(conn, sessionKey, clientManager, handlers.AuthOptions{ServerID: hex.EncodeToString(publicDigest[:]), Deadline: authDeadline})
+	username, err := handlers.HandleAuth(conn, sessionKey, clientManager, handlers.AuthOptions{ServerID: hex.EncodeToString(publicDigest[:]), Deadline: authDeadline, KeepReservation: true})
+	if username != "" {
+		defer clientManager.ReleaseAuthentication(username, conn)
+	}
 	if err != nil || username == "" {
 		log.Printf("认证失败或连接关闭: %v", err)
 		return // 认证失败或客户端断开，关闭连接
 	}
 
 	// 如果认证成功，username将不会为空
-	log.Printf("用户 %s 已通过认证", username)
+	log.Printf("event=authentication_completed")
 
 	// 加载用户的好友列表
 	friends, err := database.LoadFriends(username)
 	if err != nil {
-		log.Printf("为用户 %s 加载好友列表失败: %v", username, err)
+		log.Printf("event=friend_snapshot_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "好友列表加载失败"})
 		return
 	}
@@ -166,7 +169,7 @@ func handleConnection(conn net.Conn) {
 	// 将客户端添加到管理器（原子地防止同一用户名重复登录）
 	if !clientManager.AddClient(username, conn, sessionKey, friends) {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "该用户已登录"})
-		log.Printf("用户 %s 重复登录被拒绝（AddClient 冲突）", username)
+		log.Printf("event=duplicate_login_rejected")
 		return
 	}
 	currentUsername = username // Only an owned reservation may be removed on exit.
@@ -193,7 +196,7 @@ func handleConnection(conn net.Conn) {
 	}
 	protocol.EnableQueuedWrites(conn)
 	if err := handlers.SendFriendsAndActivate(conn, username, clientManager); err != nil {
-		log.Printf("初始化用户 %s 的好友列表失败: %v", username, err)
+		log.Printf("event=friend_activation_failed error_type=%T", err)
 		protocol.SendMsgWait(conn, map[string]interface{}{"type": "error", "message": "好友列表加载失败，请重新登录"})
 		return
 	}

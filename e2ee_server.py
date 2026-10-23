@@ -97,7 +97,8 @@ def publish_identity(username, identity, proof):
 
 
 def reject_legacy(members):
-    # The E2EE recipient cap does not reduce the existing all-legacy group limit.
+    # Preserve messaging for historical all-legacy groups, including oversized
+    # groups that must remain manageable while membership is reduced.
     with closing(storage.connect()) as db:
         for member in members:
             if _get_identity(db, member) is not None:

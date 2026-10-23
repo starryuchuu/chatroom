@@ -13,7 +13,7 @@ import (
 func GetUserGroups(username string) ([]models.Group, error) {
 	rows, err := DB.Query("SELECT gid, group_name, owner, members FROM groups")
 	if err != nil {
-		log.Printf("查询群组失败: %v", err)
+		log.Printf("event=get_user_groups_failed error_type=%T", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -23,7 +23,7 @@ func GetUserGroups(username string) ([]models.Group, error) {
 		var g models.Group
 		var membersJSON string
 		if err := rows.Scan(&g.GID, &g.GroupName, &g.Owner, &membersJSON); err != nil {
-			log.Printf("扫描群组行失败: %v", err)
+			log.Printf("event=get_user_groups_failed error_type=%T", err)
 			continue
 		}
 
@@ -34,7 +34,7 @@ func GetUserGroups(username string) ([]models.Group, error) {
 		}
 		var members []string
 		if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
-			log.Printf("解析群组成员JSON失败 (gid: %s): %v", g.GID, err)
+			log.Printf("event=get_user_groups_failed error_type=%T", err)
 			continue
 		}
 		g.Members = members
@@ -54,11 +54,11 @@ func GetUserGroups(username string) ([]models.Group, error) {
 
 	}
 	if err = rows.Err(); err != nil {
-		log.Printf("遍历群组行时出错: %v", err)
+		log.Printf("event=get_user_groups_failed error_type=%T", err)
 		return nil, err
 	}
 
-	log.Printf("为用户 '%s' 找到了 %d 个群组", username, len(userGroups))
+	log.Printf("event=user_groups_loaded groups=%d", len(userGroups))
 	return userGroups, nil
 }
 
@@ -69,7 +69,7 @@ func GetGroup(gid string) (*models.Group, error) {
 	var g models.Group
 	var membersJSON string
 	if err := row.Scan(&g.GroupName, &g.Owner, &membersJSON); err != nil {
-		log.Printf("扫描群组失败 (gid: %s): %v", gid, err)
+		log.Printf("event=get_group_failed error_type=%T", err)
 		return nil, err // 包括 sql.ErrNoRows
 	}
 
@@ -80,7 +80,7 @@ func GetGroup(gid string) (*models.Group, error) {
 	}
 	var members []string
 	if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
-		log.Printf("解析群组成员JSON失败 (gid: %s): %v", gid, err)
+		log.Printf("event=get_group_failed error_type=%T", err)
 		return nil, err
 	}
 	g.Members = members
@@ -97,13 +97,13 @@ func CreateGroup(groupName, owner string, members []string) (*models.Group, erro
 
 	membersJSON, err := json.Marshal(members)
 	if err != nil {
-		log.Printf("序列化群组成员失败: %v", err)
+		log.Printf("event=create_group_failed error_type=%T", err)
 		return nil, err
 	}
 
 	stmt, err := DB.Prepare("INSERT INTO groups (gid, group_name, owner, members, created_at) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
-		log.Printf("准备创建群组语句失败: %v", err)
+		log.Printf("event=create_group_failed error_type=%T", err)
 		return nil, err
 	}
 	defer stmt.Close()
@@ -126,7 +126,7 @@ func CreateGroup(groupName, owner string, members []string) (*models.Group, erro
 	}
 	_, err = stmt.Exec(gid, encodedName, encodedOwner, encodedMembers, encodedAt)
 	if err != nil {
-		log.Printf("执行创建群组失败: %v", err)
+		log.Printf("event=create_group_failed error_type=%T", err)
 		return nil, err
 	}
 
@@ -193,7 +193,7 @@ func DeleteGroup(gid string) error {
 func UpdateGroupOwner(gid, newOwner string) error {
 	stmt, err := DB.Prepare("UPDATE groups SET owner=? WHERE gid=?")
 	if err != nil {
-		log.Printf("准备更新群组所有者语句失败: %v", err)
+		log.Printf("event=update_group_owner_failed error_type=%T", err)
 		return err
 	}
 	defer stmt.Close()
@@ -204,7 +204,7 @@ func UpdateGroupOwner(gid, newOwner string) error {
 	}
 	_, err = stmt.Exec(encoded, gid)
 	if err != nil {
-		log.Printf("执行更新群组所有者失败: %v", err)
+		log.Printf("event=update_group_owner_failed error_type=%T", err)
 		return err
 	}
 
@@ -215,7 +215,7 @@ func UpdateGroupOwner(gid, newOwner string) error {
 func UpdateGroupName(gid, newName string) error {
 	stmt, err := DB.Prepare("UPDATE groups SET group_name=? WHERE gid=?")
 	if err != nil {
-		log.Printf("准备更新群组名称语句失败: %v", err)
+		log.Printf("event=update_group_name_failed error_type=%T", err)
 		return err
 	}
 	defer stmt.Close()
@@ -226,7 +226,7 @@ func UpdateGroupName(gid, newName string) error {
 	}
 	_, err = stmt.Exec(encoded, gid)
 	if err != nil {
-		log.Printf("执行更新群组名称失败: %v", err)
+		log.Printf("event=update_group_name_failed error_type=%T", err)
 		return err
 	}
 

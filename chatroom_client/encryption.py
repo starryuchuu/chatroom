@@ -492,13 +492,11 @@ class EncryptionController:
         # No recovery password is saved in preferences or sent to the server.
         return fingerprint
 
-    def verify_peer(self, username):
+    def verify_peer(self, username, expected_fingerprint=None):
+        """Require the displayed fingerprint, including for legacy name-only calls."""
         if self.vault is None:
             raise ValueError('请先登录并解锁本机密钥')
-        bundle = self.vault.peer(username)
-        if bundle is None:
-            raise ValueError('尚无此联系人的固定密钥，请先收取消息或尝试发送')
-        self.vault.pin_peer(username, bundle, verified=True)
+        self.vault.verify_peer(username, expected_fingerprint)
         self._refresh()
 
     def accept_peer(self, username, bundle):

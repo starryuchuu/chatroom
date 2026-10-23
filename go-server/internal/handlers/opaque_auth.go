@@ -115,7 +115,7 @@ func opaqueFinalRecord(ctx context.Context, msg map[string]interface{}, username
 
 // handleOpaque consumes exactly one complete exchange under the caller's shared
 // authentication deadline and concurrency reservation. No secret is logged.
-func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager, msg map[string]interface{}, serverID string, deadline time.Time) (username string, resultErr error) {
+func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager, msg map[string]interface{}, serverID string, deadline time.Time, keepReservations ...bool) (username string, resultErr error) {
 	kind, _ := msg["type"].(string)
 	resultType := "login_result"
 	if kind == "opaque_register_start" {
@@ -133,6 +133,25 @@ func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager,
 	username, ok := msg["from"].(string)
 	if !ok || !utf8.ValidString(username) || utf8.RuneCountInString(username) < 2 || utf8.RuneCountInString(username) > 20 {
 		return "", opaqueauth.ErrAuthentication
+	}
+	keep := false
+	reservedName := ""
+	defer func() {
+		if reservedName != "" && !keep {
+			manager.ReleaseAuthentication(reservedName, conn)
+		}
+	}()
+	reserveAccount := func() bool {
+		if manager == nil || !manager.ReserveAuthentication(username, conn) {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "账号正在登录、迁移或已在线，请先退出其他连接"})
+			return false
+		}
+		reservedName = username
+		return true
+	}
+	if kind == "opaque_migrate_start" && manager != nil && manager.IsUserOnline(username) {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "迁移前请先退出该账号的其他连接"})
+		return "", errOpaqueHandled
 	}
 	if raw, err := hex.DecodeString(serverID); err != nil || len(raw) != 32 || hex.EncodeToString(raw) != serverID {
 		return "", opaqueauth.ErrAuthentication
@@ -186,9 +205,16 @@ func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager,
 			if err != nil {
 				return "", err
 			}
-			if manager != nil && manager.IsUserOnline(username) {
-				protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "迁移前请先退出该账号的其他连接"})
+			// Verified legacy credentials reserve the account before any
+			// challenge/commit, keeping competing logins out of the migration.
+			if !reserveAccount() {
 				return "", errOpaqueHandled
+			}
+			// Another migration may have committed during legacy verification
+			// and disconnected before this reservation became available.
+			current, err := database.GetOpaqueAccount(username)
+			if err != nil || current != nil {
+				return "", opaqueauth.ErrAuthentication
 			}
 		}
 		response, err := opaqueRegisterResponse(ctx, setup, username, serverID, request)
@@ -233,6 +259,7 @@ func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager,
 		if err := database.MigrateOpaqueAccount(username, expectedLegacy, record, backup, ctx); err != nil {
 			return "", err
 		}
+		keep = len(keepReservations) == 1 && keepReservations[0]
 		return username, nil
 	}
 
@@ -287,11 +314,17 @@ func handleOpaque(conn net.Conn, sessionKey []byte, manager types.ClientManager,
 		return "", opaqueauth.ErrAuthentication
 	}
 	if kind == "opaque_login_start" {
+		// A challenge is public; require its password proof before reserving
+		// the account so abandoned starts cannot block a legitimate login.
+		if !reserveAccount() {
+			return "", errOpaqueHandled
+		}
 		current, err := database.GetOpaqueAccount(username)
 		if err != nil || current == nil || current.Generation != account.Generation {
 			return "", opaqueauth.ErrAuthentication
 		}
-		// Online reservation remains atomic in server.handleConnection.
+		// The verified account remains reserved through online publication.
+		keep = len(keepReservations) == 1 && keepReservations[0]
 		return username, nil
 	}
 	identity, err := opaqueIdentity(username)

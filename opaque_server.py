@@ -168,7 +168,7 @@ class AuthResult:
 
 
 def authenticate(first, *, receive, send, server_id, decrypt_legacy, verify_legacy,
-                 get_identity, deadline):
+                 get_identity, deadline, admit=None):
     """One exchange owns this connection and its deadline until it terminates."""
     kind = first.get('type') if isinstance(first, dict) else None
     failure_type = ('register_result' if kind == 'opaque_register_start' else
@@ -191,6 +191,17 @@ def authenticate(first, *, receive, send, server_id, decrypt_legacy, verify_lega
         if not isinstance(packet, dict) or packet.get('type') != expected:
             raise ValueError('unexpected authentication step')
         return packet
+
+    def reserve_online(username):
+        # Call only after credential verification. An unauthenticated KE1 must
+        # never reserve a known account while its sender stalls before KE3.
+        check_deadline()
+        allowed = admit is None or admit(username)
+        check_deadline()
+        if not allowed:
+            send({'type': failure_type, 'success': False,
+                  'error': '该用户已登录或正在登录、迁移，请稍后重试'})
+        return allowed
 
     try:
         if kind not in START_TYPES:
@@ -220,6 +231,10 @@ def authenticate(first, *, receive, send, server_id, decrypt_legacy, verify_lega
             password = value.get('password') if isinstance(value, dict) else None
             if not isinstance(password, str) or not 6 <= len(password) <= 64 or not verify_legacy(username, password):
                 raise ValueError('legacy authentication rejected')
+            if not reserve_online(username):
+                return AuthResult(failed=True)
+            if has_account(username):
+                raise ValueError('account migrated before admission')
             result = crypto('registration_respond', setup=setup, username=username,
                             server_id=server_id, request=request)
             send({'type': 'opaque_migrate_challenge', 'response': result['response'],
@@ -250,6 +265,11 @@ def authenticate(first, *, receive, send, server_id, decrypt_legacy, verify_lega
         if current is None or current['generation'] != account['generation']:
             raise ValueError('account changed concurrently')
         if not changing:
+            if not reserve_online(username):
+                return AuthResult()
+            current = get_account(username)
+            if current is None or current['generation'] != account['generation']:
+                raise ValueError('account changed before admission')
             return AuthResult(username, {'opaque_backup': account['backup'],
                                          'opaque_generation': account['generation']})
         send({'type': 'opaque_change_verified', 'backup': account['backup'],

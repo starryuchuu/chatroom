@@ -39,7 +39,7 @@
 
 端到端加密改动需要覆盖 `test_e2ee_crypto.py`、`test_key_vault.py`、`test_encryption_view.py`、`test_e2ee_python.py` 和 `test_e2ee_interop.py`，以及控制器的信任/降级/重放测试。真实互操作用例同时验证两种服务端及共享数据库迁移。请保持 `ChatClient` 的正常入口默认要求 `opaque_v1` 和 `e2ee_v1`；旧协议兼容测试明确注入 `encryption=False`，仅覆盖尚未迁移账号，界面不提供关闭加密或认证降级的开关。不要仅凭服务端的历史标志信任已撤销密钥或旧群成员。
 
-普通开发与源码运行使用 Python 3.11+、Go 1.24.5+，安装固定 `wasmtime==50.0.1`；仓库及源码包提供预编译 WASM，Go 通过 `wazero` 内嵌执行。无需为正常测试安装 Rust。Linux 需要 Tk、Xvfb 和 xauth；Windows 在桌面会话中运行，无需 `xvfb-run`。
+普通开发与源码运行使用 Python 3.11+，Go 推荐使用与 CI / 发布构建一致的 1.27.3；`go.mod` 的语言最低版本为 1.26.0，工具链固定 `go1.27.3`。`requirements.txt` 固定全部 Python 运行依赖及传递依赖，包括 `wasmtime==50.0.1`；构建可执行文件时安装 `requirements-build.txt`，它包含运行依赖及固定的 PyInstaller 和平台构建依赖。仓库及源码包提供预编译 WASM，Go 通过 `wazero` 内嵌执行，正常运行与测试无需 Rust。Linux 需要 Tk、Xvfb 和 xauth；Windows 在桌面会话中运行，无需 `xvfb-run`。
 
 ```bash
 python -m pip install -r requirements.txt
@@ -75,12 +75,32 @@ python -m unittest discover -s tests -p test_system_reliability.py -v
 
 客户端测试通过 `ChatClient(root, preferences=PreferencesStore(persistent=False))` 注入内存设置，或使用独立临时配置文件，不应读写开发者的个人设置。`test_client_features_integration.py` 使用真实 Tk 客户端与两种服务端，覆盖 205 条离线消息的跨页补取、未读/免打扰、会话和草稿保留、取消重连及不自动重发。
 
+`test_client_scrolling.py` 使用真实 Tk 验证长好友/群列表的选择、滚动与键盘导航位置，批量新消息和重连重绘的消息锚点，新消息入口以及细幅/标准/X11 滚轮事件。`test_client_layout.py` 和 `test_client_theme.py` 覆盖最小窗口、高 DPI、深浅色与输入保持；几何断言须处理原生映射事件并有界等待有效尺寸，不能只等待空闲任务或依赖固定睡眠。
+
+登录与迁移并发修改须覆盖账号预留的成功、重复占用、失败、断开清理及旧认证与 OPAQUE 交错；群容量改动覆盖 256/257 边界、重复成员、满员邀请重试、已有超限群缩减和无效大列表不阻塞其他操作。密钥操作须验证核验所见指纹的 CAS，以及导出到本机库本身、符号链接和硬链接别名时拒绝覆盖。
+
+## 依赖更新与漏洞检查
+
+更新 Python 依赖时同时维护运行与构建锁中的直接、传递和平台条件依赖，在 Windows / Linux 验证安装与成品自检。Go 依赖由 `go.mod` / `go.sum` 固定；更新后运行静态、竞争、互操作和漏洞检查，保留预编译 WASM 与锁定 Rust 源的一致性。
+
+Windows / Linux CI 执行以下 Python 检查，Linux CI 另执行 Go 检查；本地可分别在仓库根目录和 `go-server/` 运行：
+
+```bash
+python -m pip install pip-audit==2.10.1
+python -m pip_audit --disable-pip --no-deps -r requirements-build.txt
+cd go-server
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/server
+```
+
+`pip-audit` 检查列出的运行与构建包公告，`govulncheck` 分析指定服务端入口的可达漏洞；结果受公告库、平台和分析范围限制，不能据此声称所有依赖、构建产物或本项目均无漏洞。`.github/dependabot.yml` 已配置 Python、Go、Cargo 和 GitHub Actions 的定期更新；安全告警与自动安全更新需仓库管理员在 GitHub 设置中另行启用，不能把更新配置视为这些开关已经开启。
+
 ## 发布
 
 1. 同步更新根目录和 `go-server/` 的 `VERSION`，版本格式为 `vX.Y.Z`。
 2. 更新两处 `RELEASE_NOTES.md`，说明修复、兼容性和升级方式。
 3. 新增 Python 模块或 WASM 资源时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件、源码压缩包与校验文件清单。普通源码包必须包含预编译核心；Python 客户端和服务端打包需收集 wasmtime 动态运行库及 `chatroom_client/opaque_core.wasm`，Go 需内嵌匹配的 WASM。PyInstaller 会自动收集静态导入的模块；加密库动态加载的曲线模块通过 `--collect-submodules Crypto.PublicKey` 收集。构建和发布流水线必须执行成品的 `--check-encryption-runtime` 自检，验证曲线签名、密钥协商、本机密钥库及实际 OPAQUE 注册/认证核心，不能只检查模块可以导入。
 4. 将验证通过的提交推送到 `master`。版本文件的变更自动触发 `Release Chatroom`。
-5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含带预编译 WASM 的源码、可执行文件和 `SHA256SUMS`。示例、日志、截图及构建产物仅用虚构演示数据和公开别名，检查构建路径和元数据，避免个人信息进入发布附件。
+5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含带预编译 WASM 的源码、可执行文件和 `SHA256SUMS`。普通客户端源码附件提供 `requirements.txt`，构建锁仅供开发与打包使用。
+6. 示例、日志和截图仅用虚构演示数据与公开别名。发布隐私检查应覆盖本次全部新增提交的作者和提交者元数据、源码、PNG 元数据及嵌套 ZIP / PYZ 产物，而不只检查最后一个提交。发现个人身份、运行配置、数据库或私钥时停止发布，检查输出本身也不得回显私人姓名、邮箱或密钥。
 
-发布工作流在测试成功后构建，并由最终发布任务创建指向该提交的版本标签和 GitHub Release。
+发布工作流在测试成功后构建，并由最终发布任务创建指向该提交的版本标签和 GitHub Release。可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 在本机检查；`--base` 可显式指定本次发布之前的祖先提交或标签。可选的 `PRIVACY_FORBIDDEN_VALUES_JSON` 接收需禁止出现的字符串数组，工作流从同名仓库 Secret 读取；未配置时仍执行身份、凭据、个人路径和元数据规则，检查输出不回显匹配内容。

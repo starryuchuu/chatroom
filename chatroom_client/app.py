@@ -196,7 +196,7 @@ class ChatApplication:
                 self._uncertain_send = False
         key = self.state.current_chat
         if key is not None and not self.state.history_syncing:
-            self.view.render_conversation(key)
+            self.view.render_conversation(key, preserve_scroll=True)
         self.view.refresh_controls()
 
     def retry_sync(self):
@@ -395,10 +395,10 @@ class ChatApplication:
         return self.encryption.import_keys(path, passphrase, username, endpoint,
                                            replace=replace, allow_rebind=allow_rebind)
 
-    def verify_encryption_peer(self, username):
+    def verify_encryption_peer(self, username, expected_fingerprint=None):
         if self.encryption is None:
             raise ValueError('此客户端实例未启用端到端加密')
-        return self.encryption.verify_peer(username)
+        return self.encryption.verify_peer(username, expected_fingerprint)
 
     def accept_encryption_peer(self, username, bundle):
         if self.encryption is None:

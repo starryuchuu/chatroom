@@ -99,12 +99,12 @@ type concurrentAuthManager struct {
 	activate chan struct{}
 }
 
-func (m *concurrentAuthManager) IsUserOnline(string) bool {
+func (m *concurrentAuthManager) ReserveAuthentication(username string, conn net.Conn) bool {
 	if m.arrivals.Add(1) == 2 {
 		close(m.gate)
 	}
 	<-m.gate
-	return false // Force both connections past the early, non-atomic precheck.
+	return m.ClientManager.ReserveAuthentication(username, conn)
 }
 
 func (m *concurrentAuthManager) ActivateClient(username string, conn net.Conn) bool {

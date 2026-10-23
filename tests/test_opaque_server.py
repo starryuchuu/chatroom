@@ -52,7 +52,7 @@ class OpaqueServerTests(unittest.TestCase):
         storage._store = self.store
         self.directory.cleanup()
 
-    def run_exchange(self, first, receive, *, deadline=None):
+    def run_exchange(self, first, receive, *, deadline=None, admit=None):
         self.sent = []
 
         def verify(username, password):
@@ -63,9 +63,10 @@ class OpaqueServerTests(unittest.TestCase):
             first, receive=lambda: receive(self.sent[-1]), send=self.sent.append,
             server_id=SERVER_ID, decrypt_legacy=lambda value: value,
             verify_legacy=verify, get_identity=lambda username: {'preserved': username},
-            deadline=deadline if deadline is not None else time.monotonic() + 30)
+            deadline=deadline if deadline is not None else time.monotonic() + 30, admit=admit)
 
-    def registration(self, *, username='alice', password=PASSWORD, migration=False, on_finish=None):
+    def registration(self, *, username='alice', password=PASSWORD, migration=False, on_finish=None,
+                     admit=None):
         start = opaque_runtime.call({'op': 'registration_start', 'password': password})
         self.export_key = None
         value = backup(username)
@@ -87,10 +88,10 @@ class OpaqueServerTests(unittest.TestCase):
                  'from': username, 'request': start['request']}
         if migration:
             first['legacy_data'] = json.dumps({'password': 'old synthetic password'})
-        result = self.run_exchange(first, receive)
+        result = self.run_exchange(first, receive, admit=admit)
         return result, value, self.export_key
 
-    def login(self, *, username='alice', password=PASSWORD, finalization=None):
+    def login(self, *, username='alice', password=PASSWORD, finalization=None, admit=None):
         start = opaque_runtime.call({'op': 'login_start', 'password': password})
         self.login_export = None
         self.finalization = None
@@ -106,7 +107,49 @@ class OpaqueServerTests(unittest.TestCase):
                     'finalization': finalization if finalization is not None else finish['finalization']}
 
         return self.run_exchange({'type': 'opaque_login_start', 'from': username,
-                                  'request': start['request']}, receive)
+                                  'request': start['request']}, receive, admit=admit)
+
+    def test_login_admission_requires_proof_and_rechecks_generation(self):
+        self.registration()
+        admissions = []
+
+        def admit(username):
+            admissions.append(username)
+            account = opaque_server.get_account(username)
+            opaque_server.store_account(username, account['record'], account['backup'], SERVER_ID,
+                                        generation=account['generation'])
+            return True
+
+        self.assertTrue(self.login(password='wrong synthetic credential', admit=admit).failed)
+        self.assertTrue(self.login(username='unknown', admit=admit).failed)
+        self.assertEqual(admissions, [])
+        self.assertTrue(self.login(admit=admit).failed)
+        self.assertEqual(admissions, ['alice'])
+        self.assertEqual(opaque_server.get_account('alice')['generation'], 2)
+
+    def test_migration_rechecks_credential_after_admission(self):
+        self.add_legacy()
+        legacy = opaque_server.legacy_snapshot('alice')
+        start = opaque_runtime.call({'op': 'registration_start', 'password': PASSWORD})
+        response = opaque_runtime.call({'op': 'registration_respond', 'setup': opaque_server.get_setup(),
+                                        'username': 'alice', 'server_id': SERVER_ID,
+                                        'request': start['request']})
+        finished = opaque_runtime.call({'op': 'registration_finish', 'password': PASSWORD,
+                                        'state': start['state'], 'response': response['response'],
+                                        'username': 'alice', 'server_id': SERVER_ID})
+
+        def admit(username):
+            # Another migration completed and closed before this admission.
+            self.assertEqual(len(self.legacy_checks), 1)
+            opaque_server.store_account(username, finished['record'], backup(), SERVER_ID,
+                                        legacy=legacy)
+            return True
+
+        result, _, _ = self.registration(migration=True, admit=admit)
+        self.assertTrue(result.failed)
+        self.assertEqual(len(self.sent), 1)
+        self.assertFalse(self.sent[0]['success'])
+        self.assertIsNone(self.export_key, 'stale migration must not receive a challenge')
 
     def add_legacy(self, username='alice'):
         with closing(storage.connect()) as db:

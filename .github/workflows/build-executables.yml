@@ -10,6 +10,9 @@ name: Build Executables
 permissions:
   contents: read
 
+env:
+  PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -17,6 +20,7 @@ concurrency:
 jobs:
   tests:
     uses: ./.github/workflows/tests.yml
+    secrets: inherit
 
   # ==================== Python ====================
   build-python-windows:
@@ -26,6 +30,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,9 +41,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
 
       - name: Build server (EXE)
         run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server server.py
@@ -50,6 +54,9 @@ jobs:
         run: |
           $process = Start-Process -FilePath "$PWD/dist/client.exe" -ArgumentList '--check-encryption-runtime' -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Frozen encryption self-check failed: $($process.ExitCode)" }
+
+      - name: Check executable privacy
+        run: python scripts/check_release_privacy.py --assets dist
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -72,6 +79,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -81,9 +90,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
 
       - name: Build server
         run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server server.py
@@ -93,6 +100,9 @@ jobs:
 
       - name: Check frozen encryption runtime
         run: ./dist/client --check-encryption-runtime
+
+      - name: Check executable privacy
+        run: python scripts/check_release_privacy.py --assets dist
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -118,12 +128,14 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # go.mod 要求 go 1.23.0 + toolchain go1.24.5，必须使用 1.24.5 及以上版本
-          go-version: '1.24.5'
+          # go.mod 要求 go 1.26.0 + toolchain go1.27.3，必须使用 1.27.3 及以上版本
+          go-version: '1.27.3'
           cache: true
 
       - name: Run Go tests
@@ -133,6 +145,9 @@ jobs:
       - name: Build server (EXE)
         working-directory: go-server
         run: go build -o server.exe ./cmd/server/main.go
+
+      - name: Check executable privacy
+        run: python scripts/check_release_privacy.py --assets go-server/server.exe
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v4
@@ -150,12 +165,14 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # go.mod 要求 go 1.23.0 + toolchain go1.24.5，必须使用 1.24.5 及以上版本
-          go-version: '1.24.5'
+          # go.mod 要求 go 1.26.0 + toolchain go1.27.3，必须使用 1.27.3 及以上版本
+          go-version: '1.27.3'
           cache: true
 
       - name: Build for Windows (amd64)
@@ -181,6 +198,11 @@ jobs:
       - name: Build for macOS (arm64)
         working-directory: go-server
         run: GOOS=darwin GOARCH=arm64 go build -o server-darwin-arm64 ./cmd/server/main.go
+
+      - name: Check executable privacy
+        shell: bash
+        run: |
+          python scripts/check_release_privacy.py --assets go-server/server-windows-amd64.exe --assets go-server/server-linux-amd64 --assets go-server/server-darwin-amd64 --assets go-server/server-windows-arm64.exe --assets go-server/server-linux-arm64 --assets go-server/server-darwin-arm64
 
       - name: Upload cross-platform artifacts
         uses: actions/upload-artifact@v4

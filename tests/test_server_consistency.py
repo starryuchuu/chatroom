@@ -170,7 +170,7 @@ class ServerConsistencyTests(unittest.TestCase):
             return original_send(sock, msg, **kwargs)
 
         def log_info(message, *args, **kwargs):
-            if message.startswith("Processing friend response from 'bob'"):
+            if message == 'Friend response received':
                 response_read.set()
             return original_info(message, *args, **kwargs)
 

@@ -19,9 +19,13 @@ class TkClientView:
         self.is_loading_messages = False
         self.request_windows = {}
         self._scroll_after_id = None
+        self._scroll_anchor = None
+        self._restoring_scroll = False
+        self._new_messages = {}
         self._scheduled = set()
         self._destroyed = False
         self._friend_keys = []
+        self._group_keys = []
         self._list_widths = {}
         self._row_fonts = {}
         self.profile_selector = None
@@ -71,6 +75,9 @@ class TkClientView:
         self.chat_frames.clear()
         self.current_chat_frame = None
         self._friend_keys.clear()
+        self._group_keys.clear()
+        self._new_messages.clear()
+        self._restoring_scroll = False
         self._list_widths.clear()
         self.profile_selector = None
         self.master.title('chatroom')
@@ -153,10 +160,15 @@ class TkClientView:
                 self.controller.request_group_info(gid, open_window=True)
 
     def get_gid_by_index(self, index):
-        gids = list(self.state.groups)
-        return gids[index] if 0 <= index < len(gids) else None
+        return self._group_keys[index] if 0 <= index < len(self._group_keys) else None
 
-    def render_conversation(self, key, scroll_top=False):
+    def render_conversation(self, key, scroll_top=False, *, preserve_scroll=True):
+        frame = self.chat_frames.get(key)
+        viewport = (self.capture_chat_scroll() if preserve_scroll and frame is not None
+                    and frame is self.current_chat_frame else None)
+        previous_messages = {id(row._chat_message) for row in frame.winfo_children()
+                             if hasattr(row, '_chat_message')} if viewport is not None else set()
+        self.cancel_scroll()
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
         if key not in self.chat_frames:
@@ -165,6 +177,7 @@ class TkClientView:
         frame = self.chat_frames[key]
         frame.pack(fill=tk.BOTH, expand=True)
         self.current_chat_frame = frame
+        self._restoring_scroll = True
         for child in frame.winfo_children():
             child.destroy()
         self.is_loading_messages = True
@@ -178,25 +191,51 @@ class TkClientView:
         else:
             self.group_listbox.selection_clear(0, tk.END)
         self.refresh_controls()
-        self.scroll_to_bottom()
-        if scroll_top:
-            self.chat_canvas.yview_moveto(0.0)
+        try:
+            if scroll_top:
+                self.update_chat_region()
+                self.chat_canvas.yview_moveto(0.0)
+            elif viewport is not None and not viewport['at_bottom']:
+                additions = [message for message in self.state.conversation(key).messages
+                             if id(message) not in previous_messages]
+                self._new_messages[key] = self._new_messages.get(key, 0) + sum(
+                    not message.is_self for message in additions)
+                self.restore_chat_scroll(viewport)
+            else:
+                self.scroll_to_bottom()
+        finally:
+            self._restoring_scroll = False
+        self.update_new_messages_button()
 
     def append_message(self, key, message):
+        active = key == self.state.current_chat and not self.is_loading_messages
+        viewport = self.capture_chat_scroll() if active else None
         label = '你' if message.is_self else message.author
         if self.controller.encryption is not None:
             security = getattr(message, 'encryption', 'legacy')
             label += {'e2ee': ' [端到端加密]', 'legacy': ' [旧消息 · 非端到端加密]'}.get(security, ' [安全验证失败]')
-        self.display_message_with_time(message.content, message.timestamp,
-                                       message.is_self, key=key, author=label)
+        row = self.display_message_with_time(message.content, message.timestamp,
+                                             message.is_self, key=key, author=label)
+        if row is not None:
+            row._chat_message = message
+        if active:
+            if message.is_self or viewport['at_bottom']:
+                self.request_scroll()
+            else:
+                self._new_messages[key] = self._new_messages.get(key, 0) + 1
+                self.request_scroll(viewport)
+                self.update_new_messages_button()
 
     def clear_selection(self):
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
         self.current_chat_frame = None
+        self.cancel_scroll()
+        self.update_new_messages_button()
         self.refresh_controls()
 
     def remove_conversation(self, key):
+        self._new_messages.pop(key, None)
         frame = self.chat_frames.pop(key, None)
         if frame is not None:
             if self.current_chat_frame is frame:
@@ -204,17 +243,12 @@ class TkClientView:
             frame.destroy()
 
     def refresh_groups(self):
-        self.group_listbox.delete(0, tk.END)
         for gid in list(self.groups_ui.windows):
             if gid not in self.state.groups:
                 self.groups_ui.close(gid)
             else:
                 self.groups_ui.show(gid)
-        for index, (gid, info) in enumerate(self.state.groups.items()):
-            key = ChatKey('group', gid)
-            self.group_listbox.insert(tk.END, self.conversation_label(key, info.get('group_name', gid)))
-            if self.state.current_chat == ChatKey('group', gid):
-                self.group_listbox.selection_set(index)
+        self.refresh_conversation_list('group')
         self.refresh_controls()
 
     def refresh_controls(self):
@@ -305,45 +339,66 @@ class TkClientView:
         if self._list_widths.get(kind) == width:
             return
         self._list_widths[kind] = width
+        self.refresh_conversation_list(kind)
+
+    def refresh_conversation_list(self, kind):
+        """Refit summaries while keeping the same logical rows in view."""
         widget = self.group_listbox if kind == 'group' else self.friends_listbox
         if not widget.winfo_exists():
             return
         if kind == 'group':
             rows = [(ChatKey('group', gid), info.get('group_name', gid))
                     for gid, info in self.state.groups.items()]
+            previous_keys = self._group_keys
         else:
-            rows = [(ChatKey('private', name), name) for name in self._friend_keys]
-        selected = widget.curselection()
-        active = widget.index(tk.ACTIVE) if widget.size() else None
-        anchor = widget.index(tk.ANCHOR) if widget.size() else None
+            rows = [(ChatKey('private', name), name) for name in self.state.friends]
+            previous_keys = self._friend_keys
+        keys = [key.target for key, _title in rows]
+
+        def previous_key(index):
+            return previous_keys[index] if 0 <= index < len(previous_keys) else None
+
+        selected = [previous_key(index) for index in widget.curselection()]
+        active = previous_key(widget.index(tk.ACTIVE)) if widget.size() else None
+        anchor = previous_key(widget.index(tk.ANCHOR)) if widget.size() else None
+        top = previous_key(widget.nearest(0)) if widget.size() else None
         position = widget.yview()[0]
-        for index, (key, title) in enumerate(rows):
-            if index >= widget.size():
-                break
-            text = self.conversation_label(key, title)
-            if widget.get(index) != text:
-                widget.delete(index)
-                widget.insert(index, text)
-        for index in selected:
-            widget.selection_set(index)
+        if kind == 'group':
+            self._group_keys = keys
+        else:
+            self._friend_keys = keys
+        labels = [self.conversation_label(key, title) for key, title in rows]
+        if keys == previous_keys and widget.size() == len(labels):
+            for index, text in enumerate(labels):
+                if widget.get(index) != text:
+                    widget.delete(index)
+                    widget.insert(index, text)
+        else:
+            widget.delete(0, tk.END)
+            if labels:
+                widget.insert(tk.END, *labels)
+        indexes = {key: index for index, key in enumerate(keys)}
+        current = self.state.current_chat
+        if current is not None and current.kind == kind and current.target in indexes:
+            selected = [current.target]
+        widget.selection_clear(0, tk.END)
+        for key in selected:
+            if key in indexes:
+                widget.selection_set(indexes[key])
         if widget.size():
-            if active is not None:
-                widget.activate(min(active, widget.size() - 1))
-            if anchor is not None:
-                widget.selection_anchor(min(anchor, widget.size() - 1))
-        widget.yview_moveto(position)
+            widget.activate(indexes.get(active, 0))
+            widget.selection_anchor(indexes.get(anchor, 0))
+        if keys != previous_keys and top in indexes:
+            widget.yview(indexes[top])
+        else:
+            widget.yview_moveto(position)
 
     def refresh_activity(self):
         if getattr(self, 'friends_listbox', None) is None or not self.friends_listbox.winfo_exists():
             return
         self.update_friends_listbox()
         # Refresh rows without opening or rebuilding unrelated group dialogs.
-        self.group_listbox.delete(0, tk.END)
-        for index, (gid, info) in enumerate(self.state.groups.items()):
-            key = ChatKey('group', gid)
-            self.group_listbox.insert(tk.END, self.conversation_label(key, info.get('group_name', gid)))
-            if self.state.current_chat == key:
-                self.group_listbox.selection_set(index)
+        self.refresh_conversation_list('group')
         count = self.state.total_unread
         self.master.title((f'({count}) ' if count else '') + 'chatroom')
         self.refresh_sidebar_counts()
@@ -734,7 +789,7 @@ class TkClientView:
         self.chat_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.chat_scrollbar = AutoScrollbar(display, orient=tk.VERTICAL, command=self.chat_canvas.yview)
         self.chat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.chat_canvas.configure(yscrollcommand=self.chat_scrollbar.set)
+        self.chat_canvas.configure(yscrollcommand=self.on_chat_scroll)
         self.chat_container = tk.Frame(self.chat_canvas, bg=c['bg'])
         self.chat_window = self.chat_canvas.create_window((0, 0), window=self.chat_container, anchor=tk.NW)
         self.chat_container.bind('<Configure>', lambda event: self.chat_canvas.configure(
@@ -742,6 +797,10 @@ class TkClientView:
         self.chat_canvas.bind('<Configure>', self.resize_chat)
         self.bind_chat_wheel(self.chat_canvas)
         self.bind_chat_wheel(self.chat_container)
+        self.new_messages_button = self.theme.button(
+            self.chat_canvas, '', self.scroll_to_bottom, variant='primary',
+            font=f['small'], padx=12, pady=7)
+        self.bind_chat_wheel(self.new_messages_button)
         self.empty_state = tk.Frame(self.chat_canvas, bg=c['bg'])
         empty_mark = tk.Canvas(self.empty_state, width=92, height=76, bg=c['bg'],
                                highlightthickness=0, takefocus=False)
@@ -819,29 +878,108 @@ class TkClientView:
                 self.bind_chat_wheel(child)
             if key == self.state.current_chat:
                 self.empty_state.place_forget()
-            if not self.is_loading_messages:
-                self.request_scroll()
+            return row
         except tk.TclError:
             logging.warning('尝试在已销毁的 widget 上显示消息')
 
-    def scroll_to_bottom(self):
-        """滚动到聊天区域底部"""
+    def update_chat_region(self):
         self.chat_canvas.update_idletasks()
         self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all"))
-        self.chat_canvas.yview_moveto(1.0)
 
-    def request_scroll(self):
+    def chat_is_at_bottom(self):
+        region = self.chat_canvas.bbox('all')
+        if region is None:
+            return True
+        bottom = self.chat_canvas.canvasy(0) + self.chat_canvas.winfo_height()
+        return region[3] - bottom <= 24
+
+    def capture_chat_scroll(self):
+        """Anchor a viewport to a message, rather than a changing fraction."""
+        if self._scroll_after_id is not None:
+            if self._scroll_anchor is not None:
+                return self._scroll_anchor
+            return {'at_bottom': True}
+        top = self.chat_canvas.canvasy(0)
+        viewport = {'at_bottom': self.chat_is_at_bottom(), 'top': top,
+                    'message': None, 'offset': 0}
+        frame = self.current_chat_frame
+        if frame is not None:
+            canvas_top = self.chat_canvas.winfo_rooty()
+            for row in frame.winfo_children():
+                if hasattr(row, '_chat_message') and row.winfo_rooty() + row.winfo_height() > canvas_top:
+                    viewport['message'] = row._chat_message
+                    viewport['offset'] = row.winfo_rooty() - canvas_top
+                    break
+        return viewport
+
+    def restore_chat_scroll(self, viewport):
+        self.update_chat_region()
+        target = viewport['top']
+        frame = self.current_chat_frame
+        if frame is not None and viewport['message'] is not None:
+            for row in frame.winfo_children():
+                if getattr(row, '_chat_message', None) is viewport['message']:
+                    target = (self.chat_canvas.canvasy(0) + row.winfo_rooty()
+                              - self.chat_canvas.winfo_rooty() - viewport['offset'])
+                    break
+        region = self.chat_canvas.bbox('all')
+        if region is not None and region[3] > region[1]:
+            self.chat_canvas.yview_moveto(max(0, target - region[1]) / (region[3] - region[1]))
+
+    def on_chat_scroll(self, first, last):
+        self.chat_scrollbar.set(first, last)
+        if (not self._restoring_scroll and self._scroll_after_id is None
+                and float(last) >= .999):
+            self._new_messages.pop(self.state.current_chat, None)
+            self.update_new_messages_button()
+
+    def update_new_messages_button(self):
+        button = getattr(self, 'new_messages_button', None)
+        if button is None or not button.winfo_exists():
+            return
+        count = self._new_messages.get(self.state.current_chat, 0)
+        if count:
+            button.configure(text=f'{count} 条新消息 ↓')
+            button.place(relx=1, rely=1, x=-16, y=-16, anchor=tk.SE)
+            button.lift()
+        else:
+            button.place_forget()
+
+    def scroll_to_bottom(self):
+        """Follow the latest message after sending or an explicit request."""
+        self.cancel_scroll()
+        self.update_chat_region()
+        self.chat_canvas.yview_moveto(1.0)
+        self._new_messages.pop(self.state.current_chat, None)
+        self.update_new_messages_button()
+
+    def request_scroll(self, viewport=None):
         if self._scroll_after_id is None:
+            self._scroll_anchor = viewport
             self._scroll_after_id = self.master.after_idle(self.finish_scroll)
+        elif viewport is None:
+            # A local send or an already-following batch keeps following even
+            # when several messages arrive before Tk lays out the new rows.
+            self._scroll_anchor = None
 
     def finish_scroll(self):
+        viewport = self._scroll_anchor
         self._scroll_after_id = None
-        self.scroll_to_bottom()
+        self._scroll_anchor = None
+        if viewport is None:
+            self.scroll_to_bottom()
+        else:
+            self._restoring_scroll = True
+            try:
+                self.restore_chat_scroll(viewport)
+            finally:
+                self._restoring_scroll = False
 
     def cancel_scroll(self):
         if self._scroll_after_id is not None:
             self.master.after_cancel(self._scroll_after_id)
             self._scroll_after_id = None
+        self._scroll_anchor = None
 
     def notify(self, title, text):
         """Nonmodal feedback keeps the incoming event pump running."""
@@ -984,19 +1122,17 @@ class TkClientView:
     def on_chat_wheel(self, event, units=None):
         if self.controller.connection.running and self.chat_canvas.winfo_exists():
             if units is None:
-                units = int(-event.delta / 120)
+                delta = getattr(event, 'delta', 0)
+                if not delta:
+                    return None
+                units = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+            self.cancel_scroll()
             self.chat_canvas.yview_scroll(units, 'units')
             return 'break'
 
     def update_friends_listbox(self):
         """更新好友列表框"""
         try:
-            self.friends_listbox.delete(0, tk.END)
-            self._friend_keys = list(self.state.friends)
-            for index, friend in enumerate(self._friend_keys):
-                key = ChatKey('private', friend)
-                self.friends_listbox.insert(tk.END, self.conversation_label(key, friend))
-                if self.state.current_chat == key:
-                    self.friends_listbox.selection_set(index)
+            self.refresh_conversation_list('private')
         except tk.TclError:
             logging.warning("update_friends_listbox called on a destroyed widget.")

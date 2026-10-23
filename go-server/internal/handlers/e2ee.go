@@ -140,7 +140,7 @@ func handleE2EEKeysRequest(conn net.Conn, username string, request map[string]in
 			fail("无权读取该会话加密身份")
 			return
 		}
-		members = append(members, group.Members...)
+		members = uniqueGroupMembers(group.Members)
 	}
 	sort.Strings(members)
 	if len(members) == 0 || len(members) > e2ee.MaxRecipients {
@@ -187,6 +187,7 @@ func e2eeChatPayload(kind, sender, target string, envelope map[string]interface{
 // handleE2EEChat requires the enrollment read lock and, for groups, their
 // operation lock. A changed membership/key set is rejected before persistence.
 func handleE2EEChat(conn net.Conn, sender, kind, target string, members []string, request map[string]interface{}, manager types.ClientManager) {
+	members = uniqueGroupMembers(members)
 	fail := func(text string) { sendChatResult(conn, kind+"_chat", request, 0, text) }
 	if _, mixed := request["content"]; mixed {
 		fail("加密消息不能同时包含旧版消息正文")

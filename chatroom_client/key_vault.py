@@ -593,6 +593,26 @@ class KeyVault:
         self.pin_peers({_name(username): bundle}, replace=replace, verified=verified)
         return self.peer(username)
 
+    def verify_peer(self, username, expected_fingerprint):
+        """Mark only the exact identity confirmed by the user as verified."""
+        username = _name(username)
+        if not isinstance(expected_fingerprint, str) or not _HEX.fullmatch(expected_fingerprint):
+            raise VaultError('请先明确核对联系人指纹，再标记为已核对')
+
+        def mutation(data):
+            record = data['peers'].get(username)
+            if record is None:
+                raise VaultError('尚无此联系人的固定密钥，请先收取消息或尝试发送')
+            actual = bundle_fingerprint(record['bundle'])
+            if actual != expected_fingerprint:
+                raise PeerKeyChanged(username, expected_fingerprint, actual)
+            if record['verified']:
+                return _Unchanged(True)
+            record['verified'] = True
+            return True
+
+        return self._mutate(mutation)
+
     def approved_roster(self, gid):
         return deepcopy(self._refresh()['groups'].get(_name(gid)))
 
@@ -806,10 +826,28 @@ class KeyVault:
 
         return self._mutate(mutation)
 
+    def _check_export_destination(self, destination):
+        if self.path is None:
+            return
+        try:
+            same_path = destination.resolve() == self.path.resolve()
+        except (OSError, RuntimeError) as error:
+            raise VaultError('无法安全验证导出路径，请选择其他备份文件') from error
+        try:
+            same_file = destination.samefile(self.path)
+        except FileNotFoundError:
+            same_file = False
+        except OSError as error:
+            raise VaultError('无法安全验证导出路径，请选择其他备份文件') from error
+        if same_path or same_file:
+            raise VaultError('离线备份不能覆盖当前本机密钥文件，请选择其他文件')
+
     def export_to(self, path, passphrase=None):
         self.identity
         try:
+            destination = Path(path)
             with self._guard():
+                self._check_export_destination(destination)
                 data, identity, key, salt = self._current()
                 if self.single_password:
                     if passphrase is None:
@@ -820,12 +858,15 @@ class KeyVault:
                                           parallelism=1, hash_len=32, type=Type.ID, version=19)
                     offline = KeyVault(None, self.scope['endpoint'], self.scope['username'])
                     blob = offline._encode(data, key, salt)
-                    _atomic_write(Path(path), blob)
                 else:
                     blob = self._encode(data, key, salt)
-                    _atomic_write(Path(path), blob)
+                # Deriving the offline key can take time. Recheck aliases just
+                # before writing as well as before reading or encoding the vault.
+                self._check_export_destination(destination)
+                _atomic_write(destination, blob)
+                if not self.single_password:
                     self._accept(data, identity, key, salt)
-            return Path(path)
+            return destination
         except VaultError:
             raise
         except (OSError, ValueError, TypeError, KeyError) as error:

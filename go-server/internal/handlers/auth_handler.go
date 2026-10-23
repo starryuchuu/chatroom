@@ -19,6 +19,9 @@ var errRegistered = errors.New("注册成功，请重新登录")
 type AuthOptions struct {
 	ServerID string
 	Deadline time.Time
+	// The real server consumes a successful reservation in AddClient. Direct
+	// protocol/test callers default to releasing it when HandleAuth returns.
+	KeepReservation bool
 }
 
 func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientManager, options ...AuthOptions) (username string, resultErr error) {
@@ -49,14 +52,14 @@ func HandleAuth(conn net.Conn, sessionKey []byte, clientManager types.ClientMana
 
 		switch msgType {
 		case "opaque_register_start", "opaque_login_start", "opaque_migrate_start", "opaque_change_start":
-			return handleOpaque(conn, sessionKey, clientManager, msg, settings.ServerID, settings.Deadline)
+			return handleOpaque(conn, sessionKey, clientManager, msg, settings.ServerID, settings.Deadline, settings.KeepReservation)
 		case "encrypted_register":
 			return handleRegister(conn, sessionKey, msg)
 		case "login":
 			protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "不再支持明文登录，请升级客户端"})
 			return "", errors.New("plaintext login rejected")
 		case "encrypted_login":
-			return handleEncryptedLogin(conn, sessionKey, clientManager, msg)
+			return handleEncryptedLogin(conn, sessionKey, clientManager, msg, settings.KeepReservation)
 		default:
 			log.Printf("Unknown authentication message rejected")
 			// 可以选择发送一个错误消息给客户端
@@ -114,7 +117,7 @@ func handleRegister(conn net.Conn, sessionKey []byte, msg map[string]interface{}
 	return "", errRegistered
 }
 
-func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[string]interface{}) (string, error) {
+func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[string]interface{}, keepReservations ...bool) (string, error) {
 	username, ok := msg["from"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据格式错误"})
@@ -126,13 +129,6 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 		return "", errors.New("认证未通过")
 	}
 
-	// 检查用户是否已在线，防止重复登录造成身份混淆/劫持
-	if clientManager.IsUserOnline(username) {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "该用户已登录"})
-		log.Printf("Duplicate login rejected")
-		return "", errors.New("该用户已登录")
-	}
-
 	valid, err := database.ValidateUser(username, password)
 	if err != nil {
 		log.Printf("Legacy credential verification failed")
@@ -141,6 +137,26 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 	}
 
 	if valid {
+		// Only proven credentials can occupy an account admission slot.
+		if clientManager == nil || !clientManager.ReserveAuthentication(username, conn) {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "该用户已登录"})
+			log.Printf("Duplicate login rejected")
+			return "", errors.New("该用户已登录")
+		}
+		keep := false
+		defer func() {
+			if !keep {
+				clientManager.ReleaseAuthentication(username, conn)
+			}
+		}()
+		// A migration may have committed and disconnected after the expensive
+		// credential check. Once reserved, no other migration can start.
+		account, err := database.GetOpaqueAccount(username)
+		if err != nil || account != nil {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "用户名或密码错误"})
+			return "", errors.New("用户名或密码错误")
+		}
+		keep = len(keepReservations) == 1 && keepReservations[0]
 		log.Printf("Legacy authentication completed")
 		return username, nil // 登录成功，返回用户名
 	}
@@ -151,7 +167,7 @@ func handleLogin(conn net.Conn, clientManager types.ClientManager, msg map[strin
 }
 
 // handleEncryptedLogin 处理加密登录（用户名/密码经 AES-GCM 会话密钥加密传输，避免明文暴露）
-func handleEncryptedLogin(conn net.Conn, sessionKey []byte, clientManager types.ClientManager, msg map[string]interface{}) (string, error) {
+func handleEncryptedLogin(conn net.Conn, sessionKey []byte, clientManager types.ClientManager, msg map[string]interface{}, keepReservations ...bool) (string, error) {
 	encryptedData, ok := msg["data"].(string)
 	if !ok {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "login_result", "success": false, "error": "登录数据格式错误"})
@@ -172,5 +188,5 @@ func handleEncryptedLogin(conn net.Conn, sessionKey []byte, clientManager types.
 		return "", errors.New("认证未通过")
 	}
 
-	return handleLogin(conn, clientManager, loginInfo)
+	return handleLogin(conn, clientManager, loginInfo, keepReservations...)
 }

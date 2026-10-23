@@ -1,12 +1,12 @@
 # 界面截图 / Interface screenshots
 
-这些图片是 v1.3.1 客户端的真实窗口截图，展示深浅色主题、单密码登录、旧账号迁移与旧密钥解锁入口、双栏会话布局、可收起的在线用户面板及端到端加密消息。认证操作见[单密码指南](../SINGLE_PASSWORD.md)。
+这些图片是 v1.3.2 客户端的真实窗口截图，展示深浅色主题、单密码登录、旧账号迁移与旧密钥解锁入口、双栏会话布局、可收起的在线用户面板及端到端加密消息。认证操作见[单密码指南](../SINGLE_PASSWORD.md)。
 
-These real window captures show the v1.3.1 client: light and dark themes, single-password login, explicit legacy-account migration and legacy-key unlock entries, two-column conversations, a collapsible online-users panel, and end-to-end encrypted messages. See the [single-password guide](../SINGLE_PASSWORD.md).
+These real window captures show the v1.3.2 client: light and dark themes, single-password login, explicit legacy-account migration and legacy-key unlock entries, two-column conversations, a collapsible online-users panel, and end-to-end encrypted messages. See the [single-password guide](../SINGLE_PASSWORD.md).
 
-- 采集日期 / Capture date: 2026-10-22
-- 客户端 / Client: v1.3.1
-- 源码 / Source: [v1.3.1 tag](https://github.com/starryuchuu/chatroom/tree/v1.3.1)
+- 采集日期 / Capture date: 2026-10-23
+- 客户端 / Client: v1.3.2
+- 源码 / Source: [v1.3.2 tag](https://github.com/starryuchuu/chatroom/tree/v1.3.2)
 - 环境 / Environment: Linux, Python 3.13.5, Tk 8.6.16, 1120 × 760 client window
 - [登录 / Login](login.png): light single-password login, server profiles, theme switch, “迁移旧账号…” (migrate legacy account), “解锁旧密钥…” (unlock legacy keys), and key recovery entries
 - [主界面 / Main](main.png): light friends/groups view, unread previews, notification controls and encryption status
@@ -18,6 +18,10 @@ These real window captures show the v1.3.1 client: light and dark themes, single
 登录页或聊天页右上角的“深色模式” / “浅色模式”按钮显示将要切换的模式。切换立即生效，保留输入、草稿、聊天连接和已打开的应用对话框。选择保存在 `client.json` 顶层 `theme` 字段，取值 `light` 或 `dark`，默认 `light`；没有自动跟随系统的选项。系统原生文件选择器和消息框由操作系统管理。
 
 The “深色模式” / “浅色模式” button at the top right of login or chat names the mode it will activate. Switching takes effect immediately and retains input, drafts, the chat connection and open application dialogs. The choice is saved in the top-level `theme` field of `client.json`, with `light` or `dark` and a default of `light`; there is no automatic system-theme option. Native file pickers and message boxes are managed by the operating system.
+
+v1.3.2 阅读历史时收到新消息会保留当前可见消息，聊天区的“N 条新消息 ↓”可回到底部；好友和群聊列表也保留滚动及键盘导航位置。该入口只在真实收到未跟随的新消息后显示，截图不绘制或叠加虚构控件。
+
+In v1.3.2, arrivals retain the visible historical message while “N 条新消息 ↓” returns to the latest messages. Friend/group lists also retain their scroll and keyboard navigation positions. The indicator appears after an actual arrival while reading earlier history; captures do not draw or overlay mock controls.
 
 ## 演示数据与采集 / Demo data and capture
 

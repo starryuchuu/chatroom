@@ -66,13 +66,46 @@ func (c *recordConn) result(t *testing.T, kind string) map[string]interface{} {
 	return nil
 }
 
-type recordManager struct{ clients map[string]*types.ClientInfo }
+type recordManager struct {
+	clients        map[string]*types.ClientInfo
+	authMu         sync.Mutex
+	authenticating map[string]net.Conn
+}
+
+func (m *recordManager) ReserveAuthentication(name string, conn net.Conn) bool {
+	m.authMu.Lock()
+	defer m.authMu.Unlock()
+	if name == "" || conn == nil || m.IsUserOnline(name) {
+		return false
+	}
+	if m.authenticating == nil {
+		m.authenticating = make(map[string]net.Conn)
+	}
+	if _, exists := m.authenticating[name]; exists {
+		return false
+	}
+	m.authenticating[name] = conn
+	return true
+}
+func (m *recordManager) ReleaseAuthentication(name string, conn net.Conn) {
+	m.authMu.Lock()
+	defer m.authMu.Unlock()
+	if m.authenticating[name] == conn {
+		delete(m.authenticating, name)
+	}
+}
 
 func (m *recordManager) AddClient(name string, conn net.Conn, key []byte, friends map[string]struct{}) bool {
+	m.authMu.Lock()
+	defer m.authMu.Unlock()
+	if owner, exists := m.authenticating[name]; exists && owner != conn {
+		return false
+	}
 	if m.IsUserOnline(name) {
 		return false
 	}
 	m.clients[name] = &types.ClientInfo{Conn: conn, Username: name, SessionKey: key, Friends: friends}
+	delete(m.authenticating, name)
 	return true
 }
 func (m *recordManager) ActivateClient(name string, conn net.Conn) bool {

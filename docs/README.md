@@ -7,7 +7,7 @@
 | 文档 / Guide | 内容 / Contents |
 | --- | --- |
 | [单密码登录与迁移](SINGLE_PASSWORD.md) | OPAQUE、旧账号迁移、改密、云身份与离线备份 / OPAQUE, migration, password changes and recovery |
-| [深浅色主题与截图](images/README.md) | 即时切换、主题保存及 v1.3.1 实拍 / Theme switching, persistence and v1.3.1 captures |
+| [深浅色主题与截图](images/README.md) | 即时切换、主题保存及 v1.3.2 实拍 / Theme switching, persistence and v1.3.2 captures |
 | [群组功能](GROUP_FEATURES_GUIDE.md) | 创建、邀请、成员与群主操作 / Group management |
 | [端到端加密与恢复](END_TO_END_ENCRYPTION.md) | 首次使用、指纹核对、密钥备份与保护范围 / Encryption, key recovery and limits |
 | [加密存储](STORAGE_ENCRYPTION.md) | 数据格式、数据库迁移、备份与恢复 / Storage format, migration and recovery |
@@ -34,6 +34,6 @@ Run commands from the repository root unless a command explicitly changes direct
 
 These reports document checks for specific releases. Refer to the current guides and release notes for current behavior and limits.
 
-界面截图位于 [images/](images/)，于 2026-10-22 从 v1.3.1 源码实拍，包含浅色登录、主界面及深浅两种聊天主题。登录页与聊天页右上角可点击“深色模式” / “浅色模式”即时切换，并记住选择。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
+界面截图位于 [images/](images/)，于 2026-10-23 从 v1.3.2 源码实拍，包含浅色登录、主界面及深浅两种聊天主题。登录页与聊天页右上角可点击“深色模式” / “浅色模式”即时切换，并记住选择。新增指南、设计说明和截图统一放在本目录，历史验证材料放在 `reviews/`。
 
-Screenshots in [images/](images/) were captured from v1.3.1 source on 2026-10-22 and show light login/main views plus light and dark chats. Use “深色模式” / “浅色模式” at the top right of login or chat to switch immediately and save the choice. Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.
+Screenshots in [images/](images/) were captured from v1.3.2 source on 2026-10-23 and show light login/main views plus light and dark chats. Use “深色模式” / “浅色模式” at the top right of login or chat to switch immediately and save the choice. Keep guides, design notes and screenshots here, and historical validation reports in `reviews/`.

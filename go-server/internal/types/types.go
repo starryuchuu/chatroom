@@ -15,6 +15,10 @@ type ClientInfo struct {
 
 // ClientManager 定义了管理客户端连接的接口
 type ClientManager interface {
+	// An authentication reservation covers proof verification through atomic
+	// publication. Password changes deliberately do not reserve an online slot.
+	ReserveAuthentication(username string, conn net.Conn) bool
+	ReleaseAuthentication(username string, conn net.Conn)
 	// AddClient reserves a username; activation follows the successful login reply.
 	AddClient(username string, conn net.Conn, sessionKey []byte, friends map[string]struct{}) bool
 	ActivateClient(username string, conn net.Conn) bool

@@ -50,17 +50,17 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 		conn.SetReadDeadline(time.Now().Add(30 * time.Minute))
 		msg, err := protocol.RecvMsg(conn)
 		if err != nil {
-			log.Printf("从用户 %s 接收消息失败: %v", username, err)
+			log.Printf("event=client_messages_failed error_type=%T", err)
 			break // 退出循环，连接将在上层关闭
 		}
 
 		msgType, ok := msg["type"].(string)
 		if !ok {
-			log.Printf("收到来自 %s 的消息格式错误: %v", username, msg)
+			log.Printf("event=invalid_message_type")
 			continue
 		}
 
-		log.Printf("收到来自 %s 的消息类型: %s", username, msgType) // 不记录消息内容，避免日志泄露
+		log.Printf("event=client_messages_received")
 
 		switch msgType {
 		case "history_request":
@@ -100,7 +100,7 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 		case "group_rename":
 			handleGroupRename(conn, username, msg, clientManager)
 		default:
-			log.Printf("未知的消息类型: %s", msgType)
+			log.Printf("event=unknown_message_type")
 		}
 	}
 }
@@ -119,11 +119,11 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 		return
 	}
 
-	log.Printf("处理来自 '%s' 到 '%s' 的群组邀请，群组ID: %s", inviter, toUser, gid)
+	log.Printf("event=group_invite_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("群组邀请失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_invite_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -138,7 +138,7 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 	}
 	if !isMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "您不是该群成员，无法邀请"})
-		log.Printf("群组邀请从 '%s' 失败: 不是群组成员", inviter)
+		log.Printf("event=group_invite_failed")
 		return
 	}
 
@@ -152,33 +152,37 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 	}
 	if isAlreadyMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "用户 " + toUser + " 已是群成员"})
-		log.Printf("群组邀请从 '%s' 失败: 用户 '%s' 已是群组成员", inviter, toUser)
+		log.Printf("event=group_invite_failed")
+		return
+	}
+	if len(uniqueGroupMembers(group.Members)) >= maxGroupMembers {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": groupCapacityError})
 		return
 	}
 
 	// 检查被邀请用户是否存在
 	exists, err := database.UserExists(toUser)
 	if err != nil {
-		log.Printf("检查用户 %s 存在性失败: %v", toUser, err)
+		log.Printf("event=group_invite_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "服务器内部错误"})
 		return
 	}
 	if !exists {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "用户 " + toUser + " 不存在"})
-		log.Printf("群组邀请从 '%s' 失败: 用户 '%s' 不存在", inviter, toUser)
+		log.Printf("event=group_invite_failed")
 		return
 	}
 
 	// 检查是否是好友关系（直接查询数据库而不是依赖在线客户端信息）
 	areFriends, err := database.AreFriends(inviter, toUser)
 	if err != nil {
-		log.Printf("检查好友关系失败 (%s, %s): %v", inviter, toUser, err)
+		log.Printf("event=group_invite_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "服务器内部错误"})
 		return
 	}
 	if !areFriends {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": false, "error": "您和 " + toUser + " 不是好友关系"})
-		log.Printf("群组邀请从 '%s' 到 '%s' 失败: 不是好友", inviter, toUser)
+		log.Printf("event=group_invite_failed")
 		return
 	}
 
@@ -207,15 +211,15 @@ func handleGroupInvite(conn net.Conn, inviter string, msg map[string]interface{}
 			"group_name": group.GroupName,
 		})
 		if err != nil {
-			log.Printf("转发群组邀请给 %s 失败: %v", toUser, err)
+			log.Printf("event=group_invite_failed error_type=%T", err)
 			protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "邀请已保存，对方重新登录后可见"})
 			return
 		}
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "已向 " + toUser + " 发送邀请"})
-		log.Printf("群组邀请从 '%s' 转发到 '%s'，群组ID: %s", inviter, toUser, gid)
+		log.Printf("event=group_invite_received")
 	} else {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_invite_result", "success": true, "message": "邀请已保存，对方上线后可见"})
-		log.Printf("群组邀请从 '%s' 到 '%s' 失败: 用户不在线", inviter, toUser)
+		log.Printf("event=group_invite_failed")
 	}
 }
 
@@ -239,11 +243,11 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 		return
 	}
 
-	log.Printf("处理用户 '%s' 加入群组 '%s' 的请求", userToJoin, gid)
+	log.Printf("event=group_join_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("群组加入失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_join_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -258,7 +262,13 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 	}
 	if isAlreadyMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "您已是该群成员"})
-		log.Printf("用户 '%s' 加入群组 '%s' 失败: 已是群组成员", userToJoin, gid)
+		log.Printf("event=group_join_failed")
+		return
+	}
+	// The invitation may have been issued while the group had room. Recheck
+	// under the same operation lock immediately before the membership write.
+	if len(uniqueGroupMembers(group.Members)) >= maxGroupMembers {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": groupCapacityError})
 		return
 	}
 
@@ -272,7 +282,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 	if !invited {
 		pendingGroupJoinsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "您未被邀请加入该群组"})
-		log.Printf("用户 '%s' 加入群组 '%s' 被阻止: 无待处理邀请", userToJoin, gid)
+		log.Printf("event=group_join_denied")
 		return
 	}
 	pendingGroupJoinsMu.Unlock()
@@ -283,7 +293,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 	// 更新数据库中的群组成员
 	err = database.UpdateGroupMembersAndConsumeInvite(gid, group.Members, userToJoin)
 	if err != nil {
-		log.Printf("更新群组成员失败: %v", err)
+		log.Printf("event=group_join_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_join_result", "success": false, "error": "加入失败"})
 		return
 	}
@@ -306,7 +316,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 
 	protocol.SendMsg(conn, payload)
 	joined = true
-	log.Printf("用户 '%s' 成功加入群组 '%s'", userToJoin, gid)
+	log.Printf("event=group_join_completed")
 
 	// 向所有成员广播群组更新信息
 	updatePayload := map[string]interface{}{
@@ -333,11 +343,11 @@ func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interfac
 		return
 	}
 
-	log.Printf("处理用户 '%s' 离开群组 '%s' 的请求", userToLeave, gid)
+	log.Printf("event=group_leave_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("群组离开失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_leave_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_leave_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -352,14 +362,14 @@ func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interfac
 	}
 	if !isMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_leave_result", "success": false, "error": "您不是该群成员"})
-		log.Printf("用户 '%s' 离开群组 '%s' 失败: 不是群组成员", userToLeave, gid)
+		log.Printf("event=group_leave_failed")
 		return
 	}
 
 	// 检查用户是否是群主
 	if userToLeave == group.Owner {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_leave_result", "success": false, "error": "群主不能直接退出群聊，请先解散群聊或转让群主"})
-		log.Printf("用户 '%s' 离开群组 '%s' 失败: 是群主", userToLeave, gid)
+		log.Printf("event=group_leave_failed")
 		return
 	}
 
@@ -375,7 +385,7 @@ func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interfac
 	// 更新数据库中的群组成员
 	err = database.UpdateGroupMembers(gid, group.Members)
 	if err != nil {
-		log.Printf("更新群组成员失败: %v", err)
+		log.Printf("event=group_leave_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_leave_result", "success": false, "error": "退出失败"})
 		return
 	}
@@ -386,7 +396,7 @@ func handleGroupLeave(conn net.Conn, userToLeave string, msg map[string]interfac
 		"success": true,
 		"gid":     gid,
 	})
-	log.Printf("用户 '%s' 成功离开群组 '%s'", userToLeave, gid)
+	log.Printf("event=group_leave_completed")
 
 	// 向所有剩余成员广播群组更新信息
 	updatePayload := map[string]interface{}{
@@ -418,11 +428,11 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 		return
 	}
 
-	log.Printf("处理用户 '%s' 踢出用户 '%s' 从群组 '%s' 的请求", requester, kickUser, gid)
+	log.Printf("event=group_kick_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("群组踢人失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_kick_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -430,7 +440,7 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 	// 检查请求者是否是群主
 	if requester != group.Owner {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "只有群主才能踢人"})
-		log.Printf("用户 '%s' 踢出用户 '%s' 从群组 '%s' 失败: 不是群主", requester, kickUser, gid)
+		log.Printf("event=group_kick_failed")
 		return
 	}
 
@@ -444,14 +454,14 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 	}
 	if !isMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "该用户不是群成员"})
-		log.Printf("用户 '%s' 踢出用户 '%s' 从群组 '%s' 失败: 被踢用户不是群组成员", requester, kickUser, gid)
+		log.Printf("event=group_kick_failed")
 		return
 	}
 
 	// 检查是否试图踢自己
 	if kickUser == requester {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "不能踢自己"})
-		log.Printf("用户 '%s' 踢出自己从群组 '%s' 失败: 不能踢自己", requester, gid)
+		log.Printf("event=group_kick_failed")
 		return
 	}
 
@@ -467,7 +477,7 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 	// 更新数据库中的群组成员
 	err = database.UpdateGroupMembers(gid, group.Members)
 	if err != nil {
-		log.Printf("更新群组成员失败: %v", err)
+		log.Printf("event=group_kick_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_kick_result", "success": false, "error": "踢人失败"})
 		return
 	}
@@ -488,7 +498,7 @@ func handleGroupKick(conn net.Conn, requester string, msg map[string]interface{}
 		"gid":     gid,
 		"kick":    kickUser,
 	})
-	log.Printf("用户 '%s' 成功踢出用户 '%s' 从群组 '%s'", requester, kickUser, gid)
+	log.Printf("event=group_kick_completed")
 
 	// 向所有剩余成员广播群组更新信息
 	updatePayload := map[string]interface{}{
@@ -515,11 +525,11 @@ func handleGroupInfo(conn net.Conn, username string, msg map[string]interface{})
 		return
 	}
 
-	log.Printf("处理用户 '%s' 获取群组 '%s' 信息的请求", username, gid)
+	log.Printf("event=group_info_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("获取群组信息失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_info_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_info", "gid": gid, "error": "群组不存在"})
 		return
 	}
@@ -534,7 +544,7 @@ func handleGroupInfo(conn net.Conn, username string, msg map[string]interface{})
 	}
 	if !isMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_info", "gid": gid, "error": "您不是该群成员，无法查看群组信息"})
-		log.Printf("用户 '%s' 获取群组 '%s' 信息被阻止: 不是群成员", username, gid)
+		log.Printf("event=group_info_denied")
 		return
 	}
 
@@ -548,7 +558,7 @@ func handleGroupInfo(conn net.Conn, username string, msg map[string]interface{})
 	}
 
 	protocol.SendMsg(conn, response)
-	log.Printf("成功发送群组 '%s' 信息给用户 '%s'", gid, username)
+	log.Printf("event=group_info_completed")
 }
 
 func handleGroupDisband(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
@@ -560,11 +570,11 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 		return
 	}
 
-	log.Printf("处理用户 '%s' 解散群组 '%s' 的请求", requester, gid)
+	log.Printf("event=group_disband_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("解散群组失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_disband_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_disband_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -572,14 +582,14 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 	// 检查请求者是否是群主
 	if requester != group.Owner {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_disband_result", "success": false, "error": "只有群主才能解散群聊"})
-		log.Printf("用户 '%s' 解散群组 '%s' 失败: 不是群主", requester, gid)
+		log.Printf("event=group_disband_failed")
 		return
 	}
 
 	// 从数据库中删除群组
 	err = database.DeleteGroup(gid)
 	if err != nil {
-		log.Printf("删除群组失败: %v", err)
+		log.Printf("event=group_disband_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_disband_result", "success": false, "error": "解散群聊失败"})
 		return
 	}
@@ -609,7 +619,7 @@ func handleGroupDisband(conn net.Conn, requester string, msg map[string]interfac
 		"success": true,
 		"gid":     gid,
 	})
-	log.Printf("用户 '%s' 成功解散群组 '%s'", requester, gid)
+	log.Printf("event=group_disband_completed")
 }
 
 func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
@@ -626,11 +636,11 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 		return
 	}
 
-	log.Printf("处理用户 '%s' 转让群组 '%s' 给 '%s' 的请求", requester, gid, newOwner)
+	log.Printf("event=group_transfer_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("转让群组失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_transfer_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -638,7 +648,7 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 	// 检查请求者是否是群主
 	if requester != group.Owner {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "只有群主才能转让群聊"})
-		log.Printf("用户 '%s' 转让群组 '%s' 失败: 不是群主", requester, gid)
+		log.Printf("event=group_transfer_failed")
 		return
 	}
 
@@ -652,21 +662,21 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 	}
 	if !isMember {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "新群主必须是群成员"})
-		log.Printf("用户 '%s' 转让群组 '%s' 失败: 新群主 '%s' 不是群组成员", requester, gid, newOwner)
+		log.Printf("event=group_transfer_failed")
 		return
 	}
 
 	// 检查是否试图转让给自己
 	if newOwner == requester {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "不能转让给自己"})
-		log.Printf("用户 '%s' 转让群组 '%s' 失败: 不能转让给自己", requester, gid)
+		log.Printf("event=group_transfer_failed")
 		return
 	}
 
 	// 更新数据库中的群组所有者
 	err = database.UpdateGroupOwner(gid, newOwner)
 	if err != nil {
-		log.Printf("更新群组所有者失败: %v", err)
+		log.Printf("event=group_transfer_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_transfer_result", "success": false, "error": "转让群主失败"})
 		return
 	}
@@ -699,7 +709,7 @@ func handleGroupTransfer(conn net.Conn, requester string, msg map[string]interfa
 		"gid":       gid,
 		"new_owner": newOwner,
 	})
-	log.Printf("用户 '%s' 成功转让群组 '%s' 给 '%s'", requester, gid, newOwner)
+	log.Printf("event=group_transfer_completed")
 }
 
 func handleGroupRename(conn net.Conn, requester string, msg map[string]interface{}, clientManager types.ClientManager) {
@@ -716,11 +726,11 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 		return
 	}
 
-	log.Printf("处理用户 '%s' 重命名群组 '%s' 为 '%s' 的请求", requester, gid, newName)
+	log.Printf("event=group_rename_received")
 
 	group, err := database.GetGroup(gid)
 	if err != nil {
-		log.Printf("重命名群组失败，无法获取群组 %s: %v", gid, err)
+		log.Printf("event=group_rename_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "群组不存在"})
 		return
 	}
@@ -728,7 +738,7 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 	// 检查请求者是否是群主
 	if requester != group.Owner {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "只有群主才能修改群聊名称"})
-		log.Printf("用户 '%s' 重命名群组 '%s' 失败: 不是群主", requester, gid)
+		log.Printf("event=group_rename_failed")
 		return
 	}
 
@@ -738,7 +748,7 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 	// 更新数据库中的群组名称
 	err = database.UpdateGroupName(gid, newName)
 	if err != nil {
-		log.Printf("更新群组名称失败: %v", err)
+		log.Printf("event=group_rename_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_rename_result", "success": false, "error": "修改群聊名称失败"})
 		return
 	}
@@ -772,7 +782,7 @@ func handleGroupRename(conn net.Conn, requester string, msg map[string]interface
 		"gid":      gid,
 		"new_name": newName,
 	})
-	log.Printf("用户 '%s' 成功重命名群组 '%s' 从 '%s' 为 '%s'", requester, gid, oldName, newName)
+	log.Printf("event=group_rename_completed")
 }
 
 func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[string]interface{}, clientManager types.ClientManager) {
@@ -816,7 +826,7 @@ func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg ma
 	}
 	id, err := database.SaveMessageWithID("private", fromUser, toUser, "", plaintext, timestamp)
 	if err != nil {
-		log.Printf("保存私聊消息失败: %v", err)
+		log.Printf("event=private_chat_failed error_type=%T", err)
 		sendChatResult(conn, "private_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
@@ -826,7 +836,7 @@ func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg ma
 	if recipient, found := clientManager.GetClient(toUser); found {
 		encrypted, err := crypto.EncryptMessage(plaintext, recipient.SessionKey)
 		if err != nil {
-			log.Printf("加密发送给 %s 的消息失败: %v", toUser, err)
+			log.Printf("event=private_chat_failed error_type=%T", err)
 			return
 		}
 		protocol.SendMsg(recipient.Conn, chatPayload("private_chat", fromUser, toUser, encrypted, timestamp, id))
@@ -840,7 +850,7 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 		return
 	}
 
-	log.Printf("处理来自 '%s' 到 '%s' 的好友请求", fromUser, toUser)
+	log.Printf("event=friend_request_received")
 
 	// 不能给自己发好友请求
 	if toUser == fromUser {
@@ -851,7 +861,7 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 	// 检查目标用户是否存在
 	exists, err := database.UserExists(toUser)
 	if err != nil {
-		log.Printf("检查用户 %s 存在性失败: %v", toUser, err)
+		log.Printf("event=friend_request_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "服务器内部错误"})
 		return
 	}
@@ -866,14 +876,14 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 	areFriends, err := database.AreFriends(fromUser, toUser)
 	if err != nil {
 		pendingFriendRequestsMu.Unlock()
-		log.Printf("检查好友关系失败 (%s, %s): %v", fromUser, toUser, err)
+		log.Printf("event=friend_request_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "服务器内部错误"})
 		return
 	}
 	if areFriends {
 		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": false, "error": "您和 " + toUser + " 已是好友"})
-		log.Printf("好友请求从 '%s' 到 '%s' 失败: 已是好友", fromUser, toUser)
+		log.Printf("event=friend_request_failed")
 		return
 	}
 
@@ -901,15 +911,15 @@ func handleFriendRequest(conn net.Conn, fromUser string, msg map[string]interfac
 	if found {
 		err := protocol.SendMsg(toClient.Conn, map[string]interface{}{"type": "friend_request", "from": fromUser})
 		if err != nil {
-			log.Printf("转发好友请求给 %s 失败: %v", toUser, err)
+			log.Printf("event=friend_request_failed error_type=%T", err)
 			protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已保存，对方重新登录后可见"})
 			return
 		}
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已发送"})
-		log.Printf("好友请求从 '%s' 转发到 '%s'", fromUser, toUser)
+		log.Printf("event=friend_request_received")
 	} else {
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_request_result", "success": true, "message": "好友申请已保存，对方上线后可见"})
-		log.Printf("好友请求从 '%s' 到 '%s' 失败: 用户不在线", fromUser, toUser)
+		log.Printf("event=friend_request_failed")
 	}
 }
 
@@ -965,7 +975,7 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 	}
 	id, err := database.SaveMessageWithID("group", fromUser, "", gid, plaintext, timestamp)
 	if err != nil {
-		log.Printf("保存群聊消息失败: %v", err)
+		log.Printf("event=group_chat_failed error_type=%T", err)
 		sendChatResult(conn, "group_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
@@ -976,7 +986,7 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 		} else if recipient, found := clientManager.GetClient(name); found {
 			encrypted, err := crypto.EncryptMessage(plaintext, recipient.SessionKey)
 			if err != nil {
-				log.Printf("加密群消息失败: %v", err)
+				log.Printf("event=group_chat_failed error_type=%T", err)
 				continue
 			}
 			protocol.SendMsg(recipient.Conn, chatPayload("group_chat", fromUser, gid, encrypted, timestamp, id))
@@ -998,6 +1008,11 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "成员列表格式错误"})
 		return
 	}
+	// Bound work before deduplication as well as the final owner-inclusive set.
+	if len(membersInterface) > maxGroupMembers {
+		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": groupCapacityError})
+		return
+	}
 
 	members := []string{owner}
 	seen := map[string]bool{owner: true}
@@ -1017,6 +1032,10 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 		}
 		seen[memberName] = true
 		members = append(members, memberName)
+		if len(members) > maxGroupMembers {
+			protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": groupCapacityError})
+			return
+		}
 	}
 
 	// 确保群主在成员列表中
@@ -1033,14 +1052,14 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 
 	newGroup, err := database.CreateGroup(groupName, owner, members)
 	if err != nil {
-		log.Printf("创建群组 '%s' 失败: %v", groupName, err)
+		log.Printf("event=group_create_failed error_type=%T", err)
 		protocol.SendMsg(conn, map[string]interface{}{"type": "group_create_result", "success": false, "error": "创建群组失败"})
 		return
 	}
 	unlock := lockGroup(newGroup.GID)
 	defer unlock()
 
-	log.Printf("用户 '%s' 创建了新群组 '%s' (GID: %s)", owner, groupName, newGroup.GID)
+	log.Printf("event=group_created group_id=%s members=%d", groupLogID(newGroup.GID), len(newGroup.Members))
 
 	// 向所有成员广播群组创建成功的信息
 	payload := map[string]interface{}{
@@ -1062,16 +1081,16 @@ func handleGroupCreate(conn net.Conn, owner string, msg map[string]interface{}, 
 func handleFriendResponse(conn net.Conn, responder string, msg map[string]interface{}, clientManager types.ClientManager) {
 	fromUser, ok := msg["to"].(string) // 这里的 "to" 是请求发起者
 	if !ok {
-		log.Printf("好友响应消息格式错误: 缺少 'to' 字段")
+		log.Printf("event=invalid_message_type")
 		return
 	}
 	accepted, ok := msg["accepted"].(bool)
 	if !ok {
-		log.Printf("好友响应消息格式错误: 'accepted' 字段无效")
+		log.Printf("event=invalid_message_type")
 		return
 	}
 
-	log.Printf("处理来自 '%s' 到 '%s' 的好友响应。接受: %t", responder, fromUser, accepted)
+	log.Printf("event=friend_response_received")
 
 	// 防伪校验：仅当请求发起者确实向本用户发送过好友请求时才允许响应
 	pendingFriendRequestsMu.Lock()
@@ -1079,13 +1098,13 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 	if pendingFriendRequests[fromUser] == nil {
 		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "没有来自该用户的好友请求，无法响应"})
-		log.Printf("好友响应从 '%s' 到 '%s' 被阻止: 无待处理请求", responder, fromUser)
+		log.Printf("event=friend_response_denied")
 		return
 	}
 	if _, exists := pendingFriendRequests[fromUser][responder]; !exists {
 		pendingFriendRequestsMu.Unlock()
 		protocol.SendMsg(conn, map[string]interface{}{"type": "friend_response_result", "success": false, "error": "没有来自该用户的好友请求，无法响应"})
-		log.Printf("好友响应从 '%s' 到 '%s' 被阻止: 无待处理请求", responder, fromUser)
+		log.Printf("event=friend_response_denied")
 		return
 	}
 	// Persist before acknowledging acceptance or consuming the request. A failed
@@ -1126,14 +1145,14 @@ func handleFriendResponse(conn net.Conn, responder string, msg map[string]interf
 			"accepted": accepted,
 		})
 		if err != nil {
-			log.Printf("转发好友响应给 %s 失败: %v", fromUser, err)
+			log.Printf("event=friend_response_failed error_type=%T", err)
 		}
 	} else {
-		log.Printf("好友响应从 '%s' 到 '%s' 失败: 请求发起者不在线", responder, fromUser)
+		log.Printf("event=friend_response_failed")
 	}
 
 	if accepted {
-		log.Printf("好友关系 '%s' 和 '%s' 已保存", responder, fromUser)
+		log.Printf("event=friend_response_completed")
 
 		// 通知双方更新好友列表
 		// 通知响应者

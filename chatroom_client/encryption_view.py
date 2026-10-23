@@ -251,8 +251,9 @@ class EncryptionWindow(tk.Toplevel):
         if name is None:
             return
         peer = next(item for item in self.controller.encryption.peers() if item['username'] == name)
-        if self.verified_confirmation(name, peer['fingerprint'], '确认后将标记为已核对。'):
-            self.perform(lambda: self.controller.verify_encryption_peer(name))
+        fingerprint = peer['fingerprint']
+        if self.verified_confirmation(name, fingerprint, '确认后将标记为已核对。'):
+            self.perform(lambda: self.controller.verify_encryption_peer(name, fingerprint))
 
     def accept_change(self):
         from .e2ee_crypto import bundle_fingerprint

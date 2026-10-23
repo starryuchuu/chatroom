@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-This project implements an encrypted desktop chat room with Python and Go servers. It supports registration, login, private and group chat, friends, and group management. The current release, v1.3.1, adds persistent light and dark modes. OPAQUE single-password authentication and unlocking of the encrypted chat identity were introduced in v1.3.0. RSA session-key exchange, AES-GCM and HMAC-SHA256 protect transport frames; clients encrypt chat bodies end to end. Servers persist records in SQLite with encrypted sensitive fields.
+This project implements an encrypted desktop chat room with Python and Go servers. It supports registration, login, private and group chat, friends, and group management. Release v1.3.2 fixes login/migration races, key verification and backup destinations, group capacity checks, and chat scrolling, while tightening logs and dependency checks. Persistent light and dark modes remain available. OPAQUE single-password authentication and unlocking of the encrypted chat identity were introduced in v1.3.0. RSA session-key exchange, AES-GCM and HMAC-SHA256 protect transport frames; clients encrypt chat bodies end to end. Servers persist records in SQLite with encrypted sensitive fields.
 
 ## Key Features
 
@@ -41,15 +41,15 @@ This project implements an encrypted desktop chat room with Python and Go server
 
 - 🖼️ **Interface Showcase**
   - Login Interface
-    ![v1.3.1 single-password login with theme switching, legacy account migration and old-key unlock actions](docs/images/login.png)
+    ![v1.3.2 single-password login with theme switching, legacy account migration and old-key unlock actions](docs/images/login.png)
   - Main Page
     ![Main interface with unread counts, conversation previews and notifications](docs/images/main.png)
   - Chat Interface
     ![Chat interface with end-to-end encrypted messages and key management](docs/images/chat.png)
   - Dark Mode
-    ![v1.3.1 chat interface in dark mode](docs/images/chat-dark.png)
+    ![v1.3.2 chat interface in dark mode](docs/images/chat-dark.png)
 
-  Captured from the [v1.3.1 source](https://github.com/starryuchuu/chatroom/tree/v1.3.1) on 2026-10-22, using Linux, Python 3.13.5, Tk 8.6.16 and 1120 × 760 windows. The login screen shows one password field and the **迁移旧账号…** and **解锁旧密钥…** actions. Use the top-right **深色模式** / **浅色模式** button on the login or chat screen to switch themes. The demo uses a temporary local Python server, fresh keys and configuration, and synthetic accounts `demo_alice`, `demo_bob` and `demo_carol`. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
+  Captured from the [v1.3.2 source](https://github.com/starryuchuu/chatroom/tree/v1.3.2) on 2026-10-23, using Linux, Python 3.13.5, Tk 8.6.16 and 1120 × 760 windows. The login screen shows one password field and the **迁移旧账号…** and **解锁旧密钥…** actions. Use the top-right **深色模式** / **浅色模式** button on the login or chat screen to switch themes. The demo uses a temporary local Python server, fresh keys and configuration, and synthetic accounts `demo_alice`, `demo_bob` and `demo_carol`. Fonts and window appearance vary by operating system. See [screenshot notes](docs/images/README.md).
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
@@ -57,14 +57,14 @@ This project implements an encrypted desktop chat room with Python and Go server
   - pycryptodome (Encryption features)
   - argon2-cffi (Offline backup encryption and legacy password verification)
   - wasmtime 50.0.1 (Runs the bundled OPAQUE WebAssembly core)
-  - Go 1.24+ (Server, toolchain `go1.24.5`)
+  - Go 1.27.3 recommended and fixed for CI/releases (server; `go.mod` language minimum 1.26.0)
   - wazero (Runs the same embedded OPAQUE core in the Go server)
   - SQLite3 (Data storage)
   - Built-in modules (socket, threading, datetime, logging, etc.)
 
 ## Current development protocol
 
-Use the v1.3.1 Python client with a v1.3.0 or newer Python or Go server. OPAQUE was introduced in v1.3.0; the v1.3.1 theme update preserves its protocol compatibility. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
+Use the v1.3.2 Python client with a v1.3.0 or newer Python or Go server. OPAQUE was introduced in v1.3.0; v1.3.2 preserves the wire protocol, database schema and key formats, so existing OPAQUE accounts need no migration. Upgrade the server to v1.3.2 as well to receive the logging, login-race and group-capacity fixes. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
 Normal registration and login use one unified password. OPAQUE derives a client-only export key, which unlocks a randomly generated chat identity rather than deriving that identity from the username or password. The cloud backup contains only the encrypted identity; it does not synchronize contact verification, group approvals, or replay state. A new device can recover the same identity after successful authentication, but contacts must be verified again. The two-layer local v2 vault retains its full trust state across password changes, including recovery with the new password after another device changes it. Never overwrite newer local trust with a cloud snapshot.
 
@@ -74,9 +74,15 @@ If the server committed a migration but its reply was lost, the local vault may 
 
 Use **修改账号密码…** in the encryption/key window to authenticate the current password and set a new one. The identity and chat keys are retained. Explicit offline exports still use Argon2id and AES-GCM with the password at export time; re-export after changing it. A raw v2 vault file cannot be unlocked offline using the password alone. If the password and all usable recovery materials are lost, the server cannot guarantee recovery. Compare contact fingerprints through another trusted channel and explicitly approve group recipients. First-use trust requires independent verification; the chat protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
 
+Saving contact verification compares the fingerprint displayed in the window with the current vault record again; a concurrent key change stops the operation and requires a fresh review. Export backups to a separate file. The client rejects its live vault path and symbolic-link or hard-link aliases of that file.
+
 Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “更早的消息” button retrieves earlier pages for the selected conversation.
 
-Download [chatroom-v1.3.1-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.1/chatroom-v1.3.1-client.zip) for the client source bundle, or [chatroom-v1.3.1-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.1/chatroom-v1.3.1-source.zip) for both servers and development files. Executables and `SHA256SUMS` are available on the [v1.3.1 release page](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.1). Keep `opaque_runtime.py`, the complete `chatroom_client/` package including `opaque_core.wasm`, and the other bundled Python modules together. Ordinary source packages include the precompiled WASM: run `python -m pip install -r requirements.txt`; Rust is not needed to run them. Rebuilding the shared core with `python scripts/build_opaque.py` requires Rust 1.87+ and the `wasm32-unknown-unknown` target.
+Both servers enforce a maximum of **256 actual group members, including the owner**, when creating groups, inviting users and accepting invitations. Invitations do not reserve capacity; an unexpired invitation can be retried after space becomes available. Group creation bounds and validates the raw member list before deduplication and batch lookup. Existing oversized groups keep their members and can shrink through leave/kick operations.
+
+Download [chatroom-v1.3.2-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.2/chatroom-v1.3.2-client.zip) for the client source bundle, or [chatroom-v1.3.2-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.2/chatroom-v1.3.2-source.zip) for both servers and development files. Executables and `SHA256SUMS` are available on the [v1.3.2 release page](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.2). Keep `opaque_runtime.py`, the complete `chatroom_client/` package including `opaque_core.wasm`, and the other bundled Python modules together. Ordinary source packages include the precompiled WASM: run `python -m pip install -r requirements.txt`; Rust is not needed to run them. Rebuilding the shared core with `python scripts/build_opaque.py` requires Rust 1.87+ and the `wasm32-unknown-unknown` target.
+
+`requirements.txt` pins Python runtime dependencies and their transitive packages. Developers building executables use `requirements-build.txt`, which also pins packaging dependencies; it is not needed to run the client source bundle.
 
 The shared core uses `opaque-ke` 4.0.1 and RFC 9807 OPAQUE, executed by Python Wasmtime and Go wazero. The upstream library has an audit history; that does not establish an independent audit of this exact version, its WASM build, or Chatroom's integration. v1.3.0 adds persistent OPAQUE setup and account tables while retaining transport v2 and storage encryption v1. Back up the database, storage key, server RSA key pair and client offline key backup before upgrading. Preserve the OPAQUE setup together with its account records, and do not run old servers against the upgraded database.
 
@@ -85,6 +91,8 @@ The shared core uses `opaque-ke` 4.0.1 and RFC 9807 OPAQUE, executed by Python W
 The client offers light and dark themes with a two-column layout. Click **深色模式** or **浅色模式** at the top right of the login or chat screen to switch immediately. Drafts, entered text, the active chat connection and already-open application dialogs are preserved. The default is light mode; the client does not automatically follow the system theme. Native file pickers and message boxes remain controlled by the operating system. Toggle **在线用户** to show or hide the online list. Enter sends a message; Shift+Enter or Ctrl+Enter inserts a newline.
 
 The centered login card scrolls when large text or the available height requires it, and keyboard focus automatically brings each control into view. Long sidebar previews use an ellipsis while the full message remains available in the conversation.
+
+Incoming messages preserve the friend/group lists' scroll, selection and keyboard navigation positions. While you read earlier chat history, arrivals retain the visible message instead of jumping to the bottom. Click **N 条新消息 ↓** to reach the latest messages; scrolling there manually also clears the indicator. A view already at the bottom and your own live sends continue to follow new messages. Reconnection redraws preserve the reading position, and small mouse-wheel deltas scroll correctly.
 
 Use the server selector and **连接设置…** on the login screen to save multiple server profiles. Python and Go loopback presets are included. Remote servers require a verified SHA-256 public-key fingerprint; the optional login port field affects only the current connection. Profiles cannot be changed during authentication, an active session or reconnection.
 
@@ -108,13 +116,13 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
 - Required modules:
   - socket, threading, datetime, sqlite3, hashlib, logging (built-in)
   - struct, json (built-in)
-  - pycryptodome (AES, RSA encryption/decryption, install via `pip install pycryptodome`)
+  - pycryptodome (AES and RSA encryption/decryption; pinned in `requirements.txt`)
   - argon2-cffi (offline backups and legacy password verification)
   - wasmtime==50.0.1 (bundled OPAQUE WASM runtime)
   - Tkinter (GUI, usually built-in, may require separate installation on some systems)
 
 ### Go Server
-- Go 1.24.5 or higher
+- Go 1.27.3 recommended, matching CI and release builds (`go.mod` language minimum: 1.26.0)
 - Required modules (automatically managed by Go modules):
   - github.com/google/uuid (for generating group IDs)
   - golang.org/x/crypto (for Argon2 password hashing)
@@ -144,7 +152,8 @@ chatroom/
 ├── opaque_server.py          # Python OPAQUE authentication and account transactions
 ├── opaque-core/              # Locked Rust source for the shared core
 ├── scripts/build_opaque.py   # Rebuilds Python and Go WASM artifacts
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Pinned runtime and transitive Python dependencies
+├── requirements-build.txt    # Pinned executable-build dependencies
 ├── VERSION                   # Project version
 ├── README.md                 # Chinese project overview
 ├── README_en.md              # English project overview
@@ -165,6 +174,8 @@ Go interoperability tests are skipped unless `CHATROOM_GO_SERVER_EXE` points to 
 From `go-server`, run `go vet ./...`, `go test ./...`, and `go test -race ./...` (the race detector needs a C compiler).
 
 Pull requests, ordinary commits and releases share the Windows/Linux regression workflow before binaries are built.
+
+Builds use Go 1.27.3. Windows / Linux CI checks Python runtime and build requirements with `pip-audit`; Linux CI checks the Go server with `govulncheck`; pinned tool versions and local commands are in [CONTRIBUTING.md](CONTRIBUTING.md). Dependabot update configuration covers Python, Go, Cargo and GitHub Actions. Repository administrators must separately enable security alerts and automatic security updates in GitHub settings; the update configuration does not establish that these switches are enabled. Advisory checks are not an independent security audit of this integration.
 
 ## Database Information
 

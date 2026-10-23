@@ -4,14 +4,14 @@
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
-![Go](https://img.shields.io/badge/go-1.24+-blue.svg)
+![Go](https://img.shields.io/badge/go-1.27.3-blue.svg)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-orange.svg)
 
 ---
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v1.3.1 桌面客户端支持即时切换的**深色 / 浅色模式**，并沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v1.3.2 修复登录与迁移竞争、密钥核验与备份路径、群容量和聊天滚动问题，并收紧日志与依赖检查。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -29,13 +29,13 @@
 
 | 登录界面 | 主界面 | 聊天界面 |
 |---------|--------|---------|
-| ![v1.3.1 登录界面：单密码登录、主题切换、旧账号迁移与旧密钥解锁入口](docs/images/login.png) | ![主界面：未读计数、会话摘要和消息提醒](docs/images/main.png) | ![聊天界面：端到端加密消息与密钥管理入口](docs/images/chat.png) |
+| ![v1.3.2 登录界面：单密码登录、主题切换、旧账号迁移与旧密钥解锁入口](docs/images/login.png) | ![主界面：未读计数、会话摘要和消息提醒](docs/images/main.png) | ![聊天界面：端到端加密消息与密钥管理入口](docs/images/chat.png) |
 
-![v1.3.1 深色聊天界面：端到端加密消息与浅色模式切换入口](docs/images/chat-dark.png)
+![v1.3.2 深色聊天界面：端到端加密消息与浅色模式切换入口](docs/images/chat-dark.png)
 
 点击登录页或聊天页右上角的 **深色模式** / **浅色模式** 即时切换，保留输入、草稿、聊天连接和已打开的应用对话框；下次启动沿用已保存的选择。
 
-以上截图于 2026-10-22 使用 v1.3.1 源码在 Linux 上实拍，展示单密码登录、“迁移旧账号…”与“解锁旧密钥…”入口、未读摘要及深浅两种主题的端到端加密聊天。拍摄环境为 Python 3.13.5、Tk 8.6.16，窗口大小为 1120 × 760。使用临时本地 Python 服务端、全新配置和演示密钥；`demo_alice`、`demo_bob`、`demo_carol`、群组和消息均为虚构数据。源码版本与截图隐私说明见[截图说明](docs/images/README.md)。
+以上截图于 2026-10-23 使用 v1.3.2 源码在 Linux 上实拍，展示单密码登录、“迁移旧账号…”与“解锁旧密钥…”入口、未读摘要及深浅两种主题的端到端加密聊天。拍摄环境为 Python 3.13.5、Tk 8.6.16，窗口大小为 1120 × 760。使用临时本地 Python 服务端、全新配置和演示密钥；`demo_alice`、`demo_bob`、`demo_carol`、群组和消息均为虚构数据。源码版本与截图隐私说明见[截图说明](docs/images/README.md)。
 
 ---
 
@@ -44,7 +44,7 @@
 ### 环境要求
 
 - **Python 客户端 / 服务端**: Python 3.11+
-- **Go 服务端**: Go 1.24+（`go.mod` 指定 toolchain `go1.24.5`）
+- **Go 服务端**: 源码构建推荐 Go 1.27.3，CI / 发布工具链固定为该版本（`go.mod` 语言最低版本 1.26.0）
 - **操作系统**: Windows / Linux / macOS
 
 ### 安装依赖
@@ -54,6 +54,8 @@ pip install -r requirements.txt
 ```
 
 普通源码包包含预编译的 OPAQUE WASM；Python 新增 `wasmtime==50.0.1`，无需 Rust。Go 使用 `wazero` 运行内嵌的同一核心。仅修改并重建核心的开发者需要 Rust 1.87+，详见[单密码指南](docs/SINGLE_PASSWORD.md)。
+
+`requirements.txt` 固定 Python 运行依赖及其传递依赖；构建可执行文件时使用 `requirements-build.txt`。更新依赖和漏洞检查命令见[贡献指南](CONTRIBUTING.md)。
 
 ### 启动服务端
 
@@ -75,7 +77,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v1.3.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.1) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v1.3.2 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.2) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -108,6 +110,8 @@ python client.py
 
 登录页使用居中表单卡片；高 DPI 或窗口高度不足时可滚动，Tab 键聚焦的操作会自动进入可见区域。聊天侧栏按实际宽度省略过长摘要，完整消息仍在会话中显示。
 
+收到消息时，好友和群聊列表保留滚动、选择及键盘导航位置。向上阅读历史时，新消息不会强制跳到底部；点击聊天区的 **N 条新消息 ↓** 可回到最新消息，手动滚到底部也会清除提示。原本停在底部或本人发送时继续跟随；重连补取后的重绘保留阅读位置，并支持小幅滚轮事件。
+
 ### 未读消息与提醒
 
 好友和群列表显示未读数与最近消息预览，窗口标题显示总未读数。打开会话且窗口处于前台时清除未读；窗口在后台或最小化时继续累计。首次使用账号时，最近历史作为基线，不会将旧消息批量提醒；之后会恢复按服务器和账号隔离的已读位置与未读编号。
@@ -126,6 +130,8 @@ python client.py
 
 完整离线备份仍由导出时的统一密码经 Argon2id + AES-GCM 保护，原 v1 备份可导入；直接复制 v2 本机文件不是独立离线密码备份。改密后旧导出文件仍需旧密码，请重新导出。统一密码及所有可用恢复材料全部丢失后，没有服务器恢复账号或历史端到端消息的保证。
 
+核验联系人时，保存操作会再次比较窗口显示的指纹；其他窗口或进程已更换该密钥时拒绝提交，需要刷新并重新核对。导出备份须选择独立文件，不能覆盖当前本机密钥库，也不能通过其符号链接或硬链接别名覆盖。
+
 联系人也需建立加密身份，否则保留输入并停止发送。首次信任需要独立渠道核对，联系人密钥变化会停止发送，群接收人变化需要明确确认。本协议不提供长期接收私钥后来泄露时的前向保密，服务端仍可观察路由与群成员等元数据。迁移和恢复步骤见[单密码指南](docs/SINGLE_PASSWORD.md)，群历史及保护范围见[端到端加密文档](docs/END_TO_END_ENCRYPTION.md)。
 
 ### 断线自动重连
@@ -134,7 +140,7 @@ python client.py
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.3.1 客户端沿用 v1.3.0 的认证要求，要求服务端支持 `opaque_v1` 与 `e2ee_v1`，缺少能力时拒绝连接，不回退旧认证。服务端新增 `opaque_meta` 与 `opaque_accounts`；已有 OPAQUE 账号但 setup 缺失时停止启动。尚未迁移账号保留显式旧协议兼容，已迁移账号拒绝旧认证。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用旧服务端运行升级后的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.3.2 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新不改变数据库结构或密钥格式，无需重新迁移账号；要取得服务端日志、登录竞争和群容量修复，仍应将服务端一并升级到 v1.3.2。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -169,6 +175,8 @@ python client.py
 - 好友关系维护（双向关系）
 - SQLite 数据库高效存储
 
+Python / Go 服务端均限制每群最多 **256 位实际成员（含群主）**，创建、邀请和接受邀请时检查容量。邀请不预留名额；群满时不能加入，容量释放后可在邀请有效期内重试。建群请求先限制原始成员列表长度并校验用户名，再去重和批量查询。已有超限群不会自动删除成员，可通过退群或移除成员缩减到支持范围。
+
 ---
 
 ## 📁 项目结构
@@ -194,7 +202,8 @@ chatroom/
 ├── scripts/build_opaque.py   # 开发者重建并同步两份 WASM
 ├── history_store.py          # 历史分页查询
 ├── pending_store.py          # 待处理申请持久化
-├── requirements.txt          # Python 依赖
+├── requirements.txt          # 固定 Python 运行及传递依赖
+├── requirements-build.txt    # 固定打包依赖（开发与构建使用）
 ├── VERSION                   # 项目版本
 ├── README.md                 # 中文项目入口
 ├── README_en.md              # 英文项目入口
@@ -311,6 +320,7 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 | 登录速率限制 | 5 次 / 60 秒 | 防止暴力破解 |
 | 用户名长度 | 2 ~ 20 字符 | 服务端强制校验 |
 | 新统一密码长度 | 8 ~ 128 字符 | 客户端与认证辅助层校验；旧凭据沿用原限制 |
+| 每群成员上限 | 256 人（含群主） | 创建、邀请和加入均检查容量 |
 | 会话密钥 | AES-GCM 动态生成 | 每次登录重新协商 |
 
 ### 重要规则
@@ -332,6 +342,8 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 - **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
 - 触发条件：推送到 `main` / `master` / `test` 分支，或 Pull Request
 - 构建产物通过 GitHub Actions Artifacts 下载
+
+Go 构建固定使用 1.27.3。Windows / Linux CI 使用固定版本的 `pip-audit` 检查 Python 运行和构建依赖，Linux CI 以 `govulncheck` 检查 Go 服务端；工具版本和命令见[贡献指南](CONTRIBUTING.md)。Dependabot 更新配置覆盖 Python、Go、Cargo 和 GitHub Actions；安全告警及自动安全更新的仓库开关仍需管理员在 GitHub 设置中启用，不能仅凭配置文件视为已开启。依赖检查不等于对本项目的独立安全审计。
 
 ---
 
@@ -409,9 +421,9 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前开发版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v1.3.1 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v1.3.2 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.3.1-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.1/chatroom-v1.3.1-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.3.1-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.1/chatroom-v1.3.1-source.zip)；Python 服务端也需要 `opaque_server.py` 和共享运行时，不要只下载单个入口文件。
+源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.3.2-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.2/chatroom-v1.3.2-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.3.2-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.2/chatroom-v1.3.2-source.zip)；Python 服务端也需要 `opaque_server.py` 和共享运行时，不要只下载单个入口文件。
 
 客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
 
