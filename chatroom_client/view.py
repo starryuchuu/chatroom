@@ -24,6 +24,7 @@ class TkClientView:
         self._new_messages = {}
         self._scheduled = set()
         self._destroyed = False
+        self._chat_layout_ready = False
         self._friend_keys = []
         self._group_keys = []
         self._list_widths = {}
@@ -67,6 +68,9 @@ class TkClientView:
         self.master.destroy()
 
     def clear_window(self):
+        # Native Configure events can arrive while Tk is destroying children,
+        # before the old canvas itself has disappeared.
+        self._chat_layout_ready = False
         self.cancel_scroll()
         for widget in self.master.winfo_children():
             widget.destroy()
@@ -819,6 +823,7 @@ class TkClientView:
         self.bind_chat_wheel(self.empty_state)
         for child in self.empty_state.winfo_children():
             self.bind_chat_wheel(child)
+        self._chat_layout_ready = True
         self.refresh_controls()
         self.refresh_encryption()
 
@@ -836,7 +841,14 @@ class TkClientView:
             self.controller.request_group_info(key.target, open_window=True)
 
     def resize_chat(self, event):
-        self.chat_canvas.itemconfigure(self.chat_window, width=event.width)
+        canvas = getattr(self, 'chat_canvas', None)
+        if (self._destroyed or not self._chat_layout_ready or event.widget is not canvas
+                or canvas is None or not canvas.winfo_exists()):
+            return
+        if not all(widget.winfo_exists() for widget in (
+                self.chat_title, self.chat_subtitle, self.status_label, self.empty_subtitle)):
+            return
+        canvas.itemconfigure(self.chat_window, width=event.width)
         self.chat_title.configure(wraplength=max(140, event.width-280))
         self.chat_subtitle.configure(wraplength=max(140, event.width-280))
         self.status_label.configure(wraplength=max(140, event.width-48))
