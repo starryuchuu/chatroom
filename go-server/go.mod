@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/google/uuid v1.6.0
-	github.com/tetratelabs/wazero v1.9.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.58.0
 	modernc.org/sqlite v1.60.1
 )
