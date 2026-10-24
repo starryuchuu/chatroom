@@ -697,6 +697,13 @@ def chat_content(content, key, *, e2ee=False, already_encrypted=False):
             'encryption': 'legacy'}
 
 
+def send_history_error(client_sock, error, *, kind=None, target=None):
+    payload = {'type': 'history_error', 'error': error}
+    if kind in ('private', 'group') and isinstance(target, str) and target:
+        payload.update(history_kind=kind, history_target=target)
+    send_msg(client_sock, payload)
+
+
 def send_history(client_sock, username, only_gid=None, *, kind=None, target=None, before=None):
     session_key = session_keys.get(client_sock)
     if not session_key:
@@ -733,8 +740,7 @@ def send_history(client_sock, username, only_gid=None, *, kind=None, target=None
     except Exception:
         logging.error("历史同步失败")
         if kind is not None:
-            send_msg(client_sock, {"type": "history_error", "error": "历史加载失败，请重试",
-                                   "history_kind": kind, "history_target": target})
+            send_history_error(client_sock, '历史加载失败，请重试', kind=kind, target=target)
         else:
             send_msg(client_sock, {"type": "error", "message": "历史同步失败，请重新登录"})
 
@@ -1330,7 +1336,7 @@ def handle_client(client_sock, addr):
             elif mtype == "history_request":
                 kind, target, before = msg.get('chat_type'), msg.get('target'), msg.get('before_id')
                 if kind not in ('private','group') or not isinstance(target,str) or not target or type(before) is not int or not 0<before<=9223372036854775807:
-                    send_msg(client_sock,{'type':'history_error','error':'历史查询参数错误'})
+                    send_history_error(client_sock, '历史查询参数错误', kind=kind, target=target)
                     continue
                 if kind == 'private':
                     with user_friends_lock:
@@ -1339,7 +1345,7 @@ def handle_client(client_sock, addr):
                     group = get_group_db(target)
                     allowed = bool(group and current_username in group['members'])
                 if not allowed:
-                    send_msg(client_sock,{'type':'history_error','error':'无权读取该会话历史'})
+                    send_history_error(client_sock, '无权读取该会话历史', kind=kind, target=target)
                     continue
                 send_history(client_sock,current_username,kind=kind,target=target,before=before)
 

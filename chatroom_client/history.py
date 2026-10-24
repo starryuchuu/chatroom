@@ -32,13 +32,19 @@ class HistoryController:
             return True
         if kind not in ('history_end', 'history_error'):
             return False
-        self.state.history_syncing = False
         scope = None
         if message.get('history_kind') in ('private', 'group') and message.get('history_target'):
             scope = ChatKey(message['history_kind'], message['history_target'])
-        if kind == 'history_error' or self.state.pending_history is None or scope == self.state.pending_history:
+        matches_pending = scope is not None and scope == self.state.pending_history
+        # Older servers omit the scope on errors; keep their failed pages retryable.
+        unscoped_error = kind == 'history_error' and scope is None
+        if self.state.pending_history is None or matches_pending or unscoped_error:
+            self.state.history_syncing = False
+        if matches_pending or unscoped_error:
             self.state.pending_history = None
-        if kind == 'history_end' and scope is not None:
+        # A queued completion can arrive after leave/kick/disband removed the group.
+        if (kind == 'history_end' and scope is not None
+                and (scope.kind != 'group' or scope.target in self.state.groups)):
             conversation = self.state.conversation(scope)
             cursor = message.get('before_id')
             if type(cursor) is int and cursor > 0:

@@ -232,7 +232,7 @@ func handleGroupJoin(conn net.Conn, userToJoin string, msg map[string]interface{
 			if client, found := clientManager.GetClient(userToJoin); found && len(client.SessionKey) > 0 {
 				gid, _ := msg["gid"].(string)
 				if err := SendHistory(conn, userToJoin, client.SessionKey, "group", gid, 0); err != nil {
-					protocol.SendMsg(conn, map[string]interface{}{"type": "history_error", "error": "入群历史加载失败，请重试"})
+					sendHistoryError(conn, "group", gid, "入群历史加载失败，请重试")
 				}
 			}
 		}

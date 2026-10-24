@@ -1,3 +1,15 @@
+# ---- Python 虚拟环境与工具缓存 ----
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
 # ---- Python 缓存与 PyInstaller 构建产物 ----
 __pycache__/
 *.py[cod]
@@ -7,6 +19,11 @@ build/
 opaque-core/target/
 
 # ---- 运行时生成的文件 ----
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
 chat.db
 chat.db-journal
 chat.db-wal
@@ -22,6 +39,7 @@ public_key.pem
 # ---- 可执行文件与 Go 构建产物 ----
 *.exe
 go-interop-server
+/go-server/server
 go-server/server-linux-*
 go-server/server-darwin-*
 
@@ -34,4 +52,8 @@ Thumbs.db
 
 # ---- 编辑器配置 ----
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 

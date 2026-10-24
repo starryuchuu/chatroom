@@ -16,6 +16,48 @@ type blockedHistoryConn struct {
 	blocked          bool
 }
 
+func TestHistoryErrorsIdentifyConversation(t *testing.T) {
+	for _, kind := range []string{"private", "group"} {
+		for _, failure := range []string{"validation", "authorization", "storage"} {
+			t.Run(kind+"/"+failure, func(t *testing.T) {
+				setupHandlers(t)
+				target := "bob"
+				if kind == "group" {
+					members := []string{"bob"}
+					if failure != "authorization" {
+						members = append(members, "alice")
+					}
+					group, err := database.CreateGroup("Team", "bob", members)
+					if err != nil {
+						t.Fatal(err)
+					}
+					target = group.GID
+				} else if failure != "authorization" {
+					if err := database.SaveFriendRelationship("alice", "bob"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := float64(2)
+				if failure == "validation" {
+					before = 0
+				} else if failure == "storage" {
+					if _, err := database.DB.Exec("DROP TABLE messages"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				conn := &recordConn{}
+				handleHistoryRequest(conn, "alice", make([]byte, 16), map[string]interface{}{
+					"chat_type": kind, "target": target, "before_id": before,
+				})
+				response := conn.result(t, "history_error")
+				if response["history_kind"] != kind || response["history_target"] != target {
+					t.Fatal("history error lost conversation scope")
+				}
+			})
+		}
+	}
+}
+
 func (c *blockedHistoryConn) Write(frame []byte) (int, error) {
 	var msg map[string]interface{}
 	json.Unmarshal(frame[4:], &msg)

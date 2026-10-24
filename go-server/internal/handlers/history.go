@@ -53,12 +53,20 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 	return protocol.SendMsgWait(conn, end)
 }
 
+func sendHistoryError(conn net.Conn, kind, target, message string) {
+	payload := map[string]interface{}{"type": "history_error", "error": message}
+	if (kind == "private" || kind == "group") && target != "" {
+		payload["history_kind"], payload["history_target"] = kind, target
+	}
+	protocol.SendMsg(conn, payload)
+}
+
 func handleHistoryRequest(conn net.Conn, username string, key []byte, msg map[string]interface{}) {
 	kind, ok := msg["chat_type"].(string)
 	target, valid := msg["target"].(string)
 	value, number := msg["before_id"].(float64)
 	if !ok || !valid || !number || target == "" || (kind != "group" && kind != "private") || value <= 0 || value > float64(math.MaxInt64) || math.Trunc(value) != value {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "history_error", "error": "历史查询参数错误"})
+		sendHistoryError(conn, kind, target, "历史查询参数错误")
 		return
 	}
 	before := int64(math.MaxInt64)
@@ -80,11 +88,11 @@ func handleHistoryRequest(conn net.Conn, username string, key []byte, msg map[st
 		}
 	}
 	if !allowed {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "history_error", "error": "无权读取该会话历史"})
+		sendHistoryError(conn, kind, target, "无权读取该会话历史")
 		return
 	}
 	if err := SendHistory(conn, username, key, kind, target, before); err != nil {
-		protocol.SendMsg(conn, map[string]interface{}{"type": "history_error", "error": "历史加载失败，请重试"})
+		sendHistoryError(conn, kind, target, "历史加载失败，请重试")
 	}
 }
 

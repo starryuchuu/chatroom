@@ -1082,6 +1082,21 @@ class ServerTests(unittest.TestCase):
         client.send_msg(peer,{'type':'history_request','chat_type':'private','target':'carol','before_id':206})
         self.assertIn('无权',self.read_type(peer,'history_error')['error'])
 
+    def test_history_request_errors_identify_conversation(self):
+        peer, _, _ = self.connect('alice')
+        self.read_type(peer, 'history_end')
+        for kind, target in (('private', 'bob'), ('group', 'missing-group')):
+            for before in (0, 2):
+                with self.subTest(kind=kind, before=before):
+                    client.send_msg(peer, {
+                        'type': 'history_request', 'chat_type': kind,
+                        'target': target, 'before_id': before,
+                    })
+                    response = self.read_type(peer, 'history_error')
+                    self.assertEqual(response['history_kind'], kind)
+                    self.assertEqual(response['history_target'], target)
+                    self.assertIn('参数' if before == 0 else '无权', response['error'])
+
     def test_scoped_history_failure_allows_retry_on_same_connection(self):
         s = self.server
         s.save_friend_relationship('alice', 'bob')
@@ -1095,6 +1110,8 @@ class ServerTests(unittest.TestCase):
             self.read_type(peer, 'history_begin')
             response = client.recv_msg(peer)
         self.assertEqual(response['type'], 'history_error')
+        self.assertEqual(response['history_kind'], 'private')
+        self.assertEqual(response['history_target'], 'bob')
         client.send_msg(peer, request)
         self.read_type(peer, 'history_begin')
         self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 1)

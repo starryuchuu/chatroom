@@ -90,15 +90,124 @@ class ClientHistoryRecoveryTests(unittest.TestCase):
 
     def test_other_conversation_snapshot_keeps_page_request_pending(self):
         app = self.app()
+        app.state.groups['g'] = {'members': ['alice']}
         app.load_older_history()
+        app.handle_server_message({'type': 'history_begin'})
         app.handle_server_message({
             'type': 'history_end', 'history_kind': 'group', 'history_target': 'g',
             'before_id': 55, 'has_more': False,
         })
         self.assertEqual(app.state.pending_history, ChatKey('private', 'bob'))
+        self.assertTrue(app.state.history_syncing)
         app.handle_server_message({
             'type': 'history_end', 'history_kind': 'private', 'history_target': 'bob',
             'before_id': 101, 'has_more': True,
         })
         self.assertIsNone(app.state.pending_history)
         self.assertEqual(app.state.conversation(ChatKey('private', 'bob')).cursor, 101)
+
+    def test_late_group_history_end_does_not_restore_removed_conversation(self):
+        for removal in ('group_leave_result', 'group_kick_notification', 'group_disband_notification'):
+            for has_more in (False, True):
+                with self.subTest(removal=removal, has_more=has_more):
+                    app = self.app()
+                    group = ChatKey('group', 'g')
+                    app.state.groups['g'] = {'members': ['alice', 'bob']}
+                    app.state.current_chat = group
+                    app.state.conversation(group).add(Message('bob', 'cached', message_id=201))
+                    app.load_older_history()
+                    app.handle_server_message({'type': 'history_begin'})
+                    app.handle_server_message({'type': removal, 'gid': 'g', 'success': True})
+                    self.assertNotIn(group, app.state.conversations)
+
+                    app.handle_server_message({
+                        'type': 'history_end', 'history_kind': 'group', 'history_target': 'g',
+                        'before_id': 101, 'has_more': has_more,
+                    })
+                    self.assertNotIn(group, app.state.conversations)
+                    self.assertIsNone(app.state.pending_history)
+
+                    app.handle_server_message({
+                        'type': 'group_join_result', 'gid': 'g', 'success': True,
+                        'members': ['alice', 'bob'],
+                    })
+                    app.handle_server_message({'type': 'history_begin'})
+                    app.handle_server_message({
+                        'type': 'group_chat', 'gid': 'g', 'from': 'bob', 'message_id': 301,
+                        'content': client.encrypt_message('rejoined', app.connection.session_key),
+                    })
+                    app.handle_server_message({
+                        'type': 'history_end', 'history_kind': 'group', 'history_target': 'g',
+                        'before_id': 301, 'has_more': True,
+                    })
+                    app.state.current_chat = group
+                    app.load_older_history()
+                    self.assertEqual(app.connection.send.call_count, 2)
+                    self.assertEqual(app.connection.send.call_args.args[0]['before_id'], 301)
+
+    def test_other_conversation_error_keeps_page_request_pending(self):
+        for kind, target in (('private', 'carol'), ('group', 'bob')):
+            with self.subTest(kind=kind, target=target):
+                app = self.app()
+                app.state.groups['bob'] = {'members': ['alice']}
+                self.message(app, 201)
+                app.load_older_history()
+                app.handle_server_message({'type': 'history_begin'})
+                self.message(app, 101)
+                app.handle_server_message({
+                    'type': 'history_error', 'history_kind': kind, 'history_target': target,
+                    'error': 'another conversation failed',
+                })
+                self.assertEqual(app.state.pending_history, ChatKey('private', 'bob'))
+                self.assertTrue(app.state.history_syncing)
+                self.assertEqual(app.state.conversation(ChatKey('private', 'bob')).cursor, 201)
+                app.load_older_history()
+                app.connection.send.assert_called_once()
+                app.handle_server_message({
+                    'type': 'history_end', 'history_kind': 'private', 'history_target': 'bob',
+                    'before_id': 101, 'has_more': True,
+                })
+                self.assertIsNone(app.state.pending_history)
+                self.assertFalse(app.state.history_syncing)
+
+    def test_removed_group_completion_preserves_another_active_page(self):
+        app = self.app()
+        app.state.remove_group('g')
+        app.load_older_history()
+        app.handle_server_message({'type': 'history_begin'})
+        app.handle_server_message({
+            'type': 'history_end', 'history_kind': 'group', 'history_target': 'g',
+            'before_id': 55, 'has_more': False,
+        })
+        self.assertNotIn(ChatKey('group', 'g'), app.state.conversations)
+        self.assertEqual(app.state.pending_history, ChatKey('private', 'bob'))
+        self.assertTrue(app.state.history_syncing)
+
+    def test_matching_scoped_error_releases_pending_page_after_selection_changes(self):
+        app = self.app()
+        self.message(app, 201)
+        app.load_older_history()
+        app.handle_server_message({'type': 'history_begin'})
+        self.message(app, 101)
+        app.state.current_chat = ChatKey('private', 'carol')
+        app.handle_server_message({
+            'type': 'history_error', 'history_kind': 'private', 'history_target': 'bob',
+            'error': 'retry',
+        })
+        self.assertIsNone(app.state.pending_history)
+        self.assertFalse(app.state.history_syncing)
+        app.state.current_chat = ChatKey('private', 'bob')
+        app.load_older_history()
+        self.assertEqual(app.connection.send.call_args.args[0]['before_id'], 201)
+
+    def test_empty_current_group_snapshot_initializes_pagination(self):
+        app = self.app()
+        app.state.groups['g'] = {'members': ['alice']}
+        group = ChatKey('group', 'g')
+        self.assertNotIn(group, app.state.conversations)
+        app.handle_server_message({
+            'type': 'history_end', 'history_kind': 'group', 'history_target': 'g',
+            'before_id': 55, 'has_more': False,
+        })
+        self.assertEqual(app.state.conversations[group].cursor, 55)
+        self.assertTrue(app.state.conversations[group].exhausted)
