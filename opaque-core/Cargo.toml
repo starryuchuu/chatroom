@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 opaque-ke = { version = "=4.0.1", features = ["argon2"] }
-base64 = "0.22"
+base64 = "0.23"
 getrandom = { version = "0.2", features = ["custom"] }
 rand = "0.8"
 serde_json = "1"
