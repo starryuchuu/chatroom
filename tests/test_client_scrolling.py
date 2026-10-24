@@ -1,6 +1,7 @@
 """Real Tk regression coverage for conversation and sidebar reading positions."""
 import gc
 from time import monotonic
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
@@ -35,7 +36,7 @@ class ClientScrollingTests(unittest.TestCase):
         self.view = self.app = self.root = None
         gc.collect()
 
-    def wait_for_geometry(self, *widgets):
+    def wait_for_geometry(self, *widgets, size=(900, 700)):
         deadline = monotonic() + 2
         previous = None
         geometry = ()
@@ -44,7 +45,7 @@ class ClientScrollingTests(unittest.TestCase):
             geometry = tuple((widget.winfo_ismapped(), widget.winfo_width(), widget.winfo_height(),
                               widget.winfo_rootx(), widget.winfo_rooty())
                              for widget in (self.root, *widgets))
-            if (geometry[0][1:3] == (900, 700)
+            if (geometry[0][1:3] == size
                     and all(mapped and width > 1 and height > 1
                             for mapped, width, height, _left, _top in geometry)
                     and geometry == previous):
@@ -240,6 +241,54 @@ class ClientScrollingTests(unittest.TestCase):
                 self.root.update()
                 after = self.view.chat_canvas.yview()[0]
                 self.assertGreater((after - before) * direction, 0)
+
+    def test_resize_during_chat_teardown_does_not_touch_destroyed_header(self):
+        canvas = self.view.chat_canvas
+        callback_errors = Mock()
+        self.root.report_callback_exception = callback_errors
+        live_canvas_at_destroy = []
+
+        def delayed_resize(_event):
+            live_canvas_at_destroy.append(canvas.winfo_exists())
+            self.view.resize_chat(SimpleNamespace(widget=canvas, width=913))
+
+        # Header widgets disappear before the canvas during a page rebuild.
+        # Replay the native resize notification inside that teardown window.
+        self.view.chat_title.bind('<Destroy>', delayed_resize)
+        self.view.build_login()
+        self.root.update()
+        self.assertEqual(live_canvas_at_destroy, [1])
+        callback_errors.assert_not_called()
+        self.assertTrue(self.view.username_entry.winfo_ismapped())
+
+    def test_queued_old_canvas_resize_cannot_reconfigure_replacement_chat(self):
+        old_canvas = self.view.chat_canvas
+        stale_event = SimpleNamespace(widget=old_canvas, width=913)
+        callback_errors = Mock()
+        self.root.report_callback_exception = callback_errors
+        self.view.build_chat()
+        self.wait_for_geometry(self.view.chat_canvas)
+        current_canvas = self.view.chat_canvas
+        original_window_width = current_canvas.itemcget(self.view.chat_window, 'width')
+        original_wrap = self.view.chat_title.cget('wraplength')
+        self.root.after_idle(lambda: self.view.resize_chat(stale_event))
+        self.root.update()
+        self.assertIsNot(current_canvas, old_canvas)
+        self.assertFalse(old_canvas.winfo_exists())
+        callback_errors.assert_not_called()
+        self.assertEqual(current_canvas.itemcget(self.view.chat_window, 'width'), original_window_width)
+        self.assertEqual(self.view.chat_title.cget('wraplength'), original_wrap)
+        original_canvas_width = current_canvas.winfo_width()
+        self.root.geometry('1000x700')
+        self.wait_for_geometry(current_canvas, size=(1000, 700))
+        self.assertGreater(current_canvas.winfo_width(), original_canvas_width)
+        self.assertEqual(float(current_canvas.itemcget(self.view.chat_window, 'width')),
+                         current_canvas.winfo_width())
+
+    def test_resize_after_application_close_does_not_access_dead_tk_widgets(self):
+        event = SimpleNamespace(widget=self.view.chat_canvas, width=913)
+        self.app.close()
+        self.view.resize_chat(event)
 
 
 if __name__ == '__main__':
