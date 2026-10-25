@@ -4,14 +4,14 @@ v1.3.0 的正常注册和登录只需用户名与一份统一密码。客户端�
 
 This guide describes v1.3.0 single-password registration and login, explicit legacy migration, password changes, and the different scopes of cloud and offline recovery. The normal client requires an upgraded Python or Go server; it never falls back to sending the password through legacy authentication.
 
-本指南适用于当前 v1.3.3；单密码认证自 v1.3.0 引入。v1.3.3 保持既有协议、数据库结构和密钥格式，已有 OPAQUE 账号无需再次迁移；推荐同时升级客户端和服务端以取得完整的历史分页修复和依赖更新。
+本指南适用于当前 v1.3.4；单密码认证自 v1.3.0 引入。v1.3.4 保持既有协议、数据库结构和密钥格式，已有 OPAQUE 账号无需再次迁移；本次注册界面与消息状态修复位于客户端，现有 v1.3.3 服务端可继续使用。
 
-This guide also applies to v1.3.3. OPAQUE accounts introduced in v1.3.0 keep their protocol, database schema and key formats; upgrading an existing OPAQUE account does not require another migration. Upgrade both ends to receive the server and client fixes.
+This guide also applies to v1.3.4. OPAQUE accounts introduced in v1.3.0 keep their protocol, database schema and key formats; upgrading an existing OPAQUE account does not require another migration. The signup and message-state fixes are in the client; existing v1.3.3 servers remain usable.
 
 ## 新用户与正常登录
 
-1. 推荐先升级 Python 或 Go 服务端至 v1.3.3，再启动新版客户端；协议兼容 v1.3.0 或更新服务端。远程连接仍须通过其他可信渠道核对服务器 SHA-256 公钥指纹。
-2. 注册时设置 8–128 个字符的统一密码。选择强且不复用的密码；用户名是公开标识，不会增加密码强度。
+1. 确认使用 v1.3.0 或更新的 Python / Go 服务端，再启动 v1.3.4 客户端；现有 v1.3.3 服务端无需为本次客户端修复另行升级。远程连接仍须通过其他可信渠道核对服务器 SHA-256 公钥指纹。
+2. 点击登录页“创建账号”在同一表单注册，设置 8–128 个字符的统一密码；成功后原地返回登录。选择强且不复用的密码；用户名是公开标识，不会增加密码强度。
 3. 正常登录输入用户名和统一密码。本机没有密钥时，客户端使用账号的加密身份备份恢复原身份，并核对服务端已登记公钥；不会静默创建替代身份。
 4. 在“加密与密钥…”核对自己的指纹和联系人指纹。联系人也必须建立端到端身份；群接收人需要明确确认。
 5. 导出一份完整离线备份，妥善保管导出时的密码。不要仅依赖服务器仍可用。
