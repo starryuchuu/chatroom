@@ -5,12 +5,13 @@ import queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from chatroom_client.app import ChatApplication
 from chatroom_client.connection import AuthResult, ServerEvent
 from chatroom_client.e2ee_crypto import Identity, decrypt_message, encrypt_message
 from chatroom_client.encryption import EncryptionController
+from chatroom_client.events import ServerEvents
 from chatroom_client.key_vault import KeyVault, vault_path
 from chatroom_client.models import ChatKey, ClientState
 from chatroom_client.preferences import PreferencesStore
@@ -201,6 +202,39 @@ class EncryptionControllerTests(unittest.TestCase):
         self.assertFalse(self.sent)
         self.assertIsNone(self.vault.approved_roster('g1'))
 
+    def test_group_rejoin_invalidates_a_pending_recipient_lookup(self):
+        key = self.state.current_chat = ChatKey('group', 'g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+        self.controller.send_message(self.view.text, key)
+        reply = self.directory_reply()
+        self.state.remove_group('g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+        self.state.current_chat = key
+        self.controller.handle(reply)
+        self.assertFalse(self.sent)
+        self.assertFalse(self.view.confirmations)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.assertIsNone(self.vault.peer('bob'))
+        self.assertFalse(self.controller.sending)
+
+    def test_group_rejoin_during_outgoing_confirmation_cannot_send_or_approve(self):
+        key = self.state.current_chat = ChatKey('group', 'g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+
+        def rejoin():
+            self.state.remove_group('g1')
+            self.state.groups['g1'] = {'members': ['alice', 'bob']}
+            self.state.current_chat = key
+
+        self.view.on_confirm = rejoin
+        self.controller.send_message(self.view.text, key)
+        self.controller.handle(self.directory_reply())
+        self.assertEqual(len(self.view.confirmations), 1)
+        self.assertFalse(self.sent)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.assertIsNone(self.vault.peer('bob'))
+        self.assertFalse(self.controller.sending)
+
     def test_private_decryption_pins_only_a_verified_envelope(self):
         wire = self.private_message()
         corrupted = deepcopy(wire)
@@ -212,6 +246,128 @@ class EncryptionControllerTests(unittest.TestCase):
         rebound = deepcopy(wire)
         rebound['from'] = 'mallory'
         self.assertEqual(self.controller.decode_message(rebound)[1], 'failed')
+
+    def message_events(self):
+        self.state.friends = ['bob']
+        for name in ('append_message', 'render_conversation', 'remove_conversation',
+                     'clear_selection', 'refresh_groups'):
+            setattr(self.view, name, Mock())
+        self.app.activity = Mock()
+        self.app.request_group_info = Mock()
+        return ServerEvents(self.app)
+
+    def test_verified_retry_replaces_failed_message_without_duplicate_row_or_activity(self):
+        events = self.message_events()
+        wire = self.private_message()
+        corrupted = deepcopy(wire)
+        corrupted['e2ee']['body'] = corrupted['e2ee']['body'][:-4] + 'AAAA'
+        events.chat_message(corrupted)
+        conversation = self.state.conversation(self.state.current_chat)
+        self.assertEqual(conversation.messages[0].encryption, 'failed')
+
+        retry = dict(wire, history=True)
+        events.chat_message(retry)
+        self.assertEqual(len(conversation.messages), 1)
+        self.assertEqual(conversation.messages[0].content, 'a secret from bob')
+        self.assertEqual(conversation.messages[0].encryption, 'e2ee')
+        self.view.append_message.assert_called_once()
+        self.view.render_conversation.assert_called_once_with(self.state.current_chat)
+        self.app.activity.receive.assert_called_once()
+        self.app.activity.refresh.assert_called_once()
+
+        # Neither another history copy nor a later invalid frame may overwrite
+        # the verified message or introduce another notification / display row.
+        events.chat_message(retry)
+        events.chat_message(corrupted)
+        self.assertEqual(conversation.messages[0].encryption, 'e2ee')
+        self.view.append_message.assert_called_once()
+        self.view.render_conversation.assert_called_once()
+        self.app.activity.receive.assert_called_once()
+
+    def test_changed_peer_message_recovers_after_explicit_key_acceptance(self):
+        events = self.message_events()
+        self.vault.pin_peer('bob', self.bob.public_bundle())
+        wire = self.private_message(identity=self.carol)
+        events.chat_message(wire)
+        conversation = self.state.conversation(self.state.current_chat)
+        self.assertEqual(conversation.messages[0].encryption, 'failed')
+        self.controller.accept_peer('bob', self.carol.public_bundle())
+        events.chat_message(dict(wire, history=True))
+        self.assertEqual(len(conversation.messages), 1)
+        self.assertEqual(conversation.messages[0].content, 'a secret from bob')
+        self.assertEqual(conversation.messages[0].encryption, 'e2ee')
+
+    def test_group_removal_during_roster_dialog_does_not_restore_conversation_or_trust(self):
+        events = self.message_events()
+        key = self.state.current_chat = ChatKey('group', 'g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+        self.state.conversation(key)
+        # Tk's modal dialog runs a nested event loop: a removal notification
+        # can be handled before the original message handler resumes.
+        self.view.on_confirm = lambda: events.remove_group('g1')
+        events.chat_message(self.group_message())
+        self.assertNotIn(key, self.state.conversations)
+        self.assertNotIn('g1', self.state.groups)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.assertIsNone(self.vault.peer('bob'))
+        self.app.activity.receive.assert_not_called()
+        self.app.request_group_info.assert_not_called()
+
+    def test_rejoin_during_roster_dialog_cannot_accept_old_membership_confirmation(self):
+        events = self.message_events()
+        key = self.state.current_chat = ChatKey('group', 'g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+
+        def rejoin():
+            events.remove_group('g1')
+            self.state.groups['g1'] = {'members': ['alice', 'bob']}
+
+        self.view.on_confirm = rejoin
+        events.chat_message(self.group_message())
+        self.assertIn('g1', self.state.groups)
+        self.assertNotIn(key, self.state.conversations)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.assertIsNone(self.vault.peer('bob'))
+        self.app.activity.receive.assert_not_called()
+
+    def test_account_switch_during_roster_dialog_does_not_repopulate_reset_session(self):
+        events = self.message_events()
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+        self.view.on_confirm = lambda: self.state.reset_session('carol')
+        events.chat_message(self.group_message())
+        self.assertEqual(self.state.username, 'carol')
+        self.assertFalse(self.state.conversations)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.assertIsNone(self.vault.peer('bob'))
+        self.app.request_group_info.assert_not_called()
+
+    def test_canceled_old_roster_dialog_does_not_block_rejoined_group(self):
+        events = self.message_events()
+        key = ChatKey('group', 'g1')
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+
+        def rejoin():
+            events.remove_group('g1')
+            self.state.groups['g1'] = {'members': ['alice', 'bob']}
+
+        self.view.confirm = False
+        self.view.on_confirm = rejoin
+        events.chat_message(self.group_message())
+        self.assertNotIn(key, self.state.conversations)
+        self.view.on_confirm = None
+        self.view.confirm = True
+        events.chat_message(self.group_message(message_id=2))
+        self.assertEqual(self.state.conversation(key).messages[0].encryption, 'e2ee')
+        self.assertEqual(len(self.view.confirmations), 2)
+
+    def test_replacement_socket_during_roster_dialog_cannot_deliver_old_message(self):
+        events = self.message_events()
+        self.state.groups['g1'] = {'members': ['alice', 'bob']}
+        self.view.on_confirm = lambda: setattr(self.app.connection, 'sock', object())
+        events.chat_message(self.group_message())
+        self.assertFalse(self.state.conversations)
+        self.assertIsNone(self.vault.approved_roster('g1'))
+        self.app.activity.receive.assert_not_called()
 
     def test_signed_envelope_replay_under_new_server_id_is_suppressed(self):
         wire = self.private_message()

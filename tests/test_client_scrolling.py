@@ -53,13 +53,13 @@ class ClientScrollingTests(unittest.TestCase):
             previous = geometry
         self.fail(f'Tk widgets did not finish mapping within 2 seconds: {geometry}')
 
-    def show_history(self):
+    def show_history(self, *, failed=False):
         key = ChatKey('private', 'synthetic-peer')
         self.app.state.friends[:] = [key.target]
         conversation = self.app.state.conversation(key)
         for number in range(101, 181):
             conversation.add(Message(key.target, f'Synthetic history message {number}',
-                                     message_id=number))
+                                     message_id=number, encryption='failed' if failed else 'legacy'))
         self.view.refresh_activity()
         self.app.select_chat(key)
         self.root.update()
@@ -223,6 +223,20 @@ class ClientScrollingTests(unittest.TestCase):
         self.root.update()
         self.assert_message_position(content, position)
         self.assertLess(self.view.chat_canvas.yview()[1], .9)
+
+    def test_verified_replacement_preserves_anchor_without_a_new_message_badge(self):
+        key = self.show_history(failed=True)
+        self.read_earlier_messages()
+        viewport = self.view.capture_chat_scroll()
+        previous = viewport['message']
+        recovered = Message(key.target, 'Synthetic recovered verified message',
+                            message_id=previous.message_id, encryption='e2ee')
+        self.assertIsNotNone(self.app.state.conversation(key).add(recovered))
+        self.view.render_conversation(key)
+        self.root.update()
+        self.assert_message_position(recovered.content, viewport['offset'])
+        self.assertEqual(len(self.view.current_chat_frame.winfo_children()), 80)
+        self.assertFalse(self.view.new_messages_button.winfo_ismapped())
 
     def test_small_standard_and_x11_wheel_events_scroll_in_both_directions(self):
         self.show_history()

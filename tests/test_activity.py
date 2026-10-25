@@ -191,7 +191,8 @@ class ActivityEventTests(unittest.TestCase):
         self.activity = ActivityController(self.state, self.preferences,
                                            notify=lambda *args: self.notices.append(args))
         self.activity.activate(('127.0.0.1', 12345), 'alice')
-        self.connection = SimpleNamespace(session_key=b'0123456789abcdef', capabilities=('message_sync',))
+        self.connection = SimpleNamespace(sock=object(), session_key=b'0123456789abcdef',
+                                          capabilities=('message_sync',))
         self.sync = SimpleNamespace(active=False)
         controller = SimpleNamespace(state=self.state, view=Mock(), connection=self.connection,
                                      activity=self.activity, request_group_info=Mock(), sync=self.sync)

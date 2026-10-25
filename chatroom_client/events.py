@@ -88,6 +88,8 @@ class ServerEvents:
         session_key = self.controller.connection.session_key
         if not session_key:
             return
+        sock, username = self.controller.connection.sock, self.state.username
+        group_generation = self.state.group_generations.get(key.target, 0)
         encryption = getattr(self.controller, 'encryption', None)
         protection = 'legacy'
         if encryption is not None:
@@ -101,19 +103,27 @@ class ServerEvents:
             except Exception:
                 logging.exception('消息解密失败')
                 content, protection = '[消息解密失败]', 'failed'
+        # A modal trust dialog can run the event pump recursively. Its original
+        # message belongs to the connection and group lifetime that opened it.
+        if (self.controller.connection.sock is not sock or self.state.username != username
+                or (key.kind == 'group'
+                    and self.state.group_generations.get(key.target, 0) != group_generation)):
+            return
         item = Message(message.get('from'), content, message.get('timestamp', ''),
                        message.get('message_id'), message.get('from') == self.state.username, protection)
         conversation = self.state.conversation(key)
+        previous_count = len(conversation.messages)
         index = conversation.add(item)
         if index is None:
             return
+        inserted = len(conversation.messages) > previous_count
         if key.kind == 'private' and key.target not in self.state.friends:
             self.state.friends.append(key.target)
             self.view.update_friends_listbox()
         if key.kind == 'group' and key.target not in self.state.groups:
             self.controller.request_group_info(key.target)
         activity = getattr(self.controller, 'activity', None)
-        if activity is not None:
+        if activity is not None and inserted:
             # Some already-stored frames leave no space for additive replay
             # flags. The surrounding history/sync batch remains a fallback for
             # those frames as well as for older servers.
@@ -122,8 +132,10 @@ class ServerEvents:
             catchup = not live and (message.get('sync') is True or syncing)
             historical = not live and (message.get('history') is True or catchup or self.state.history_syncing)
             activity.receive(key, item, historical=historical, catchup=catchup)
+        elif activity is not None:
+            activity.refresh()
         if self.state.current_chat == key and not self.state.history_syncing:
-            if index == len(conversation.messages) - 1:
+            if inserted and index == len(conversation.messages) - 1:
                 self.view.append_message(key, item)
             else:
                 self.view.render_conversation(key)

@@ -27,7 +27,6 @@ class ChatApplication:
         else:
             self.encryption = encryption or None
         self.closing = False
-        self.auth_window = None
         self.reconnecting = False
         self.reconnect_policy = ReconnectPolicy()
         self._uncertain_send = False
@@ -66,19 +65,22 @@ class ChatApplication:
         self.connection.forget_credentials()
         self.view.apply_profile(profile)
 
-    def login(self):
+    def login(self, *, register=False):
         if self.connection.auth_busy or self.closing or self.connection.running or self.reconnecting:
             return
         credentials = self.view.credentials()
         if credentials is not None:
             username, password, port = credentials
             self.connection.settings.port = port
-            self.connect_server(username, password)
+            if register:
+                self.start_auth(username, password, register=True)
+            else:
+                self.connect_server(username, password)
 
     def connect_server(self, username, password):
         self.start_auth(username, password)
 
-    def start_auth(self, username, password, register=False, window=None,
+    def start_auth(self, username, password, register=False,
                    migration_password=None, legacy_passphrase=None):
         options = {'register': register}
         if self.encryption is not None:
@@ -93,7 +95,6 @@ class ChatApplication:
                 self.view.notify('本机密钥', str(error))
                 return
         if self.connection.authenticate(username, password, **options):
-            self.auth_window = window
             self.view.set_auth_busy(True, '正在迁移旧账号…' if migration_password is not None else
                                     ('正在注册…' if register else '正在连接…'))
 
@@ -102,7 +103,6 @@ class ChatApplication:
             self.disconnect()
             return
         self.connection.cancel_auth()
-        self.auth_window = None
         self.view.set_auth_busy(False, '连接已取消')
 
     def finish_auth(self, result):
@@ -113,7 +113,6 @@ class ChatApplication:
         resuming = self.reconnecting
         if not resuming:
             self.view.set_auth_busy(False)
-        window, self.auth_window = self.auth_window, None
         if result.error is not None:
             if self.encryption is not None:
                 self.encryption.discard_result(result)
@@ -126,9 +125,8 @@ class ChatApplication:
             else:
                 self.view.notify('注册失败' if result.register else '登录失败', result.error)
         elif result.register:
-            self.view.notify('注册成功', '注册成功，请登录')
-            if window is not None and window.winfo_exists():
-                window.destroy()
+            self.view.registration_complete(result.username)
+            self.view.notify('注册成功', '账号已创建，请输入密码登录')
         else:
             self.reconnecting = False
             self.reconnect_policy.stop()
@@ -415,7 +413,6 @@ class ChatApplication:
             return
         self.closing = True
         self.disconnect()
-        self.auth_window = None
         self.notifier.close()
         self.connection.close()
         self.finish_close()

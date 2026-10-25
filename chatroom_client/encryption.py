@@ -119,6 +119,7 @@ class _SendLookup:
     key: object
     text: str = field(repr=False)
     send: bool = True
+    group_generation: int = 0
 
 
 class EncryptionController:
@@ -274,7 +275,8 @@ class EncryptionController:
             return False
         request_id = uuid.uuid4().hex
         self._lookup = _SendLookup(request_id, self.application.connection.sock,
-                                   self.application.state.username, key, text, send)
+                                   self.application.state.username, key, text, send,
+                                   self.application.state.group_generations.get(key.target, 0))
         self.sending = True
         try:
             self.application.queue_send({'type': 'e2ee_keys_request', 'request_id': request_id,
@@ -307,6 +309,9 @@ class EncryptionController:
                 and app.connection.sock is lookup.sock
                 and app.state.username == lookup.username
                 and app.state.current_chat == lookup.key
+                and (lookup.key.kind != 'group' or (
+                    lookup.key.target in app.state.groups
+                    and app.state.group_generations.get(lookup.key.target, 0) == lookup.group_generation))
                 and app.view.input_text() == lookup.text
                 and not app.state.pending_messages)
 
@@ -431,6 +436,7 @@ class EncryptionController:
             if kind == 'group':
                 if target not in self.application.state.groups:
                     raise E2EEError('未知群聊，已停止显示消息；请先核验群聊身份')
+                group_generation = self.application.state.group_generations.get(target, 0)
                 roster = envelope['recipients']
                 if roster.get(username) != vault.identity.fingerprint:
                     raise E2EEError('此端到端消息未加密给当前本地身份')
@@ -439,14 +445,16 @@ class EncryptionController:
                         raise E2EEError('群接收人尚未确认；重新登录可再次核验')
                     previous = vault.approved_roster(target)
                     accepted = self.application.view.confirm_encryption_roster(target, roster, previous)
-                    if accepted is not True:
-                        self._denied_groups.add(target)
-                        raise E2EEError('群接收人尚未确认；重新登录可再次核验')
                     if (self.vault is not vault or not vault.unlocked
                             or self.application.connection.sock is not sock
                             or self.application.state.username != username
+                            or target not in self.application.state.groups
+                            or self.application.state.group_generations.get(target, 0) != group_generation
                             or getattr(self.application, 'closing', False)):
-                        raise E2EEError('核验期间连接或账号已改变，请重新登录后再核验')
+                        raise E2EEError('核验期间连接、账号或群成员状态已改变，请重新核验')
+                    if accepted is not True:
+                        self._denied_groups.add(target)
+                        raise E2EEError('群接收人尚未确认；重新登录可再次核验')
                     vault.approve_roster_fingerprints(target, roster, expected_previous=previous)
             content = decrypt_message(vault.identity, username, envelope,
                                       expected_sender=sender, expected_kind=kind,

@@ -289,10 +289,19 @@ class DesktopTheme:
         options = self._button_options(parent, variant)
         options.update(kwargs)
         if variant == 'primary':
-            return _ThemedButton(parent, text=text, command=command,
-                                 disabled_background=self.colors['selected'],
-                                 disabled_foreground=self.colors['muted'], **options)
-        return tk.Button(parent, text=text, command=command, **options)
+            button = _ThemedButton(parent, text=text, command=command,
+                                   disabled_background=self.colors['selected'],
+                                   disabled_foreground=self.colors['muted'], **options)
+        else:
+            button = tk.Button(parent, text=text, command=command, **options)
+        button.bind('<Return>', self._activate_button)
+        return button
+
+    @staticmethod
+    def _activate_button(event):
+        # Stop the event before a window's default action can run as well.
+        event.widget.invoke()
+        return 'break'
 
     def _entry_options(self):
         c = self.colors

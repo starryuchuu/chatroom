@@ -1,5 +1,5 @@
 """Client session data. This module has no UI, socket or encryption dependencies."""
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -63,10 +63,20 @@ class Conversation:
         return min(self.message_ids, default=9223372036854775807)
 
     def add(self, message):
-        """Insert in server ID order; return its index, or None for a duplicate."""
+        """Insert by server ID, or recover a failed entry after E2EE verification."""
         message_id = message.message_id
         numbered = type(message_id) is int
         if numbered and message_id in self._seen:
+            if message.encryption == 'e2ee':
+                for index in range(bisect_left(self._order, message_id), len(self.messages)):
+                    if self._order[index] != message_id:
+                        break
+                    previous = self.messages[index]
+                    if type(previous.message_id) is int and previous.message_id == message_id:
+                        if previous.encryption == 'failed' and previous.author == message.author:
+                            self.messages[index] = message
+                            return index
+                        break
             return None
         order = message_id if numbered else (self._order[-1] + 1 if self._order else 0)
         index = bisect_right(self._order, order)
@@ -89,6 +99,7 @@ class ClientState:
     pending_history: ChatKey | None = None
     group_info_requests: set[str] = field(default_factory=set)
     group_sync_chunks: list[str] = field(default_factory=list)
+    group_generations: dict[str, int] = field(default_factory=dict, repr=False)
     drafts: dict[tuple[str, int, str], str] = field(default_factory=dict)
 
     @property
@@ -100,6 +111,7 @@ class ClientState:
 
     def remove_group(self, gid):
         key = ChatKey('group', gid)
+        self.group_generations[gid] = self.group_generations.get(gid, 0) + 1
         self.groups.pop(gid, None)
         self.conversations.pop(key, None)
         self.group_info_requests.discard(gid)
@@ -121,3 +133,4 @@ class ClientState:
         self.pending_history = None
         self.group_info_requests.clear()
         self.group_sync_chunks.clear()
+        self.group_generations.clear()

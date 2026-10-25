@@ -10,6 +10,12 @@ from .encryption_view import EncryptionWindow, confirm_roster, import_keys
 from .theme import AutoScrollbar, DesktopTheme
 
 
+def _message_identity(message):
+    if type(message.message_id) is int:
+        return ('server', message.message_id)
+    return ('local', id(message))
+
+
 class TkClientView:
     def __init__(self, master):
         self.master = master
@@ -119,7 +125,7 @@ class TkClientView:
         username = self.username_entry.get().strip()
         password = self.password_entry.get()
         if not username or not password:
-            messagebox.showerror('错误', '用户名和密码不能为空！')
+            self.notify('输入有误', '用户名和密码不能为空！')
             return None
         port = self.read_port()
         return (username, password, port) if port is not None else None
@@ -131,7 +137,7 @@ class TkClientView:
                 raise ValueError
             return port
         except ValueError:
-            messagebox.showerror('错误', '端口必须是 1-65535 之间的整数！')
+            self.notify('输入有误', '端口必须是 1-65535 之间的整数！')
             return None
 
     def add_friend(self):
@@ -170,7 +176,7 @@ class TkClientView:
         frame = self.chat_frames.get(key)
         viewport = (self.capture_chat_scroll() if preserve_scroll and frame is not None
                     and frame is self.current_chat_frame else None)
-        previous_messages = {id(row._chat_message) for row in frame.winfo_children()
+        previous_messages = {_message_identity(row._chat_message) for row in frame.winfo_children()
                              if hasattr(row, '_chat_message')} if viewport is not None else set()
         self.cancel_scroll()
         if self.current_chat_frame is not None:
@@ -201,7 +207,7 @@ class TkClientView:
                 self.chat_canvas.yview_moveto(0.0)
             elif viewport is not None and not viewport['at_bottom']:
                 additions = [message for message in self.state.conversation(key).messages
-                             if id(message) not in previous_messages]
+                             if _message_identity(message) not in previous_messages]
                 self._new_messages[key] = self._new_messages.get(key, 0) + sum(
                     not message.is_self for message in additions)
                 self.restore_chat_scroll(viewport)
@@ -473,6 +479,8 @@ class TkClientView:
     def build_login(self):
         """A focused login card keeps primary and recovery actions distinct."""
         self.clear_window()
+        self._registering = self._auth_busy = False
+        self._login_only_sections = []
         c = self.colors
         self.master.configure(bg=c['bg'])
         header = tk.Frame(self.master, bg=c['bg'])
@@ -498,8 +506,10 @@ class TkClientView:
         form = tk.Frame(self.login_card, bg=c['surface'], padx=28, pady=18)
         form.pack(fill=tk.BOTH, expand=True)
         form.columnconfigure(0, weight=1)
-        self.label(form, '欢迎回来', font='title').grid(row=0, column=0, sticky='w')
-        self.label(form, '登录账号，继续你的对话。', muted=True, font='small').grid(
+        self.auth_title = self.label(form, '欢迎回来', font='title')
+        self.auth_title.grid(row=0, column=0, sticky='w')
+        self.auth_subtitle = self.label(form, '登录账号，继续你的对话。', muted=True, font='small')
+        self.auth_subtitle.grid(
             row=1, column=0, sticky='w', pady=(4, 12))
         self.profile_selector = ServerProfileSelector(form, self.controller)
         self.profile_selector.grid(row=2, column=0, sticky='ew', pady=(0, 10))
@@ -518,6 +528,7 @@ class TkClientView:
         if self.controller.encryption is not None:
             note = tk.Frame(form, bg=c['surface'])
             note.grid(row=row, column=0, sticky='ew', pady=(0, 6))
+            self._login_only_sections.append(note)
             self.label(note, '登录即解锁加密身份', muted=True, font='small').pack(side=tk.LEFT)
             self.import_keys_button = self.theme.button(
                 note, '恢复密钥…', lambda: import_keys(self), variant='quiet',
@@ -527,7 +538,7 @@ class TkClientView:
         self.port_entry = field(row, '连接端口 · 仅本次有效')
         self.port_entry.insert(0, str(self.controller.connection.settings.port))
         row += 2
-        self.login_button = self.theme.button(form, '登录', self.controller.login, variant='primary', pady=9)
+        self.login_button = self.theme.button(form, '登录', self.submit_auth, variant='primary', pady=9)
         self.login_button.grid(row=row, column=0, sticky='ew', pady=(2, 6))
         actions = tk.Frame(form, bg=c['surface'])
         actions.grid(row=row+1, column=0, sticky='ew')
@@ -540,6 +551,7 @@ class TkClientView:
         if self.controller.encryption is not None:
             recovery = tk.Frame(form, bg=c['surface'])
             recovery.grid(row=row, column=0, sticky='ew', pady=(6, 0))
+            self._login_only_sections.append(recovery)
             tk.Frame(recovery, bg=c['line'], height=1).pack(fill=tk.X, pady=(0, 7))
             self.migrate_button = self.theme.button(recovery, '迁移旧账号…', self.migrate_account,
                                                     variant='quiet', font=self.fonts['small'], padx=4, pady=3)
@@ -552,7 +564,7 @@ class TkClientView:
         self.login_status.grid(row=row, column=0, sticky='ew', pady=(4, 0))
         self.bind_login_scrolling(self.login_canvas)
         self.username_entry.focus_set()
-        self.master.bind('<Return>', lambda event: self.controller.login())
+        self.master.bind('<Return>', self.submit_auth)
 
     def layout_login_card(self, event=None):
         canvas, card = self.login_canvas, self.login_card
@@ -930,7 +942,8 @@ class TkClientView:
         frame = self.current_chat_frame
         if frame is not None and viewport['message'] is not None:
             for row in frame.winfo_children():
-                if getattr(row, '_chat_message', None) is viewport['message']:
+                if (hasattr(row, '_chat_message')
+                        and _message_identity(row._chat_message) == _message_identity(viewport['message'])):
                     target = (self.chat_canvas.canvasy(0) + row.winfo_rooty()
                               - self.chat_canvas.winfo_rooty() - viewport['offset'])
                     break
@@ -1023,6 +1036,7 @@ class TkClientView:
         window.protocol('WM_DELETE_WINDOW', lambda: answer(False))
 
     def set_auth_busy(self, busy, text=""):
+        self._auth_busy = busy
         for button in (self.login_button, self.register_button):
             if button.winfo_exists():
                 button.configure(state=tk.DISABLED if busy else tk.NORMAL)
@@ -1065,40 +1079,37 @@ class TkClientView:
         migrate_account(self)
 
     def register(self):
-        """
-        打开注册窗口，允许用户输入用户名和密码进行注册。
-        """
-        register_window = tk.Toplevel(self.master)
-        register_window.title("注册")
-        register_window.transient(self.master)
-        register_window.resizable(False, False)
-        register_window.configure(bg=self.colors['bg'])
-        form = tk.Frame(register_window, bg=self.colors['bg'])
-        form.pack(fill=tk.BOTH, expand=True, padx=32, pady=28)
-        self.label(form, '创建账号', font='title').pack(anchor=tk.W, pady=(0, 20))
-        self.label(form, '用户名', muted=True, font='small').pack(anchor=tk.W, pady=(0, 5))
-        username_entry = self.theme.entry(form, width=30)
-        username_entry.pack(fill=tk.X, ipady=8)
-        self.label(form, '密码', muted=True, font='small').pack(anchor=tk.W, pady=(16, 5))
-        password_entry = self.theme.entry(form, width=30, show='•')
-        password_entry.pack(fill=tk.X, ipady=8)
+        """Switch the existing authentication card between login and signup."""
+        if not self._auth_busy:
+            self.set_auth_mode(not self._registering)
 
-        def do_register():
-            username = username_entry.get().strip()
-            password = password_entry.get()
-            if not username or not password:
-                messagebox.showerror("错误", "用户名和密码不能为空！")
-                return
-            port = self.read_port()
-            if port is None:
-                return
-            self.controller.connection.settings.port = port
+    def set_auth_mode(self, registering):
+        self._registering = registering
+        self.auth_title.configure(text='创建账号' if registering else '欢迎回来')
+        self.auth_subtitle.configure(text='创建你的账号，开始新的对话。' if registering else '登录账号，继续你的对话。')
+        self.login_button.configure(text='创建账号' if registering else '登录')
+        self.register_button.configure(text='已有账号？返回登录' if registering else '创建账号')
+        for section in self._login_only_sections:
+            if registering:
+                section.grid_remove()
+            else:
+                section.grid()
+        self.login_status.configure(text='')
+        self.username_entry.focus_set()
 
-            self.controller.start_auth(username, password, register=True, window=register_window)
+    def submit_auth(self, event=None):
+        if self._registering:
+            self.controller.login(register=True)
+        else:
+            self.controller.login()
+        return 'break'
 
-        self.theme.button(form, '创建账号', do_register, variant='primary').pack(fill=tk.X, pady=(24, 0))
-        username_entry.focus_set()
-        register_window.bind('<Return>', lambda event: do_register())
+    def registration_complete(self, username):
+        self.set_auth_mode(False)
+        self.username_entry.delete(0, tk.END)
+        self.username_entry.insert(0, username)
+        self.password_entry.delete(0, tk.END)
+        self.password_entry.focus_set()
 
     def on_message_entry_key(self, event):
         """
