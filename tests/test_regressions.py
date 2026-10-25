@@ -1090,12 +1090,29 @@ class ServerTests(unittest.TestCase):
                 with self.subTest(kind=kind, before=before):
                     client.send_msg(peer, {
                         'type': 'history_request', 'chat_type': kind,
-                        'target': target, 'before_id': before,
+                        'target': target, 'before_id': before, 'request_id': 'error-page',
                     })
                     response = self.read_type(peer, 'history_error')
                     self.assertEqual(response['history_kind'], kind)
+                    self.assertEqual(response['request_id'], 'error-page')
                     self.assertEqual(response['history_target'], target)
                     self.assertIn('参数' if before == 0 else '无权', response['error'])
+
+    def test_history_request_id_validation_keeps_connection_retryable(self):
+        self.server.save_friend_relationship('alice', 'bob')
+        peer, _, _ = self.connect('alice')
+        self.read_type(peer, 'history_end')
+        request = {'type': 'history_request', 'chat_type': 'private', 'target': 'bob', 'before_id': 2}
+        for invalid in (None, 1, True, '', 'a' * 129, [], {}, '\ud800'):
+            with self.subTest(id_type=type(invalid).__name__, length=len(invalid) if isinstance(invalid, str) else None):
+                client.send_msg(peer, dict(request, request_id=invalid))
+                response = self.read_type(peer, 'history_error')
+                self.assertIn('参数', response['error'])
+                self.assertNotIn('request_id', response)
+        for valid in ('one', 'a' * 128, '界' * 128):
+            client.send_msg(peer, dict(request, request_id=valid))
+            self.assertEqual(self.read_type(peer, 'history_begin')['request_id'], valid)
+            self.assertEqual(self.read_type(peer, 'history_end')['request_id'], valid)
 
     def test_scoped_history_failure_allows_retry_on_same_connection(self):
         s = self.server
@@ -1104,18 +1121,20 @@ class ServerTests(unittest.TestCase):
         peer, _, result = self.connect('alice')
         self.assertTrue(result['success'])
         self.read_type(peer, 'history_end')
-        request = {'type': 'history_request', 'chat_type': 'private', 'target': 'bob', 'before_id': 2}
+        request = {'type': 'history_request', 'chat_type': 'private', 'target': 'bob', 'before_id': 2,
+                   'request_id': 'retry-page'}
         with patch.object(s.history_store, 'page', side_effect=RuntimeError('database busy')):
             client.send_msg(peer, request)
-            self.read_type(peer, 'history_begin')
+            self.assertEqual(self.read_type(peer, 'history_begin')['request_id'], 'retry-page')
             response = client.recv_msg(peer)
         self.assertEqual(response['type'], 'history_error')
         self.assertEqual(response['history_kind'], 'private')
+        self.assertEqual(response['request_id'], 'retry-page')
         self.assertEqual(response['history_target'], 'bob')
         client.send_msg(peer, request)
         self.read_type(peer, 'history_begin')
-        self.assertEqual(self.read_type(peer, 'private_chat')['message_id'], 1)
-        self.read_type(peer, 'history_end')
+        self.assertEqual(self.read_type(peer, 'private_chat')['history_request_id'], 'retry-page')
+        self.assertEqual(self.read_type(peer, 'history_end')['request_id'], 'retry-page')
 
     def test_partial_history_failure_retries_full_page_on_same_connection(self):
         s = self.server

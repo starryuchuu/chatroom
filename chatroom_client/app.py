@@ -48,7 +48,9 @@ class ChatApplication:
             self.state, self.queue_send,
             lambda title, text: self.view.notify(title, text),
             lambda key, top: self.view.render_conversation(key, top),
-            lambda: self.view.refresh_controls())
+            lambda: self.view.refresh_controls(), connection=self.connection,
+            schedule=lambda delay, callback: self.view.schedule(delay, callback),
+            sync_active=lambda: self.sync.active)
         self.events = ServerEvents(self)
         self.view.bind_controller(self)
         self.view.build_login()
@@ -154,6 +156,7 @@ class ChatApplication:
         self.state.pending_messages.clear()
         self.state.pending_history = None
         self.sync.abort()
+        self.history.abort()
         if self.encryption is not None:
             self.encryption.pause()
         self.activity.flush()
@@ -348,6 +351,7 @@ class ChatApplication:
         self.reconnecting = False
         self.reconnect_policy.stop()
         self.sync.abort()
+        self.history.abort()
         if self.encryption is not None:
             self.encryption.reset()
         self.activity.flush()

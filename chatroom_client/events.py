@@ -4,6 +4,7 @@ import logging
 
 from .models import ChatKey, Message
 from .protocol import decrypt_message
+from .request_context import SessionContext
 
 
 class ServerEvents:
@@ -85,11 +86,13 @@ class ServerEvents:
     def chat_message(self, message):
         key = ChatKey('group', message['gid']) if message['type'] == 'group_chat' else ChatKey(
             'private', message.get('to') if message.get('from') == self.state.username else message.get('from'))
+        history = getattr(self.controller, 'history', None)
+        if history is not None and not history.accepts_message(message, key):
+            return
         session_key = self.controller.connection.session_key
         if not session_key:
             return
-        sock, username = self.controller.connection.sock, self.state.username
-        group_generation = self.state.group_generations.get(key.target, 0)
+        context = SessionContext.capture(self.state, self.controller.connection, key)
         encryption = getattr(self.controller, 'encryption', None)
         protection = 'legacy'
         if encryption is not None:
@@ -105,9 +108,7 @@ class ServerEvents:
                 content, protection = '[消息解密失败]', 'failed'
         # A modal trust dialog can run the event pump recursively. Its original
         # message belongs to the connection and group lifetime that opened it.
-        if (self.controller.connection.sock is not sock or self.state.username != username
-                or (key.kind == 'group'
-                    and self.state.group_generations.get(key.target, 0) != group_generation)):
+        if not context.matches(self.state, self.controller.connection):
             return
         item = Message(message.get('from'), content, message.get('timestamp', ''),
                        message.get('message_id'), message.get('from') == self.state.username, protection)

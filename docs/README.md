@@ -29,6 +29,7 @@ Run commands from the repository root unless a command explicitly changes direct
 
 - [代码审查与修复记录](reviews/BUGFIX_REVIEW.md)
 - [可靠性验证记录](reviews/RELIABILITY_VALIDATION.md)
+- [重构与长会话性能记录](reviews/REFACTOR_VALIDATION.md)
 
 这些记录说明特定版本执行过的检查；当前行为与保护范围请以使用文档和发布说明为准。
 

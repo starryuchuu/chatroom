@@ -46,6 +46,47 @@ class ClientHistoryRecoveryTests(unittest.TestCase):
         app.load_older_history()
         self.assertEqual(app.connection.send.call_args.args[0]['before_id'], 101)
 
+    def test_correlated_stale_frames_cannot_enter_model_or_unread_state(self):
+        app = self.app()
+        app.connection.capabilities = ('history_request_id',)
+        key = app.state.current_chat
+        app.activity.activate(('synthetic-server', 12345), 'alice')
+        app.activity.history_complete()
+        self.message(app, 201)
+        app.activity.mark_read(key)
+
+        def deliver(mid, **flags):
+            app.handle_server_message({
+                'type': 'private_chat', 'from': 'bob', 'to': 'alice', 'message_id': mid,
+                'content': client.encrypt_message('Synthetic frame ' + str(mid), app.connection.session_key),
+                **flags,
+            })
+
+        app.load_older_history()
+        old = app.connection.send.call_args.args[0]['request_id']
+        app.handle_server_message({'type': 'history_begin', 'request_id': old,
+                                   'history_kind': 'private', 'history_target': 'bob'})
+        deliver(101, history=True, history_request_id=old)
+        app.view.schedule.call_args.args[1]()
+        app.load_older_history()
+        fresh = app.connection.send.call_args.args[0]['request_id']
+        deliver(102, history=True, history_request_id=old)
+        deliver(300, history=False)
+        app.handle_server_message({'type': 'history_begin', 'request_id': fresh,
+                                   'history_kind': 'private', 'history_target': 'bob'})
+        deliver(103, history=True, history_request_id=fresh)
+        app.handle_server_message({'type': 'history_end', 'request_id': old,
+                                   'history_kind': 'private', 'history_target': 'bob',
+                                   'before_id': 55, 'has_more': False})
+        self.assertEqual(app.state.pending_history, key)
+        self.assertEqual(app.state.conversation(key).cursor, 201)
+        app.handle_server_message({'type': 'history_end', 'request_id': fresh,
+                                   'history_kind': 'private', 'history_target': 'bob',
+                                   'before_id': 101, 'has_more': True})
+        self.assertEqual(app.state.conversation(key).message_ids, [101, 103, 201, 300])
+        self.assertEqual(app.state.total_unread, 1)
+        self.assertEqual(app.state.conversation(key).cursor, 101)
+
     def test_initial_history_end_does_not_release_queued_page_request(self):
         app = self.app()
         self.message(app, 201)

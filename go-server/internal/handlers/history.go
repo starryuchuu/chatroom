@@ -10,16 +10,28 @@ import (
 	"math"
 	"net"
 	"time"
+	"unicode/utf8"
 )
 
 // SendHistory rechecks membership and enqueues under the same group operation
 // lock used by kick/leave/disband. History packets cannot be queued after removal.
 func SendHistory(conn net.Conn, username string, key []byte, kind, target string, before int64) error {
+	return sendHistoryPage(conn, username, key, kind, target, before, "")
+}
+
+func sendHistoryPage(conn net.Conn, username string, key []byte, kind, target string, before int64, requestID string) error {
 	boundary, err := database.HistoryBoundary()
 	if err != nil {
 		return err
 	}
-	if err = protocol.SendMsgWait(conn, map[string]interface{}{"type": "history_begin"}); err != nil {
+	begin := map[string]interface{}{"type": "history_begin"}
+	if kind != "" {
+		begin["history_kind"], begin["history_target"] = kind, target
+	}
+	if requestID != "" {
+		begin["request_id"] = requestID
+	}
+	if err = protocol.SendMsgWait(conn, begin); err != nil {
 		return err
 	}
 	history, more, err := database.GetHistoryPage(username, boundary, before, kind, target)
@@ -31,6 +43,12 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 		if err != nil {
 			return err
 		}
+		if requestID != "" {
+			payload["history_request_id"] = requestID
+			if protocol.ValidateMessage(payload) != nil {
+				delete(payload, "history_request_id")
+			}
+		}
 		if message.ChatType == "group" {
 			err = sendAuthorizedGroupHistory(conn, username, message.GID, payload)
 		} else {
@@ -41,6 +59,9 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 		}
 	}
 	end := map[string]interface{}{"type": "history_end", "boundary": boundary}
+	if requestID != "" {
+		end["request_id"] = requestID
+	}
 	if kind != "" {
 		cursor := before
 		if len(history) > 0 {
@@ -53,20 +74,29 @@ func SendHistory(conn net.Conn, username string, key []byte, kind, target string
 	return protocol.SendMsgWait(conn, end)
 }
 
-func sendHistoryError(conn net.Conn, kind, target, message string) {
+func sendHistoryError(conn net.Conn, kind, target, message string, requestID ...string) {
 	payload := map[string]interface{}{"type": "history_error", "error": message}
+	if len(requestID) > 0 && validHistoryRequestID(requestID[0]) {
+		payload["request_id"] = requestID[0]
+	}
 	if (kind == "private" || kind == "group") && target != "" {
 		payload["history_kind"], payload["history_target"] = kind, target
 	}
 	protocol.SendMsg(conn, payload)
 }
 
+func validHistoryRequestID(id string) bool {
+	return id != "" && utf8.ValidString(id) && utf8.RuneCountInString(id) <= 128
+}
+
 func handleHistoryRequest(conn net.Conn, username string, key []byte, msg map[string]interface{}) {
+	requestID, _ := msg["request_id"].(string)
+	_, suppliedID := msg["request_id"]
 	kind, ok := msg["chat_type"].(string)
 	target, valid := msg["target"].(string)
 	value, number := msg["before_id"].(float64)
-	if !ok || !valid || !number || target == "" || (kind != "group" && kind != "private") || value <= 0 || value > float64(math.MaxInt64) || math.Trunc(value) != value {
-		sendHistoryError(conn, kind, target, "历史查询参数错误")
+	if (suppliedID && !validHistoryRequestID(requestID)) || !ok || !valid || !number || target == "" || (kind != "group" && kind != "private") || value <= 0 || value > float64(math.MaxInt64) || math.Trunc(value) != value {
+		sendHistoryError(conn, kind, target, "历史查询参数错误", requestID)
 		return
 	}
 	before := int64(math.MaxInt64)
@@ -88,11 +118,11 @@ func handleHistoryRequest(conn net.Conn, username string, key []byte, msg map[st
 		}
 	}
 	if !allowed {
-		sendHistoryError(conn, kind, target, "无权读取该会话历史")
+		sendHistoryError(conn, kind, target, "无权读取该会话历史", requestID)
 		return
 	}
-	if err := SendHistory(conn, username, key, kind, target, before); err != nil {
-		sendHistoryError(conn, kind, target, "历史加载失败，请重试")
+	if err := sendHistoryPage(conn, username, key, kind, target, before, requestID); err != nil {
+		sendHistoryError(conn, kind, target, "历史加载失败，请重试", requestID)
 	}
 }
 

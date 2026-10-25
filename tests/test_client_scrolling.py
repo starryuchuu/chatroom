@@ -3,7 +3,7 @@ import gc
 from time import monotonic
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import client
 from chatroom_client.models import ChatKey, Message
@@ -237,6 +237,140 @@ class ClientScrollingTests(unittest.TestCase):
         self.assert_message_position(recovered.content, viewport['offset'])
         self.assertEqual(len(self.view.current_chat_frame.winfo_children()), 80)
         self.assertFalse(self.view.new_messages_button.winfo_ismapped())
+
+    def long_history(self, *, failed=False):
+        key = self.show_history(failed=failed)
+        conversation = self.app.state.conversation(key)
+        for mid in range(1, 1001):
+            conversation.add(Message(key.target, f'Synthetic long history {mid}', message_id=mid,
+                                     encryption='failed' if failed else 'legacy'))
+        self.view.render_conversation(key)
+        self.root.update()
+        return key
+
+    def test_long_history_uses_bounded_rows_and_scrolls_through_every_window(self):
+        key = self.long_history()
+        frame = self.view.current_chat_frame
+        self.assertLessEqual(len(frame.winfo_children()), self.view.message_list.MAX_ROWS)
+        self.assertEqual(frame.pack_slaves()[-1]._chat_message.message_id, 1000)
+        for _ in range(30):
+            rows = frame.pack_slaves()
+            ids = [row._chat_message.message_id for row in rows]
+            self.assertEqual(ids, list(range(ids[0], ids[-1] + 1)))
+            if ids[0] == 1:
+                break
+            self.view.chat_canvas.yview_moveto(0)
+            self.root.update()
+        else:
+            self.fail('Earlier model messages were unreachable through scrolling')
+        self.assertEqual(len(self.app.state.conversation(key).messages), 1000)
+        for _ in range(30):
+            rows = frame.pack_slaves()
+            if rows[-1]._chat_message.message_id == 1000:
+                break
+            self.view.chat_canvas.yview_moveto(1)
+            self.root.update()
+        else:
+            self.fail('Later model messages were unreachable through scrolling')
+        self.view.scroll_to_bottom()
+        self.root.update()
+        self.assertEqual(frame.pack_slaves()[-1]._chat_message.message_id, 1000)
+        self.assertTrue(self.view.chat_is_at_bottom())
+
+    def test_long_history_reuses_rows_and_preserves_anchor_on_live_arrival(self):
+        key = self.long_history()
+        frame = self.view.current_chat_frame
+        old_rows = frame.pack_slaves()
+        self.view.render_conversation(key)
+        self.root.update()
+        self.assertEqual(frame.pack_slaves(), old_rows)
+        content, position = self.read_earlier_messages()
+        self.deliver(1001)
+        self.root.update()
+        self.assert_message_position(content, position)
+        self.assertLessEqual(len(frame.winfo_children()), self.view.message_list.MAX_ROWS)
+        self.assertTrue(self.view.new_messages_button.winfo_ismapped())
+        self.view.new_messages_button.invoke()
+        self.root.update()
+        self.assertEqual(frame.pack_slaves()[-1]._chat_message.message_id, 1001)
+        self.assertFalse(self.view.new_messages_button.winfo_ismapped())
+
+    def test_model_redraw_removes_legacy_rows_not_owned_by_a_message(self):
+        key = self.show_history()
+        row = self.view.display_message_with_time('Synthetic legacy row', '', key=key)
+        self.view.render_conversation(key)
+        self.root.update()
+        self.assertFalse(row.winfo_exists())
+        self.assertEqual(len(self.view.current_chat_frame.winfo_children()), 80)
+
+    def test_queued_window_shift_cannot_affect_recreated_conversation(self):
+        key = self.long_history()
+        old_frame = self.view.current_chat_frame
+        self.view.message_list.on_scroll(key, '0', '.1')
+        self.view.remove_conversation(key)
+        self.app.state.conversations.pop(key)
+        self.app.state.conversation(key).add(Message(key.target, 'Synthetic replacement conversation', message_id=2001))
+        self.view.render_conversation(key)
+        with patch.object(self.view, 'render_conversation', wraps=self.view.render_conversation) as render:
+            self.root.update()
+            render.assert_not_called()
+        self.assertFalse(old_frame.winfo_exists())
+        self.assertEqual([row._chat_message.message_id for row in self.view.current_chat_frame.pack_slaves()], [2001])
+
+    def test_queued_window_shift_is_invalid_after_account_switch(self):
+        key = self.long_history()
+        self.view.message_list.on_scroll(key, '0', '.1')
+        self.app.disconnect()
+        self.app.connection.sock = Mock()
+        self.app.connection.running = True
+        self.app.connection.endpoint = ('127.0.0.1', 12345)
+        self.app.state.username = 'second-synthetic-account'
+        self.app.state.friends = [key.target]
+        self.app.state.current_chat = key
+        self.app.state.conversation(key).add(Message(key.target, 'Synthetic second-account message', message_id=1))
+        self.view.build_chat()
+        self.view.render_conversation(key)
+        with patch.object(self.view, 'render_conversation', wraps=self.view.render_conversation) as render:
+            self.root.update()
+            render.assert_not_called()
+        self.assertEqual([message.content for message in self.app.state.conversation(key).messages],
+                         ['Synthetic second-account message'])
+        self.assertEqual(len(self.view.current_chat_frame.winfo_children()), 1)
+
+    def test_long_window_replaces_only_recovered_row_without_new_message_badge(self):
+        key = self.long_history(failed=True)
+        self.read_earlier_messages()
+        viewport = self.view.capture_chat_scroll()
+        old_message = viewport['message']
+        old_rows = set(self.view.current_chat_frame.winfo_children())
+        recovered = Message(key.target, 'Synthetic verified recovery in long history',
+                            message_id=old_message.message_id, encryption='e2ee')
+        self.assertIsNotNone(self.app.state.conversation(key).add(recovered))
+        self.view.render_conversation(key)
+        self.root.update()
+        new_rows = set(self.view.current_chat_frame.winfo_children())
+        self.assertEqual(len(old_rows.intersection(new_rows)), len(old_rows) - 1)
+        self.assert_message_position(recovered.content, viewport['offset'])
+        self.assertFalse(self.view.new_messages_button.winfo_ismapped())
+        self.assertEqual(len(self.app.state.conversation(key).messages), 1000)
+
+    def test_variable_height_window_keeps_anchor_after_background_redraw(self):
+        key = ChatKey('private', 'variable-height-peer')
+        self.app.state.friends = [key.target]
+        conversation = self.app.state.conversation(key)
+        for mid in range(1, 601):
+            conversation.add(Message(key.target, f'Synthetic multiline {mid}\n' * (1 + mid % 4), message_id=mid))
+        self.app.select_chat(key)
+        self.root.update()
+        self.view.chat_canvas.yview_moveto(0)
+        self.root.update()
+        content, offset = self.read_earlier_messages()
+        rows = self.view.current_chat_frame.pack_slaves()
+        self.app.refresh_sync()
+        self.root.update()
+        self.assert_message_position(content, offset)
+        self.assertEqual(self.view.current_chat_frame.pack_slaves(), rows)
+        self.assertLessEqual(len(rows), self.view.message_list.MAX_ROWS)
 
     def test_small_standard_and_x11_wheel_events_scroll_in_both_directions(self):
         self.show_history()

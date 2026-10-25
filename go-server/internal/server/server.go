@@ -92,7 +92,7 @@ func handleConnection(conn net.Conn) {
 		"type":         "public_key",
 		"key":          string(publicKeyPEM),
 		"protocol":     protocol.Version,
-		"capabilities": []string{"message_sync", "e2ee_v1", "opaque_v1"},
+		"capabilities": []string{"message_sync", "e2ee_v1", "opaque_v1", "history_request_id"},
 	}
 	if err := protocol.SendMsg(conn, pubKeyMsg); err != nil {
 		log.Printf("发送公钥失败: %v", err)

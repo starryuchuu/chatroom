@@ -11,7 +11,7 @@
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v1.3.4 支持在原登录页创建账号，修复回车误提交、加密消息失败提示无法恢复，以及退群再入后使用过期查询继续发送的问题。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v1.4.0 新增历史分页请求关联与超时恢复，并通过复用消息行和滚动窗口改善长历史阅读。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -77,7 +77,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v1.3.4 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.3.4) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v1.4.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.4.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -140,7 +140,7 @@ python client.py
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.3.4 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新不改变数据库结构或密钥格式，无需重新迁移账号；本次功能修复位于客户端，现有 v1.3.3 服务端可继续使用。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.4.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新不改变数据库结构或密钥格式，无需重新迁移账号；建议两端一起升级以支持分页请求关联和超时后直接重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -185,7 +185,11 @@ Python / Go 服务端均限制每群最多 **256 位实际成员（含群主）*
 chatroom/
 ├── client.py                 # 客户端启动入口
 ├── server.py                 # Python 服务端启动入口
+├── server_handlers/          # 好友、群管理、消息处理及显式依赖
 ├── chatroom_client/          # 客户端组件
+│   ├── request_context.py    # 异步请求归属与失效判断
+│   ├── login_view.py         # 登录及注册卡片布局
+│   ├── message_list.py       # 有限窗口消息显示和控件复用
 │   └── theme.py              # 深浅色主题、即时换色与跨平台字体和控件样式
 ├── go-server/                # Go 服务端及其构建文件
 ├── docs/                     # 文档导航、使用指南、设计说明与截图
@@ -336,7 +340,7 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 
 ## 🚀 CI / CD
 
-日常提交、Pull Request 和 Release 共用 `.github/workflows/tests.yml`：Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。测试通过后，`.github/workflows/build-executables.yml` 构建跨平台可执行文件：
+日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。测试通过后构建跨平台可执行文件；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
 
 - **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
 - **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
@@ -421,9 +425,9 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前开发版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v1.3.4 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v1.4.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.3.4-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.4/chatroom-v1.3.4-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.3.4-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.3.4/chatroom-v1.3.4-source.zip)；Python 服务端也需要 `opaque_server.py` 和共享运行时，不要只下载单个入口文件。
+源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.4.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.4.0/chatroom-v1.4.0-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.4.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.4.0/chatroom-v1.4.0-source.zip)；Python 服务端也需要 `server_handlers/`、`opaque_server.py` 和共享运行时，请保留完整源码包中的模块。
 
 客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
 

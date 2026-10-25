@@ -1,136 +1,59 @@
-name: Release Chatroom
-'on':
+name: Build and Release Chatroom
+on:
   push:
-    branches:
-    - master
-    paths:
-    - VERSION
-    - go-server/VERSION
-  workflow_dispatch: null
+    branches: [main, master, test]
+  pull_request:
+    branches: [main, master, test]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the current version (master only)
+        type: boolean
+        default: false
 permissions:
   contents: read
-
+concurrency:
+  group: chatroom-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
-concurrency:
-  group: release-chatroom-${{ github.ref }}
-  cancel-in-progress: false
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Decide publication
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PUBLISH_REQUESTED: ${{ inputs.publish || false }}
+        run: python scripts/release_plan.py
   tests:
+    needs: plan
     uses: ./.github/workflows/tests.yml
     secrets: inherit
-  build-python:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - os: windows-latest
-          platform: windows
-          suffix: .exe
-        - os: ubuntu-latest
-          platform: linux
-          suffix: ''
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-python@v6
-      with:
-        python-version: '3.11'
-        cache: pip
-    - name: Install dependencies
-      run: python -m pip install -r requirements-build.txt
-    - name: Install Linux GUI runtime dependencies
-      if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y python3-tk
-    - name: Build server
-      run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server-${{ matrix.platform }} server.py
-    - name: Build client
-      run: pyinstaller --onefile --windowed --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name client-${{ matrix.platform }} client.py
-    - name: Check built release privacy
-      run: python scripts/check_release_privacy.py --require-alias-head --assets dist
-    - name: Check frozen encryption runtime on Linux
-      if: runner.os == 'Linux'
-      run: ./dist/client-linux --check-encryption-runtime
-    - name: Check frozen encryption runtime on Windows
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $process = Start-Process -FilePath "$PWD/dist/client-windows.exe" -ArgumentList '--check-encryption-runtime' -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw "Frozen encryption self-check failed: $($process.ExitCode)" }
-    - uses: actions/upload-artifact@v7
-      with:
-        name: release-python-${{ matrix.platform }}
-        path: |
-          dist/server-${{ matrix.platform }}${{ matrix.suffix }}
-          dist/client-${{ matrix.platform }}${{ matrix.suffix }}
-        if-no-files-found: error
-    needs: tests
-  build-go:
-    needs: tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - goos: windows
-          goarch: amd64
-          suffix: .exe
-        - goos: windows
-          goarch: arm64
-          suffix: .exe
-        - goos: linux
-          goarch: amd64
-          suffix: ''
-        - goos: linux
-          goarch: arm64
-          suffix: ''
-        - goos: darwin
-          goarch: amd64
-          suffix: ''
-        - goos: darwin
-          goarch: arm64
-          suffix: ''
-    env:
-      GOTOOLCHAIN: local
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-go@v7
-      with:
-        go-version: 1.27.3
-        cache-dependency-path: go-server/go.sum
-    - name: Build platform binary
-      working-directory: go-server
-      env:
-        GOOS: ${{ matrix.goos }}
-        GOARCH: ${{ matrix.goarch }}
-        CGO_ENABLED: '0'
-      shell: bash
-      run: |
-        version=$(tr -d '\r\n' < VERSION)
-        mkdir -p ../release-assets
-        go build -trimpath -ldflags="-s -w -X main.version=$version" \
-          -o "../release-assets/go-server-${GOOS}-${GOARCH}${{ matrix.suffix }}" ./cmd/server
-    - uses: actions/setup-python@v6
-      with:
-        python-version: '3.11'
-    - name: Check built release privacy
-      run: python scripts/check_release_privacy.py --require-alias-head --assets release-assets
-    - uses: actions/upload-artifact@v7
-      with:
-        name: release-go-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: release-assets/*
-        if-no-files-found: error
+  build:
+    needs: [plan, tests]
+    uses: ./.github/workflows/build-artifacts.yml
+    with:
+      release: ${{ needs.plan.outputs.release == 'true' }}
+    secrets: inherit
   publish:
     needs:
-    - build-python
-    - build-go
-    if: github.ref == 'refs/heads/master'
+    - plan
+    - tests
+    - build
+    if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write

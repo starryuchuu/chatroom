@@ -9,9 +9,12 @@
 | `chatroom_client/connection.py` / `protocol.py` | 无 Tk 依赖的认证、连接、线程与线协议 |
 | `chatroom_client/app.py` / `events.py` | 应用操作、主线程事件泵和服务器事件处理 |
 | `chatroom_client/history.py` | 会话分页游标、完成边界和重试 |
+| `chatroom_client/request_context.py` | 连接、账号、群成员代次和请求令牌的共享校验 |
+| `chatroom_client/login_view.py` / `message_list.py` | 登录卡片布局、有限窗口消息列表和控件复用 |
 | `chatroom_client/view.py` / `group_view.py` | Tk 控件、输入、消息渲染及群窗口 |
 | `chatroom_client/theme.py` | 统一桌面配色、跨平台字体及 Tk / ttk 控件样式 |
 | `server.py` / `opaque_server.py` | Python 会话与业务操作、OPAQUE 认证和持久账号事务 |
+| `server_handlers/` | 显式注入依赖的好友、群管理和消息处理器；入口负责认证、连接与资源清理 |
 | `opaque-core/` / `opaque_runtime.py` | 固定 opaque-ke 的共享 WASM、Python 沙箱包装 |
 | `chatroom_client/key_vault.py` | 单密码 v2 身份包装、本机信任、v1 迁移与完整离线备份 |
 | `scripts/build_opaque.py` | 从锁定 Rust 源码重建并同步 Python / Go 的 WASM |
@@ -99,8 +102,8 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/server
 1. 同步更新根目录和 `go-server/` 的 `VERSION`，版本格式为 `vX.Y.Z`。
 2. 更新两处 `RELEASE_NOTES.md`，说明修复、兼容性和升级方式。
 3. 新增 Python 模块或 WASM 资源时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件、源码压缩包与校验文件清单。普通源码包必须包含预编译核心；Python 客户端和服务端打包需收集 wasmtime 动态运行库及 `chatroom_client/opaque_core.wasm`，Go 需内嵌匹配的 WASM。PyInstaller 会自动收集静态导入的模块；加密库动态加载的曲线模块通过 `--collect-submodules Crypto.PublicKey` 收集。构建和发布流水线必须执行成品的 `--check-encryption-runtime` 自检，验证曲线签名、密钥协商、本机密钥库及实际 OPAQUE 注册/认证核心，不能只检查模块可以导入。
-4. 将验证通过的提交推送到 `master`。版本文件的变更自动触发 `Release Chatroom`。
+4. 将验证通过的提交推送到 `master`。统一的 `Build and Release Chatroom` 流程执行一次测试、一次跨平台构建；版本文件变更才进入发布任务。手动运行时可在 `master` 选择 `publish`，其他分支或 Pull Request 只能测试和构建。
 5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含带预编译 WASM 的源码、可执行文件和 `SHA256SUMS`。普通客户端源码附件提供 `requirements.txt`，构建锁仅供开发与打包使用。
 6. 示例、日志和截图仅用虚构演示数据与公开别名。发布隐私检查应覆盖本次全部新增提交的作者和提交者元数据、源码、PNG 元数据及嵌套 ZIP / PYZ 产物，而不只检查最后一个提交。发现个人身份、运行配置、数据库或私钥时停止发布，检查输出本身也不得回显私人姓名、邮箱或密钥。
 
-发布工作流在测试成功后构建，并由最终发布任务创建指向该提交的版本标签和 GitHub Release。可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 在本机检查；`--base` 可显式指定本次发布之前的祖先提交或标签。可选的 `PRIVACY_FORBIDDEN_VALUES_JSON` 接收需禁止出现的字符串数组，工作流从同名仓库 Secret 读取；未配置时仍执行身份、凭据、个人路径和元数据规则，检查输出不回显匹配内容。
+发布只使用当前工作流、同一提交生成的产物，发布任务具有独立写权限；构建和 PR 任务只有读取权限。最终发布任务创建指向该提交的版本标签和 GitHub Release。可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 在本机检查；`--base` 可显式指定本次发布之前的祖先提交或标签。可选的 `PRIVACY_FORBIDDEN_VALUES_JSON` 接收需禁止出现的字符串数组，工作流从同名仓库 Secret 读取；未配置时仍执行身份、凭据、个人路径和元数据规则，检查输出不回显匹配内容。

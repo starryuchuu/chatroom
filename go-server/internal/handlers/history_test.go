@@ -47,14 +47,77 @@ func TestHistoryErrorsIdentifyConversation(t *testing.T) {
 				}
 				conn := &recordConn{}
 				handleHistoryRequest(conn, "alice", make([]byte, 16), map[string]interface{}{
-					"chat_type": kind, "target": target, "before_id": before,
+					"chat_type": kind, "target": target, "before_id": before, "request_id": "error-page",
 				})
 				response := conn.result(t, "history_error")
+				if response["request_id"] != "error-page" {
+					t.Fatal("history error lost request ID")
+				}
 				if response["history_kind"] != kind || response["history_target"] != target {
 					t.Fatal("history error lost conversation scope")
 				}
 			})
 		}
+	}
+}
+
+func TestHistoryPageEchoesRequestIDOnControlsAndMessages(t *testing.T) {
+	setupHandlers(t)
+	if err := database.SaveFriendRelationship("alice", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveMessage("private", "bob", "alice", "", "saved", "now"); err != nil {
+		t.Fatal(err)
+	}
+	conn := &recordConn{}
+	handleHistoryRequest(conn, "alice", make([]byte, 16), map[string]interface{}{
+		"chat_type": "private", "target": "bob", "before_id": float64(2), "request_id": "page-界",
+	})
+	for _, kind := range []string{"history_begin", "history_end", "private_chat"} {
+		field := "request_id"
+		if kind == "private_chat" {
+			field = "history_request_id"
+		}
+		if conn.result(t, kind)[field] != "page-界" {
+			t.Fatal("page lost request correlation: " + kind)
+		}
+	}
+}
+
+func TestHistoryRequestIDValidationAndUnicodeLength(t *testing.T) {
+	cases := []struct {
+		name  string
+		id    interface{}
+		valid bool
+	}{
+		{"null", nil, false}, {"number", float64(1), false}, {"boolean", true, false},
+		{"empty", "", false}, {"array", []interface{}{}, false},
+		{"too-long", strings.Repeat("a", 129), false},
+		{"invalid-utf8", string([]byte{0xff}), false},
+		{"ascii-limit", strings.Repeat("a", 128), true},
+		{"unicode-limit", strings.Repeat("界", 128), true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			setupHandlers(t)
+			if err := database.SaveFriendRelationship("alice", "bob"); err != nil {
+				t.Fatal(err)
+			}
+			conn := &recordConn{}
+			handleHistoryRequest(conn, "alice", make([]byte, 16), map[string]interface{}{
+				"chat_type": "private", "target": "bob", "before_id": float64(2), "request_id": item.id,
+			})
+			if item.valid {
+				if conn.result(t, "history_end")["request_id"] != item.id {
+					t.Fatal("valid request ID did not round-trip")
+				}
+			} else {
+				reply := conn.result(t, "history_error")
+				if !strings.Contains(reply["error"].(string), "参数") || reply["request_id"] != nil {
+					t.Fatal("invalid request ID was accepted or echoed")
+				}
+			}
+		})
 	}
 }
 

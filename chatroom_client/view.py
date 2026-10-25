@@ -5,15 +5,10 @@ from tkinter import font as tkfont, messagebox, simpledialog
 
 from .group_view import GroupWindows
 from .models import ChatKey
-from .settings_view import ServerProfileSelector
-from .encryption_view import EncryptionWindow, confirm_roster, import_keys
+from .login_view import LoginCard
+from .encryption_view import EncryptionWindow, confirm_roster
 from .theme import AutoScrollbar, DesktopTheme
-
-
-def _message_identity(message):
-    if type(message.message_id) is int:
-        return ('server', message.message_id)
-    return ('local', id(message))
+from .message_list import MessageList, message_identity as _message_identity
 
 
 class TkClientView:
@@ -21,6 +16,7 @@ class TkClientView:
         self.master = master
         self.controller = None
         self.chat_frames = {}
+        self.message_list = MessageList(self)
         self.current_chat_frame = None
         self.is_loading_messages = False
         self.request_windows = {}
@@ -83,6 +79,7 @@ class TkClientView:
         self.request_windows.clear()
         self.groups_ui.windows.clear()
         self.chat_frames.clear()
+        self.message_list.reset()
         self.current_chat_frame = None
         self._friend_keys.clear()
         self._group_keys.clear()
@@ -176,8 +173,6 @@ class TkClientView:
         frame = self.chat_frames.get(key)
         viewport = (self.capture_chat_scroll() if preserve_scroll and frame is not None
                     and frame is self.current_chat_frame else None)
-        previous_messages = {_message_identity(row._chat_message) for row in frame.winfo_children()
-                             if hasattr(row, '_chat_message')} if viewport is not None else set()
         self.cancel_scroll()
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
@@ -188,12 +183,10 @@ class TkClientView:
         frame.pack(fill=tk.BOTH, expand=True)
         self.current_chat_frame = frame
         self._restoring_scroll = True
-        for child in frame.winfo_children():
-            child.destroy()
         self.is_loading_messages = True
         try:
-            for message in self.state.conversation(key).messages:
-                self.append_message(key, message)
+            additions = self.message_list.reconcile(
+                key, frame, self.state.conversation(key).messages, viewport, scroll_top)
         finally:
             self.is_loading_messages = False
         if key.kind == 'group':
@@ -206,8 +199,6 @@ class TkClientView:
                 self.update_chat_region()
                 self.chat_canvas.yview_moveto(0.0)
             elif viewport is not None and not viewport['at_bottom']:
-                additions = [message for message in self.state.conversation(key).messages
-                             if _message_identity(message) not in previous_messages]
                 self._new_messages[key] = self._new_messages.get(key, 0) + sum(
                     not message.is_self for message in additions)
                 self.restore_chat_scroll(viewport)
@@ -219,6 +210,9 @@ class TkClientView:
 
     def append_message(self, key, message):
         active = key == self.state.current_chat and not self.is_loading_messages
+        if active and len(self.state.conversation(key).messages) > self.message_list.MAX_ROWS:
+            self.render_conversation(key, preserve_scroll=not message.is_self)
+            return None
         viewport = self.capture_chat_scroll() if active else None
         label = '你' if message.is_self else message.author
         if self.controller.encryption is not None:
@@ -228,6 +222,7 @@ class TkClientView:
                                              message.is_self, key=key, author=label)
         if row is not None:
             row._chat_message = message
+            self.message_list.observe(key, message)
         if active:
             if message.is_self or viewport['at_bottom']:
                 self.request_scroll()
@@ -235,6 +230,7 @@ class TkClientView:
                 self._new_messages[key] = self._new_messages.get(key, 0) + 1
                 self.request_scroll(viewport)
                 self.update_new_messages_button()
+        return row
 
     def clear_selection(self):
         if self.current_chat_frame is not None:
@@ -246,6 +242,7 @@ class TkClientView:
 
     def remove_conversation(self, key):
         self._new_messages.pop(key, None)
+        self.message_list.forget(key)
         frame = self.chat_frames.pop(key, None)
         if frame is not None:
             if self.current_chat_frame is frame:
@@ -282,6 +279,7 @@ class TkClientView:
             self.send_button.configure(state=tk.NORMAL if can_send else tk.DISABLED)
             conversation = self.state.conversation(key) if key else None
             can_load = (title and self.controller.connection.running and not conversation.exhausted
+                        and not self.controller.history.retry_requires_reconnect
                         and self.state.pending_history is None and not self.controller.sync.active
                         and not self.controller.sync.awaiting_initial)
             self.load_history_button.configure(state=tk.NORMAL if can_load else tk.DISABLED)
@@ -477,94 +475,7 @@ class TkClientView:
         return self.theme_button
 
     def build_login(self):
-        """A focused login card keeps primary and recovery actions distinct."""
-        self.clear_window()
-        self._registering = self._auth_busy = False
-        self._login_only_sections = []
-        c = self.colors
-        self.master.configure(bg=c['bg'])
-        header = tk.Frame(self.master, bg=c['bg'])
-        header.pack(fill=tk.X, padx=28, pady=(18, 0))
-        self.brand(header).pack(side=tk.LEFT)
-        self.add_theme_button(header).pack(side=tk.RIGHT)
-        self.label(header, '桌面客户端', muted=True, font='small').pack(side=tk.RIGHT, padx=12)
-
-        stage = tk.Frame(self.master, bg=c['bg'])
-        stage.pack(fill=tk.BOTH, expand=True, padx=24, pady=(12, 18))
-        self.login_canvas = tk.Canvas(stage, bg=c['bg'], highlightthickness=0,
-                                      yscrollincrement=20, takefocus=False)
-        self.login_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.login_scrollbar = AutoScrollbar(stage, orient=tk.VERTICAL, command=self.login_canvas.yview)
-        self.login_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.login_canvas.configure(yscrollcommand=self.login_scrollbar.set)
-        self.login_card = tk.Frame(self.login_canvas, bg=c['surface'], highlightthickness=1,
-                                   highlightbackground=c['line'], highlightcolor=c['line'], bd=0)
-        self._login_window = self.login_canvas.create_window((0, 0), window=self.login_card, anchor=tk.NW)
-        self._login_overflow = False
-        self.login_canvas.bind('<Configure>', self.layout_login_card)
-        self.login_card.bind('<Configure>', self.layout_login_card)
-        form = tk.Frame(self.login_card, bg=c['surface'], padx=28, pady=18)
-        form.pack(fill=tk.BOTH, expand=True)
-        form.columnconfigure(0, weight=1)
-        self.auth_title = self.label(form, '欢迎回来', font='title')
-        self.auth_title.grid(row=0, column=0, sticky='w')
-        self.auth_subtitle = self.label(form, '登录账号，继续你的对话。', muted=True, font='small')
-        self.auth_subtitle.grid(
-            row=1, column=0, sticky='w', pady=(4, 12))
-        self.profile_selector = ServerProfileSelector(form, self.controller)
-        self.profile_selector.grid(row=2, column=0, sticky='ew', pady=(0, 10))
-
-        def field(row, title, **kwargs):
-            self.label(form, title, font='small', muted=True).grid(
-                row=row, column=0, sticky='w', pady=(0, 4))
-            widget = self.theme.entry(form, width=38, **kwargs)
-            widget.grid(row=row+1, column=0, sticky='ew', ipady=4, pady=(0, 8))
-            return widget
-
-        self.username_entry = field(3, '用户名')
-        self.password_entry = field(5, '密码', show='•')
-        self.encryption_entry = None
-        row = 7
-        if self.controller.encryption is not None:
-            note = tk.Frame(form, bg=c['surface'])
-            note.grid(row=row, column=0, sticky='ew', pady=(0, 6))
-            self._login_only_sections.append(note)
-            self.label(note, '登录即解锁加密身份', muted=True, font='small').pack(side=tk.LEFT)
-            self.import_keys_button = self.theme.button(
-                note, '恢复密钥…', lambda: import_keys(self), variant='quiet',
-                font=self.fonts['small'], padx=5, pady=2)
-            self.import_keys_button.pack(side=tk.RIGHT)
-            row += 1
-        self.port_entry = field(row, '连接端口 · 仅本次有效')
-        self.port_entry.insert(0, str(self.controller.connection.settings.port))
-        row += 2
-        self.login_button = self.theme.button(form, '登录', self.submit_auth, variant='primary', pady=9)
-        self.login_button.grid(row=row, column=0, sticky='ew', pady=(2, 6))
-        actions = tk.Frame(form, bg=c['surface'])
-        actions.grid(row=row+1, column=0, sticky='ew')
-        self.register_button = self.theme.button(actions, '创建账号', self.register, variant='quiet',
-                                                 font=self.fonts['small'], padx=4, pady=4)
-        self.register_button.pack(side=tk.LEFT)
-        self.theme.button(actions, '取消连接', self.controller.cancel_auth, variant='quiet',
-                          font=self.fonts['small'], padx=4, pady=4).pack(side=tk.RIGHT)
-        row += 2
-        if self.controller.encryption is not None:
-            recovery = tk.Frame(form, bg=c['surface'])
-            recovery.grid(row=row, column=0, sticky='ew', pady=(6, 0))
-            self._login_only_sections.append(recovery)
-            tk.Frame(recovery, bg=c['line'], height=1).pack(fill=tk.X, pady=(0, 7))
-            self.migrate_button = self.theme.button(recovery, '迁移旧账号…', self.migrate_account,
-                                                    variant='quiet', font=self.fonts['small'], padx=4, pady=3)
-            self.migrate_button.pack(side=tk.LEFT)
-            self.legacy_unlock_button = self.theme.button(recovery, '解锁旧密钥…', self.unlock_legacy_keys,
-                                                         variant='quiet', font=self.fonts['small'], padx=4, pady=3)
-            self.legacy_unlock_button.pack(side=tk.RIGHT)
-            row += 1
-        self.login_status = self.label(form, '', muted=True, font='small', wraplength=410)
-        self.login_status.grid(row=row, column=0, sticky='ew', pady=(4, 0))
-        self.bind_login_scrolling(self.login_canvas)
-        self.username_entry.focus_set()
-        self.master.bind('<Return>', self.submit_auth)
+        LoginCard(self).build()
 
     def layout_login_card(self, event=None):
         canvas, card = self.login_canvas, self.login_card
@@ -911,6 +822,8 @@ class TkClientView:
         self.chat_canvas.configure(scrollregion=self.chat_canvas.bbox("all"))
 
     def chat_is_at_bottom(self):
+        if not self.message_list.at_latest(self.state.current_chat):
+            return False
         region = self.chat_canvas.bbox('all')
         if region is None:
             return True
@@ -929,7 +842,7 @@ class TkClientView:
         frame = self.current_chat_frame
         if frame is not None:
             canvas_top = self.chat_canvas.winfo_rooty()
-            for row in frame.winfo_children():
+            for row in frame.pack_slaves():
                 if hasattr(row, '_chat_message') and row.winfo_rooty() + row.winfo_height() > canvas_top:
                     viewport['message'] = row._chat_message
                     viewport['offset'] = row.winfo_rooty() - canvas_top
@@ -953,7 +866,10 @@ class TkClientView:
 
     def on_chat_scroll(self, first, last):
         self.chat_scrollbar.set(first, last)
+        if not self._restoring_scroll and self._scroll_after_id is None:
+            self.message_list.on_scroll(self.state.current_chat, first, last)
         if (not self._restoring_scroll and self._scroll_after_id is None
+                and self.message_list.at_latest(self.state.current_chat)
                 and float(last) >= .999):
             self._new_messages.pop(self.state.current_chat, None)
             self.update_new_messages_button()
@@ -973,6 +889,9 @@ class TkClientView:
     def scroll_to_bottom(self):
         """Follow the latest message after sending or an explicit request."""
         self.cancel_scroll()
+        if not self.message_list.at_latest(self.state.current_chat):
+            self.render_conversation(self.state.current_chat, preserve_scroll=False)
+            return
         self.update_chat_region()
         self.chat_canvas.yview_moveto(1.0)
         self._new_messages.pop(self.state.current_chat, None)

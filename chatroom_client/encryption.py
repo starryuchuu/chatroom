@@ -16,6 +16,8 @@ from .e2ee_crypto import (
 )
 from .key_vault import KeyVault, VaultError, vault_path
 from .protocol import decrypt_message as decrypt_legacy
+from .request_context import SessionContext
+from .models import ChatKey
 
 
 _READY = '端到端加密已就绪；请在“加密与密钥”核对联系人指纹'
@@ -114,12 +116,9 @@ class _VaultPreparation:
 @dataclass(frozen=True)
 class _SendLookup:
     request_id: str
-    sock: object
-    username: str
-    key: object
+    context: SessionContext
     text: str = field(repr=False)
     send: bool = True
-    group_generation: int = 0
 
 
 class EncryptionController:
@@ -274,9 +273,8 @@ class EncryptionController:
         if self.sending:
             return False
         request_id = uuid.uuid4().hex
-        self._lookup = _SendLookup(request_id, self.application.connection.sock,
-                                   self.application.state.username, key, text, send,
-                                   self.application.state.group_generations.get(key.target, 0))
+        self._lookup = _SendLookup(request_id, SessionContext.capture(
+            self.application.state, self.application.connection, key), text, send)
         self.sending = True
         try:
             self.application.queue_send({'type': 'e2ee_keys_request', 'request_id': request_id,
@@ -306,19 +304,15 @@ class EncryptionController:
     def _same_context(self, lookup):
         app = self.application
         return (self.ready and app.connection.running
-                and app.connection.sock is lookup.sock
-                and app.state.username == lookup.username
-                and app.state.current_chat == lookup.key
-                and (lookup.key.kind != 'group' or (
-                    lookup.key.target in app.state.groups
-                    and app.state.group_generations.get(lookup.key.target, 0) == lookup.group_generation))
+                and lookup.context.matches(app.state, app.connection)
+                and app.state.current_chat == lookup.context.key
                 and app.view.input_text() == lookup.text
                 and not app.state.pending_messages)
 
     def _keys_result(self, message):
         lookup = self._lookup
         if (lookup is None or message.get('request_id') != lookup.request_id
-                or self.application.connection.sock is not lookup.sock):
+                or self.application.connection.sock is not lookup.context.sock):
             return
         # A duplicate response cannot open another approval dialog or send again.
         self._lookup = None
@@ -327,29 +321,29 @@ class EncryptionController:
                 raise ValueError('输入、会话或连接已改变，请确认后重新发送')
             if message.get('success') is not True:
                 raise ValueError(message.get('error') or '未能获取接收人密钥')
-            if message.get('kind') != lookup.key.kind or message.get('target') != lookup.key.target:
+            if message.get('kind') != lookup.context.key.kind or message.get('target') != lookup.context.key.target:
                 raise ValueError('端到端密钥响应与当前会话不匹配')
             members, raw = message.get('members'), message.get('identities')
             if (not isinstance(members, list) or not 1 <= len(members) <= 256
                     or any(not isinstance(name, str) or not name for name in members)
-                    or len(set(members)) != len(members) or lookup.username not in members
+                    or len(set(members)) != len(members) or lookup.context.username not in members
                     or not isinstance(raw, dict)):
                 raise ValueError('端到端接收人列表格式错误')
-            if (lookup.key.kind == 'private'
-                    and set(members) != {lookup.username, lookup.key.target}):
+            if (lookup.context.key.kind == 'private'
+                    and set(members) != {lookup.context.username, lookup.context.key.target}):
                 raise ValueError('私聊接收人列表不匹配')
             missing = message.get('missing', [])
             if missing or set(raw) != set(members):
                 raise ValueError('部分接收人尚未设置端到端加密密钥，不能发送；请先让所有接收人登录新版客户端')
             bundles = {name: validate_public_bundle(bundle) for name, bundle in raw.items()}
-            if bundle_fingerprint(bundles[lookup.username]) != self.fingerprint:
+            if bundle_fingerprint(bundles[lookup.context.username]) != self.fingerprint:
                 raise ValueError('目录返回的本机端到端身份不一致')
             changed = []
             # One current snapshot is sufficient for the preliminary UI check.
             # The send guard performs the authoritative locked check below.
             pins = {record['username']: record['bundle'] for record in self.vault.peer_records}
             for name, bundle in bundles.items():
-                if name == lookup.username:
+                if name == lookup.context.username:
                     continue
                 pinned = pins.get(name)
                 if pinned is not None and bundle_fingerprint(pinned) != bundle_fingerprint(bundle):
@@ -359,11 +353,11 @@ class EncryptionController:
                 raise ValueError('联系人端到端密钥已变化，已停止发送。请在“加密与密钥”通过其他可信渠道核验：'
                                  + '、'.join(sorted(changed)))
             previous, approved = None, False
-            if lookup.key.kind == 'group':
-                previous = self.vault.approved_roster(lookup.key.target)
+            if lookup.context.key.kind == 'group':
+                previous = self.vault.approved_roster(lookup.context.key.target)
                 current = {name: bundle_fingerprint(bundle) for name, bundle in bundles.items()}
                 if previous != current or not lookup.send:
-                    if self.application.view.confirm_encryption_roster(lookup.key.target, bundles, previous) is not True:
+                    if self.application.view.confirm_encryption_roster(lookup.context.key.target, bundles, previous) is not True:
                         return
                     if not self._same_context(lookup):
                         raise ValueError('确认期间输入、会话或连接已改变，请重新发送')
@@ -374,17 +368,17 @@ class EncryptionController:
             # second client cannot revoke a contact/group recipient between a
             # fresh approval check and the release of their wrapped key.
             with self.vault.send_guard(bundles,
-                                       gid=lookup.key.target if lookup.key.kind == 'group' else None,
+                                       gid=lookup.context.key.target if lookup.context.key.kind == 'group' else None,
                                        expected_roster=previous, approve=approved) as identity:
                 if lookup.send:
-                    envelope = encrypt_message(identity, lookup.username, lookup.key.kind,
-                                               lookup.key.target, lookup.text, bundles)
-                    data = {'type': lookup.key.kind + '_chat', 'request_id': uuid.uuid4().hex,
-                            'gid' if lookup.key.kind == 'group' else 'to': lookup.key.target,
+                    envelope = encrypt_message(identity, lookup.context.username, lookup.context.key.kind,
+                                               lookup.context.key.target, lookup.text, bundles)
+                    data = {'type': lookup.context.key.kind + '_chat', 'request_id': uuid.uuid4().hex,
+                            'gid' if lookup.context.key.kind == 'group' else 'to': lookup.context.key.target,
                             'e2ee': envelope}
                     self.application.send_chat_payload(data, lookup.text)
-            if lookup.key.kind == 'group' and approved:
-                self._denied_groups.discard(lookup.key.target)
+            if lookup.context.key.kind == 'group' and approved:
+                self._denied_groups.discard(lookup.context.key.target)
             if not lookup.send:
                 self._notify('当前群接收人已确认；重新登录可重新读取此前未能验证的消息')
         except (ValueError, TypeError, KeyError, OSError) as error:
@@ -409,7 +403,7 @@ class EncryptionController:
         try:
             if self.vault is None or not self.vault.unlocked:
                 raise E2EEError('本机端到端密钥未解锁')
-            vault, sock = self.vault, self.application.connection.sock
+            vault = self.vault
             envelope = validate_envelope(message['e2ee'])
             sender = message.get('from')
             kind = 'group' if message.get('type') == 'group_chat' else 'private'
@@ -436,7 +430,8 @@ class EncryptionController:
             if kind == 'group':
                 if target not in self.application.state.groups:
                     raise E2EEError('未知群聊，已停止显示消息；请先核验群聊身份')
-                group_generation = self.application.state.group_generations.get(target, 0)
+                context = SessionContext.capture(self.application.state, self.application.connection,
+                                                 ChatKey('group', target))
                 roster = envelope['recipients']
                 if roster.get(username) != vault.identity.fingerprint:
                     raise E2EEError('此端到端消息未加密给当前本地身份')
@@ -446,10 +441,7 @@ class EncryptionController:
                     previous = vault.approved_roster(target)
                     accepted = self.application.view.confirm_encryption_roster(target, roster, previous)
                     if (self.vault is not vault or not vault.unlocked
-                            or self.application.connection.sock is not sock
-                            or self.application.state.username != username
-                            or target not in self.application.state.groups
-                            or self.application.state.group_generations.get(target, 0) != group_generation
+                            or not context.matches(self.application.state, self.application.connection)
                             or getattr(self.application, 'closing', False)):
                         raise E2EEError('核验期间连接、账号或群成员状态已改变，请重新核验')
                     if accepted is not True:

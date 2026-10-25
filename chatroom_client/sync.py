@@ -1,5 +1,5 @@
 """Bounded message catch-up with an account-scoped, durable completion cursor."""
-import uuid
+from .request_context import RequestToken
 
 
 MAX_CURSOR = 9007199254740991
@@ -27,7 +27,7 @@ class SyncController:
         self.checkpoint = None
         self.active = self.failed = self.awaiting_initial = False
         self._initial_boundary = None
-        self._boundary = self._after = self._request_id = None
+        self._boundary = self._after = self._request = None
         self._invalid_checkpoint = False
         self._begun = False
 
@@ -84,30 +84,30 @@ class SyncController:
 
     def _send_page(self, after):
         self._after, self._boundary = after, self._initial_boundary
-        request_id = uuid.uuid4().hex
-        self._request_id = request_id
+        token = RequestToken()
+        self._request = token
         self._begun = False
         self.active, self.failed = True, False
         self.state.history_syncing = True
         request = {'type': 'sync_request', 'after_id': after,
-                   'boundary': self._boundary, 'request_id': request_id}
+                   'boundary': self._boundary, 'request_id': token.request_id}
         try:
             self.send(request)
         except Exception as error:
             self._fail(f'补取消息失败：{error}；已保留同步位置，可重试。')
             return False
-        self.schedule(20000, lambda: self._timeout(request_id))
+        self.schedule(20000, lambda: self._timeout(token))
         self.refresh()
         return True
 
-    def _timeout(self, request_id):
-        if self.active and self._request_id == request_id:
+    def _timeout(self, token):
+        if self.active and self._request is token:
             self._fail('补取消息超时；已保留同步位置，请重试或重新连接。')
 
     def handle(self, message):
         if not isinstance(message, dict) or message.get('type') not in ('sync_begin', 'sync_end', 'sync_error'):
             return False
-        if not self.active or message.get('request_id') != self._request_id:
+        if not self.active or self._request is None or not self._request.matches(message.get('request_id')):
             # Old page responses and canceled timeout callbacks cannot complete
             # a newer page or a replacement connection's checkpoint.
             return True
@@ -148,7 +148,7 @@ class SyncController:
             self._fail(f'消息已收到，但同步位置保存失败：{error}；重试时会自动去重。')
             return False
         self.checkpoint = boundary
-        self._request_id = self._after = self._boundary = None
+        self._request = self._after = self._boundary = None
         self._begun = False
         self.active = self.failed = False
         self.state.history_syncing = False
@@ -156,7 +156,7 @@ class SyncController:
         return True
 
     def _fail(self, message):
-        self._request_id = None
+        self._request = None
         self._begun = False
         self.active, self.failed, self.awaiting_initial = False, True, False
         self.state.history_syncing = False
@@ -180,7 +180,7 @@ class SyncController:
         return self._send_page(self.checkpoint)
 
     def abort(self):
-        self._request_id = self._after = self._boundary = None
+        self._request = self._after = self._boundary = None
         self._begun = False
         self.active = self.failed = self.awaiting_initial = False
         self.state.history_syncing = False
