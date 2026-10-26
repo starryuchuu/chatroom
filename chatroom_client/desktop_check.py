@@ -1,5 +1,6 @@
 """Synthetic desktop checks for source and frozen clients; no account or network."""
 import ctypes
+import gc
 import json
 import os
 from pathlib import Path
@@ -194,6 +195,10 @@ def check_desktop_ui(output_directory=None, *, scales=(1, 1.25, 1.5, 1.75, 2)):
         finally:
             root.tk.call('tk', 'scaling', original_scaling)
             app.close()
+            # Tcl interpreters and Variables must be reclaimed on their owner
+            # thread, before a later network worker can trigger cyclic GC.
+            root = app = view = row = panel = widget = None
+            gc.collect()
     if directory is not None:
         (directory / 'desktop-ui.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     return report
