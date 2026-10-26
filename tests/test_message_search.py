@@ -1,6 +1,6 @@
 """Literal, account-scoped searches navigate real Tk message windows."""
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import test_client_scrolling as scrolling
 from chatroom_client.models import ChatKey, Message
@@ -99,6 +99,22 @@ class SearchViewTests(unittest.TestCase):
         self.assertEqual(self.view.search._highlighted._chat_message.message_id, 200)
         self.root.update()
         self.assertEqual(self.view.search._highlighted._chat_message.message_id, 200)
+
+    def test_late_debounce_cannot_reset_navigation_after_immediate_search(self):
+        self.history()
+        search = self.view.search
+        search.open()
+        with patch.object(self.view, 'schedule') as scheduled:
+            search.query.set('needle')
+            delayed = scheduled.call_args.args[1]
+        search.refresh(jump=True)
+        search.move(1)
+        self.root.update()
+        self.assertEqual(search._highlighted._chat_message.message_id, 421)
+        delayed()
+        self.root.update()
+        self.assertEqual(search._highlighted._chat_message.message_id, 421)
+        self.assertEqual(search.count.cget('text'), '2/2')
 
     def test_cache_reload_discards_results_and_references_to_old_message_bodies(self):
         key = self.history()

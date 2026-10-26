@@ -144,6 +144,7 @@ class MessageSearch:
     def refresh(self, *, jump=False):
         if not self.visible or self.key != self.view.state.current_chat:
             return
+        self._token = object()
         self._clear_highlight()
         conversation = self.view.state.conversation(self.key)
         self._searched_query = self.query.get()
