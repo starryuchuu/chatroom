@@ -58,6 +58,7 @@ class CacheRecoveryViewTests(unittest.TestCase):
         self.assertEqual(conversation.message_ids, list(range(401, 501)))
         self.assertFalse(conversation.newer_evicted)
         self.assertEqual(self.view.current_chat_frame.pack_slaves()[-1]._chat_message.message_id, 500)
+        self.assertGreater(self.view.chat_canvas.yview()[1], .99)
 
     def test_full_cache_preserves_reading_anchor_while_live_body_is_deferred(self):
         key = self.show_history()
@@ -111,6 +112,10 @@ class CacheRecoveryViewTests(unittest.TestCase):
         request = self.app.connection.send.call_args.args[0]
         self.assertEqual(request['type'], 'history_request')
         self.assertEqual(request['before_id'], 9223372036854775807)
+
+        self.begin(request)
+        self.page(request, list(range(102, 182)))
+        self.assertGreater(self.view.chat_canvas.yview()[1], .99)
 
     def test_timeout_recovery_button_queries_then_retries_with_same_receipt_key(self):
         self.show_history()

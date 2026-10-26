@@ -178,6 +178,26 @@ class ClientDraftTests(unittest.TestCase):
         self.app.events.remove_group('g')
         self.assertEqual(self.draft(), '')
 
+    def test_removing_selected_group_restores_unselected_draft_before_next_save(self):
+        self.login_as('alice')
+        key = ChatKey('group', 'g')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic group'}
+        self.app.view.replace_input('Synthetic unselected draft')
+        self.app.select_chat(key)
+        self.app.view.replace_input('Synthetic obsolete group draft')
+        self.app.events.remove_group('g')
+        self.assertIsNone(self.app.state.current_chat)
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.select_chat(ChatKey('private', 'peer'))
+        self.app.clear_chat_selection()
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.disconnect()
+        self.login_as('alice')
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic rejoined group'}
+        self.app.select_chat(key)
+        self.assertEqual(self.draft(), '')
+
 
 if __name__ == '__main__':
     unittest.main()

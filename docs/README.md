@@ -19,7 +19,7 @@
 | --- | --- |
 | [开发与发布](../CONTRIBUTING.md) | 本地验证、跨平台检查和发布流程 / Tests, checks and releases |
 | [客户端结构](CLIENT_ARCHITECTURE.md) | 模块职责、依赖、线程和事件流 / Client architecture and event flow |
-| [发送恢复、缓存与搜索](SEND_RECOVERY_AND_CACHE.md) | v1.4.0 之后的开发改动、使用方式和边界 / Unreleased send recovery, bounded caches and local search |
+| [发送恢复、缓存与搜索](SEND_RECOVERY_AND_CACHE.md) | v1.5.0 使用方式和边界 / Send recovery, bounded caches and local search |
 | [发送恢复与缓存验证](reviews/SEND_RECOVERY_VALIDATION.md) | 本地回归、成品验证、合成测量与验证限制 / Local validation and measurement limits |
 | [聊天区 UI 验证](reviews/CHAT_UI_VALIDATION.md) | 菜单、消息排版、搜索返回位置和界面回归 / Chat presentation and interaction checks |
 | [草稿、待确认列表与时间验证](reviews/DRAFTS_SENDS_TIME_VALIDATION.md) | 会话隔离、逐条恢复、UTC 与旧历史兼容 / Drafts, send management and timestamps |

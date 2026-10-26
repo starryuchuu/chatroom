@@ -49,7 +49,7 @@ class ChatApplication:
         self.history = HistoryController(
             self.state, self.queue_send,
             lambda title, text: self.view.notify(title, text),
-            lambda key, top: self.view.render_conversation(key, top),
+            lambda key, top, **options: self.view.render_conversation(key, top, **options),
             lambda: self.view.refresh_controls(), connection=self.connection,
             schedule=lambda delay, callback: self.view.schedule(delay, callback),
             sync_active=lambda: self.sync.active)

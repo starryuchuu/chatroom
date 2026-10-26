@@ -1,4 +1,5 @@
 """Owner-thread send recovery. Outgoing bodies never leave volatile memory."""
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -156,7 +157,15 @@ class SendController:
             payload = dict(record.payload, request_id=uuid.uuid4().hex)
             if 'content' in payload:
                 payload['content'] = encrypt_message(record.text, self.app.connection.session_key)
-            if self.app.try_send(payload):
+            try:
+                encryption = self.app.encryption
+                guard = encryption.retry_guard(payload) if encryption is not None else nullcontext()
+                with guard:
+                    sent = self.app.try_send(payload)
+            except (ValueError, TypeError, KeyError, OSError) as error:
+                self._notify(str(error))
+                return
+            if sent:
                 record.payload = payload
                 record.context = SessionContext.capture(self.app.state, self.app.connection, record.context.key)
                 self._wait(record)

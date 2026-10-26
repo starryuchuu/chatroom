@@ -213,6 +213,7 @@ class ServerEvents:
             activity.forget(ChatKey('group', gid))
         self.view.remove_conversation(ChatKey('group', gid))
         if selected:
+            self.view.replace_input(self.controller.take_draft())
             self.view.clear_selection()
         if refresh:
             self.view.refresh_groups()

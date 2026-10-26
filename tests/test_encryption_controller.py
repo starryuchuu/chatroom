@@ -35,6 +35,9 @@ class FakeView:
     def input_text(self):
         return self.text
 
+    def replace_input(self, text):
+        self.text = text
+
     def encryption_passphrase(self):
         return self.passphrase
 
@@ -263,6 +266,7 @@ class EncryptionControllerTests(unittest.TestCase):
             setattr(self.view, name, Mock())
         self.app.activity = Mock()
         self.app.forget_group_draft = Mock()
+        self.app.take_draft = Mock(return_value='')
         self.app.request_group_info = Mock()
         return ServerEvents(self.app)
 
