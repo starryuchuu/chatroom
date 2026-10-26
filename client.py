@@ -89,6 +89,26 @@ def main(argv=None):
     arguments = sys.argv[1:] if argv is None else list(argv)
     if '--check-encryption-runtime' in arguments:
         return _check_encryption_runtime() if arguments == ['--check-encryption-runtime'] else 2
+    if '--check-desktop-ui' in arguments:
+        if len(arguments) not in (1, 2) or arguments[0] != '--check-desktop-ui':
+            return 2
+        from chatroom_client.desktop_check import check_desktop_ui
+        try:
+            check_desktop_ui(arguments[1] if len(arguments) == 2 else None)
+        except Exception as error:
+            if len(arguments) == 2:
+                from pathlib import Path
+                try:
+                    destination = Path(arguments[1])
+                    destination.mkdir(parents=True, exist_ok=True)
+                    (destination / 'desktop-ui-error.txt').write_text(
+                        f'{type(error).__name__}: {error}\n', encoding='utf-8')
+                except OSError:
+                    pass
+            if sys.stderr is not None:
+                sys.stderr.write(f'Desktop UI self-check failed: {type(error).__name__}: {error}\n')
+            return 1
+        return 0
     logging.info('Starting Chat Client')
     root = tk.Tk()
     ChatClient(root)

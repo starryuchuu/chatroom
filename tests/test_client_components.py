@@ -40,14 +40,14 @@ class ConversationTests(unittest.TestCase):
         state.current_chat = state.pending_history = key
         state.history_syncing = True
         state.pending_messages['request'] = 'unsent'
-        state.drafts[('server', 12345, 'alice')] = 'Alice draft'
+        state.drafts[('server', 12345, 'alice', key)] = 'Alice draft'
         state.reset_session('carol')
         self.assertEqual(state.username, 'carol')
         self.assertFalse(state.friends or state.groups or state.conversations or state.pending_messages)
         self.assertIsNone(state.current_chat)
         self.assertIsNone(state.pending_history)
         self.assertFalse(state.history_syncing)
-        self.assertEqual(state.drafts, {('server', 12345, 'alice'): 'Alice draft'})
+        self.assertEqual(state.drafts, {('server', 12345, 'alice', key): 'Alice draft'})
 
     def test_unnumbered_messages_remain_distinct(self):
         conversation = Conversation()

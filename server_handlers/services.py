@@ -27,6 +27,8 @@ class HandlerServices:
     prepare_chat_content: Callable
     save_friend_relationship: Callable
     save_message: Callable
+    save_message_once: Callable
+    lookup_send_receipt: Callable
     send_history: Callable
     send_history_error: Callable
     send_msg: Callable

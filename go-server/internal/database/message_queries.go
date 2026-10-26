@@ -23,12 +23,13 @@ func SaveE2EEMessageWithID(chatType, fromUser, toUser, gid, envelope, timestamp 
 	return saveMessageWithID(chatType, fromUser, toUser, gid, envelope, timestamp, true)
 }
 
-func saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string, e2ee bool) (int64, error) {
-	tx, err := DB.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
+func saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp string, encrypted bool) (int64, error) {
+	saved, err := SaveChatWithReceipt(chatType, fromUser, toUser, gid, message, timestamp, encrypted, "")
+	return saved.ID, err
+}
+
+func insertMessage(tx *sql.Tx, chatType, fromUser, toUser, gid, message, timestamp string, encrypted bool) (int64, error) {
+	var err error
 	fromUser, err = storage.putName(tx, fromUser)
 	if err != nil {
 		return 0, err
@@ -39,7 +40,7 @@ func saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp strin
 			return 0, err
 		}
 	}
-	result, err := tx.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp,e2ee) VALUES(?,?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, "", "", e2ee)
+	result, err := tx.Exec(`INSERT INTO messages(chat_type,from_user,to_user,gid,message,timestamp,e2ee) VALUES(?,?,?,?,?,?,?)`, chatType, fromUser, toUser, gid, "", "", encrypted)
 	if err != nil {
 		return 0, err
 	}
@@ -55,13 +56,8 @@ func saveMessageWithID(chatType, fromUser, toUser, gid, message, timestamp strin
 	if err != nil {
 		return 0, err
 	}
-	if _, err = tx.Exec("UPDATE messages SET message=?,timestamp=? WHERE id=?", body, at, id); err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(); err != nil {
-		return 0, err
-	}
-	return id, nil
+	_, err = tx.Exec("UPDATE messages SET message=?,timestamp=? WHERE id=?", body, at, id)
+	return id, err
 }
 func HistoryBoundary() (int64, error) {
 	var boundary int64

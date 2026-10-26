@@ -30,6 +30,7 @@ jobs:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
     - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
@@ -38,7 +39,7 @@ jobs:
       run: python -m pip install -r requirements-build.txt
     - name: Install Linux GUI runtime dependencies
       if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y python3-tk
+      run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb xauth fonts-noto-cjk
     - name: Build server
       run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server-${{ matrix.platform }} server.py
     - name: Build client
@@ -54,6 +55,25 @@ jobs:
       run: |
         $process = Start-Process -FilePath "$PWD/dist/client-windows.exe" -ArgumentList '--check-encryption-runtime' -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw "Frozen encryption self-check failed: $($process.ExitCode)" }
+    - name: Check frozen desktop UI on Linux
+      if: runner.os == 'Linux'
+      run: xvfb-run -a ./dist/client-linux --check-desktop-ui ui-validation/linux
+    - name: Check frozen desktop UI on Windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $process = Start-Process -FilePath "$PWD/dist/client-windows.exe" -ArgumentList '--check-desktop-ui', 'ui-validation/windows' -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+          if (Test-Path ui-validation/windows/desktop-ui-error.txt) { Get-Content ui-validation/windows/desktop-ui-error.txt }
+          throw "Frozen desktop UI self-check failed: $($process.ExitCode)"
+        }
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: ui-validation-${{ matrix.platform }}
+        path: ui-validation
+        if-no-files-found: ignore
+        retention-days: 7
     - uses: actions/upload-artifact@v7
       with:
         name: release-python-${{ matrix.platform }}
@@ -92,6 +112,7 @@ jobs:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
     - uses: actions/setup-go@v7
       with:
         go-version: 1.27.3

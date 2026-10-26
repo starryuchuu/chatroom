@@ -1,5 +1,6 @@
 """Client-only plaintext across both real servers, history, groups and Tk."""
 from copy import deepcopy
+from datetime import datetime, timedelta
 import gc
 import json
 import os
@@ -72,6 +73,55 @@ class EncryptedScenarios:
                                expected_kind='group' if event['type'] == 'group_chat' else 'private',
                                expected_target=event.get('gid', event.get('to')),
                                pinned_sender_bundle=self.identities[event['from']].public_bundle())
+
+    def test_durable_receipts_deduplicate_private_and_group_across_backend_restart(self):
+        self.publish('alice')
+        self.publish('bob')
+        alice, bob = self.peers['alice'], self.peers['bob']
+        group = alice.request({'type': 'group_create', 'group_name': 'Synthetic receipt group',
+                               'members': ['bob']}, 'group_create_result')
+        self.assertTrue(group['success'], group)
+        originals = []
+        for number, (kind, target) in enumerate((('private', 'bob'), ('group', group['gid'])), 1):
+            recipients = self.directory('alice', kind, target)
+            envelope = encrypt_message(self.identities['alice'], 'alice', kind, target,
+                                       'Synthetic durable receipt 中文🙂', recipients)
+            request = {'type': kind + '_chat', 'gid' if kind == 'group' else 'to': target,
+                       'idempotency_key': str(number) * 32, 'e2ee': envelope}
+            first = self.request(alice, request, kind + '_chat_result')
+            self.assertTrue(first['success'], first)
+            duplicate = self.request(alice, request, kind + '_chat_result')
+            self.assertTrue(duplicate['success'], duplicate)
+            self.assertEqual(first['message_id'], duplicate['message_id'])
+            lookup = {'type': 'message_status_request', 'request_id': 'scope-' + str(number),
+                      'idempotency_key': request['idempotency_key'], 'chat_type': kind, 'target': target}
+            self.assertEqual(alice.request(lookup, 'message_status_result')['status'], 'saved')
+            # The recipient's queued status response follows any prior delivery.
+            self.assertEqual(bob.request(lookup, 'message_status_result')['status'], 'not_found')
+            delivered = [event for event in bob.events if event.get('type') == kind + '_chat'
+                         and event.get('message_id') == first['message_id'] and event.get('history') is False]
+            self.assertEqual(len(delivered), 1)
+            self.assertEqual(self.decrypt('bob', delivered[0]), 'Synthetic durable receipt 中文🙂')
+            stamp = delivered[0]['timestamp']
+            self.assertTrue(stamp.endswith('Z'))
+            self.assertEqual(datetime.fromisoformat(stamp).utcoffset(), timedelta(0))
+            self.assertEqual(alice.request(lookup, 'message_status_result')['timestamp'], stamp)
+            originals.append((request, lookup, first['message_id'], stamp))
+        self.assertEqual(len(self.service.database()), 2)
+        self.service.stop(kill=True)
+        if os.environ.get('CHATROOM_GO_SERVER_EXE'):
+            self.service.backend = 'go' if self.backend == 'python' else 'python'
+            if self.service.backend == 'go':
+                self.service.port = 12346
+        self.service.start()
+        alice = self.service.connect('alice')
+        for request, lookup, mid, stamp in originals:
+            status = alice.request(lookup, 'message_status_result')
+            self.assertEqual((status['status'], status['message_id'], status['timestamp']), ('saved', mid, stamp))
+            duplicate = self.request(alice, request, request['type'] + '_result')
+            self.assertTrue(duplicate['success'], duplicate)
+            self.assertEqual(duplicate['message_id'], mid)
+        self.assertEqual(len(self.service.database()), 2)
 
     def test_private_offline_pages_restart_and_server_key_cannot_read(self):
         for name in self.identities:

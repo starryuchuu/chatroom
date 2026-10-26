@@ -5,6 +5,7 @@ component. A directory
 response is never permission to add an unapproved group recipient or replace a
 previously pinned contact identity.
 """
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
@@ -293,6 +294,31 @@ class EncryptionController:
         if key is None or key.kind != 'group':
             raise ValueError('请先选择需要核验的群聊')
         return self.send_message(self.application.view.input_text(), key, send=False)
+
+    @contextmanager
+    def retry_guard(self, payload):
+        """Revalidate an existing envelope and hold current trust through enqueue."""
+        if not self.ready or self.vault is None or not self.vault.unlocked:
+            raise ValueError('端到端加密尚未就绪，待确认消息已保留')
+        envelope = validate_envelope(payload.get('e2ee'))
+        kind = envelope['kind']
+        target = payload.get('gid' if kind == 'group' else 'to')
+        username = self.application.state.username
+        if (payload.get('type') != kind + '_chat' or envelope['target'] != target
+                or envelope['sender'] != username):
+            raise ValueError('待确认消息与当前账号或会话不匹配')
+        bundles = {}
+        for name, fingerprint in envelope['recipients'].items():
+            bundle = self.vault.identity.public_bundle() if name == username else self.vault.peer(name)
+            if bundle is None or bundle_fingerprint(bundle) != fingerprint:
+                raise ValueError('待确认消息的收件人密钥已变化，请核验后重新发送')
+            bundles[name] = bundle
+        verify_signature(envelope, bundles[username])
+        # Use the envelope's exact roster as the expected approval. A changed
+        # group or contact must never receive the old wrapped key via a retry.
+        with self.vault.send_guard(bundles, gid=target if kind == 'group' else None,
+                                   expected_roster=envelope['recipients'] if kind == 'group' else None):
+            yield
 
     def _expire_lookup(self, request_id):
         if self._lookup is not None and self._lookup.request_id == request_id:

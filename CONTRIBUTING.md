@@ -9,8 +9,13 @@
 | `chatroom_client/connection.py` / `protocol.py` | 无 Tk 依赖的认证、连接、线程与线协议 |
 | `chatroom_client/app.py` / `events.py` | 应用操作、主线程事件泵和服务器事件处理 |
 | `chatroom_client/history.py` | 会话分页游标、完成边界和重试 |
+| `chatroom_client/sending.py` / 根 `send_receipts.py` | 待确认发送、结果查询及事务内幂等保存 |
+| `chatroom_client/send_recovery_view.py` | 原页面逐条核对、重试与移除待确认记录 |
+| `chatroom_client/search.py` | 当前已加载消息的搜索、导航与高亮 |
 | `chatroom_client/request_context.py` | 连接、账号、群成员代次和请求令牌的共享校验 |
 | `chatroom_client/login_view.py` / `message_list.py` | 登录卡片布局、有限窗口消息列表和控件复用 |
+| `chatroom_client/message_actions.py` / `desktop_check.py` | 按需只读选择与复制、原生桌面和成品检查 |
+| `chatroom_client/message_rows.py` | 消息排版、日期分隔、作者分组和原位消息信息 |
 | `chatroom_client/view.py` / `group_view.py` | Tk 控件、输入、消息渲染及群窗口 |
 | `chatroom_client/theme.py` | 统一桌面配色、跨平台字体及 Tk / ttk 控件样式 |
 | `server.py` / `opaque_server.py` | Python 会话与业务操作、OPAQUE 认证和持久账号事务 |
@@ -32,7 +37,7 @@
 
 客户端后台线程由 `ConnectionManager` 创建和跟踪，线程目标不能捕获应用控制器或 Tk 对象。线程通过 `AuthResult` / `ServerEvent` 交付数据，由应用事件泵在主线程处理。关闭时中断网络和发送队列，等待线程退出、清理未消费认证结果后再销毁 Tk。视图在销毁聊天控件前取消排队的滚动回调。
 
-会话统一使用 `ChatKey(kind, target)`，私聊用户名与群 ID 属于不同命名空间。消息、顺序、去重集合、未读编号和历史游标由 `Conversation` 一起管理。历史分页只在收到对应会话的 `history_end` 后推进游标，失败保留请求游标；登录快照或其他会话的完成事件不能清除当前分页请求。手动断开与新账号登录通过 `ClientState.reset_session()` 重置账号数据并保留进程内草稿；异常断线保留模型、视图和输入，重新认证后补取遗漏消息。视图创建函数不能初始化或清空业务数据。设置不得保存密码或正文；同步完成游标必须在未读状态保存成功后推进。
+会话统一使用 `ChatKey(kind, target)`，私聊用户名与群 ID 属于不同命名空间。消息、顺序、去重集合、未读编号和历史游标由 `Conversation` 一起管理。历史分页只在收到对应会话的 `history_end` 后推进游标，失败保留请求游标；登录快照或其他会话的完成事件不能清除当前分页请求。手动断开与新账号登录通过 `ClientState.reset_session()` 重置账号数据并保留按端点、账号与会话隔离的进程内草稿；异常断线保留模型、视图和输入，重新认证后补取遗漏消息。视图创建函数不能初始化或清空业务数据。设置不得保存密码或正文；同步完成游标必须在未读状态保存成功后推进。
 
 依赖方向、事件流和扩展方式见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。修改功能时测试可使用无 Tk 的模型或注入模拟视图；控件行为继续由真实 Tk 测试覆盖，不再绕过构造函数手动拼装 `ChatClient`。
 
@@ -107,3 +112,9 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/server
 6. 示例、日志和截图仅用虚构演示数据与公开别名。发布隐私检查应覆盖本次全部新增提交的作者和提交者元数据、源码、PNG 元数据及嵌套 ZIP / PYZ 产物，而不只检查最后一个提交。发现个人身份、运行配置、数据库或私钥时停止发布，检查输出本身也不得回显私人姓名、邮箱或密钥。
 
 发布只使用当前工作流、同一提交生成的产物，发布任务具有独立写权限；构建和 PR 任务只有读取权限。最终发布任务创建指向该提交的版本标签和 GitHub Release。可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 在本机检查；`--base` 可显式指定本次发布之前的祖先提交或标签。可选的 `PRIVACY_FORBIDDEN_VALUES_JSON` 接收需禁止出现的字符串数组，工作流从同名仓库 Secret 读取；未配置时仍执行身份、凭据、个人路径和元数据规则，检查输出不回显匹配内容。
+
+### 桌面成品验证
+
+`python client.py --check-desktop-ui <输出目录>` 在 900×700 窗口、100% / 125% / 150% / 175% / 200% 缩放和深浅主题下检查布局、只读复制及合成 Unicode 输入，不连接网络或读取用户账号。冻结客户端支持同一参数；Windows 检查实际字体的中文字形及原生 `WM_CHAR` 提交，保存截图和 JSON。此路径不能替代安装输入法后的人工候选窗口 / 预编辑验证。Linux 检查应使用支持 Xft 与中文字体的 Tk，CI 安装 `fonts-noto-cjk`。
+
+`python scripts/benchmark_client_render.py --messages 2000 10000 --repeat 3` 输出重复采样，`--lines 4 --authors 5` 覆盖多行及多作者消息；需在相同环境、字体、消息内容与无其他重负载条件下比较中位数。

@@ -4,11 +4,15 @@ import tkinter as tk
 from tkinter import font as tkfont, messagebox, simpledialog
 
 from .group_view import GroupWindows
-from .models import ChatKey
+from .models import ChatKey, Message
 from .login_view import LoginCard
 from .encryption_view import EncryptionWindow, confirm_roster
 from .theme import AutoScrollbar, DesktopTheme
 from .message_list import MessageList, message_identity as _message_identity
+from .search import MessageSearch
+from .message_rows import MessageRows
+from .message_actions import MessageActions
+from .send_recovery_view import SendRecoveryPanel
 
 
 class TkClientView:
@@ -17,6 +21,10 @@ class TkClientView:
         self.controller = None
         self.chat_frames = {}
         self.message_list = MessageList(self)
+        self.search = MessageSearch(self)
+        self.message_rows = MessageRows(self)
+        self.message_actions = MessageActions(self)
+        self.send_recovery = None
         self.current_chat_frame = None
         self.is_loading_messages = False
         self.request_windows = {}
@@ -48,6 +56,7 @@ class TkClientView:
         self.groups_ui = GroupWindows(self.master, controller)
         self.master.protocol('WM_DELETE_WINDOW', controller.close)
         self.master.bind('<FocusIn>', lambda event: self.schedule(0, self.controller.activity.focus_changed), add='+')
+        self.master.bind('<Control-f>', self.search.open, add='+')
 
     def schedule(self, milliseconds, callback):
         if self._destroyed:
@@ -63,6 +72,8 @@ class TkClientView:
 
     def destroy(self):
         self._destroyed = True
+        self.message_actions.reset()
+        self.search.reset()
         self.cancel_scroll()
         for after_id in list(self._scheduled):
             self.master.after_cancel(after_id)
@@ -73,7 +84,10 @@ class TkClientView:
         # Native Configure events can arrive while Tk is destroying children,
         # before the old canvas itself has disappeared.
         self._chat_layout_ready = False
+        self.message_actions.reset()
+        self.search.reset()
         self.cancel_scroll()
+        self.send_recovery = None
         for widget in self.master.winfo_children():
             widget.destroy()
         self.request_windows.clear()
@@ -116,7 +130,15 @@ class TkClientView:
 
     def clear_input_if_unchanged(self, text):
         if self.input_text() == text:
-            self.msg_entry.delete('1.0', tk.END)
+            self.replace_input('')
+
+    def replace_input(self, text):
+        entry = getattr(self, 'msg_entry', None)
+        if entry is not None and entry.winfo_exists():
+            entry.delete('1.0', tk.END)
+            if text:
+                entry.insert('1.0', text)
+            entry.edit_reset()
 
     def credentials(self):
         username = self.username_entry.get().strip()
@@ -169,10 +191,16 @@ class TkClientView:
     def get_gid_by_index(self, index):
         return self._group_keys[index] if 0 <= index < len(self._group_keys) else None
 
-    def render_conversation(self, key, scroll_top=False, *, preserve_scroll=True):
+    def render_conversation(self, key, scroll_top=False, *, preserve_scroll=True, focus_message=None, focus_offset=12):
+        if self.message_actions.row is not None and self.message_actions.row._chat_key != key:
+            self.message_actions.release()
+        if self.search.key is not None and self.search.key != key:
+            self.search.close(focus=False, restore=False)
         frame = self.chat_frames.get(key)
         viewport = (self.capture_chat_scroll() if preserve_scroll and frame is not None
                     and frame is self.current_chat_frame else None)
+        if focus_message is not None:
+            viewport = {'at_bottom': False, 'top': 0, 'message': focus_message, 'offset': focus_offset}
         self.cancel_scroll()
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
@@ -189,13 +217,17 @@ class TkClientView:
                 key, frame, self.state.conversation(key).messages, viewport, scroll_top)
         finally:
             self.is_loading_messages = False
+        if self.search.visible:
+            self.search.highlight()
         if key.kind == 'group':
             self.friends_listbox.selection_clear(0, tk.END)
         else:
             self.group_listbox.selection_clear(0, tk.END)
         self.refresh_controls()
         try:
-            if scroll_top:
+            if focus_message is not None:
+                self.restore_chat_scroll(viewport)
+            elif scroll_top:
                 self.update_chat_region()
                 self.chat_canvas.yview_moveto(0.0)
             elif viewport is not None and not viewport['at_bottom']:
@@ -208,6 +240,25 @@ class TkClientView:
             self._restoring_scroll = False
         self.update_new_messages_button()
 
+    def keep_history(self, key):
+        return (key == self.state.current_chat and self.current_chat_frame is not None
+                and (not self.message_list.at_latest(key) or not self.chat_is_at_bottom()))
+
+    def cache_changed(self, key, evicted):
+        for other in evicted:
+            self.remove_conversation(other)
+        if key != self.state.current_chat and key in self.chat_frames:
+            self.remove_conversation(key)
+        search = getattr(self, 'search', None)
+        if search is not None:
+            search.invalidate(key)
+
+    def note_uncached_message(self, key, message):
+        if not message.is_self:
+            self._new_messages[key] = self._new_messages.get(key, 0) + 1
+        self.refresh_controls()
+        self.update_new_messages_button()
+
     def append_message(self, key, message):
         active = key == self.state.current_chat and not self.is_loading_messages
         if active and len(self.state.conversation(key).messages) > self.message_list.MAX_ROWS:
@@ -215,15 +266,13 @@ class TkClientView:
             return None
         viewport = self.capture_chat_scroll() if active else None
         label = '你' if message.is_self else message.author
-        if self.controller.encryption is not None:
-            security = getattr(message, 'encryption', 'legacy')
-            label += {'e2ee': ' [端到端加密]', 'legacy': ' [旧消息 · 非端到端加密]'}.get(security, ' [安全验证失败]')
         row = self.display_message_with_time(message.content, message.timestamp,
-                                             message.is_self, key=key, author=label)
+                                             message.is_self, key=key, author=label, message=message)
         if row is not None:
             row._chat_message = message
             self.message_list.observe(key, message)
         if active:
+            self.message_rows.layout(self.current_chat_frame.pack_slaves())
             if message.is_self or viewport['at_bottom']:
                 self.request_scroll()
             else:
@@ -233,6 +282,8 @@ class TkClientView:
         return row
 
     def clear_selection(self):
+        self.message_actions.release()
+        self.search.close(focus=False, restore=False)
         if self.current_chat_frame is not None:
             self.current_chat_frame.pack_forget()
         self.current_chat_frame = None
@@ -241,6 +292,11 @@ class TkClientView:
         self.refresh_controls()
 
     def remove_conversation(self, key):
+        if self.search.key == key:
+            if self.state.current_chat == key:
+                self.search.invalidate(key)
+            else:
+                self.search.close(focus=False, restore=False)
         self._new_messages.pop(key, None)
         self.message_list.forget(key)
         frame = self.chat_frames.pop(key, None)
@@ -268,21 +324,32 @@ class TkClientView:
             label.configure(text=title if title else '你的对话')
             self.chat_subtitle.configure(text=('群聊' if key.kind == 'group' else '私聊')
                                          if title else '从左侧选择好友或群聊')
-            if key and key.kind == 'group':
-                self.group_info_button.configure(state=tk.NORMAL)
-                self.group_info_button.pack(side=tk.LEFT, before=self.load_history_button, padx=(0, 6))
-            else:
-                self.group_info_button.pack_forget()
             encryption = self.controller.encryption
             can_send = (title and self.controller.connection.running and not self.state.pending_messages
                         and (encryption is None or (encryption.ready and not encryption.sending)))
             self.send_button.configure(state=tk.NORMAL if can_send else tk.DISABLED)
+            records = self.controller.sends.owned_records()
+            recovery = getattr(self, 'recover_send_button', None)
+            if recovery is not None:
+                if records:
+                    recovery.configure(text=f'待确认消息 ({len(records)})', state=tk.NORMAL)
+                    recovery.pack(side=tk.RIGHT, padx=(0, 8))
+                else:
+                    recovery.pack_forget()
+            if self.send_recovery is not None:
+                self.send_recovery.refresh(records)
             conversation = self.state.conversation(key) if key else None
+            self.search_button.configure(state=tk.NORMAL if key else tk.DISABLED)
             can_load = (title and self.controller.connection.running and not conversation.exhausted
                         and not self.controller.history.retry_requires_reconnect
                         and self.state.pending_history is None and not self.controller.sync.active
                         and not self.controller.sync.awaiting_initial)
-            self.load_history_button.configure(state=tk.NORMAL if can_load else tk.DISABLED)
+            history_label = ('正在加载历史…' if key and self.state.pending_history == key else
+                             '历史已全部加载' if conversation is not None and conversation.exhausted else '加载更早消息')
+            self.conversation_menu.entryconfigure(self.history_menu_index, label=history_label,
+                                                   state=tk.NORMAL if can_load else tk.DISABLED)
+            self.conversation_menu.entryconfigure(self.group_menu_index, state=tk.NORMAL if key and key.kind == 'group' and self.controller.connection.running else tk.DISABLED)
+            self.more_button.configure(state=tk.NORMAL if key else tk.DISABLED)
             empty = getattr(self, 'empty_state', None)
             if empty is not None and empty.winfo_exists():
                 if conversation is None or not conversation.messages:
@@ -542,17 +609,32 @@ class TkClientView:
         self.clear_window()
         self.master.unbind('<Return>')
         c, f = self.colors, self.fonts
+        self._compact_chat = tkfont.Font(root=self.master, font=f['body']).metrics('linespace') > 22
         self.master.configure(bg=c['line'])
         toolbar = tk.Frame(self.master, bg=c['surface'])
         toolbar.pack(side=tk.TOP, fill=tk.X, pady=(0, 1))
-        self.brand(toolbar).pack(side=tk.LEFT, padx=(22, 18), pady=13)
+        toolbar.columnconfigure(1, weight=1)
+        brand = self.brand(toolbar)
+        brand.grid(row=0, column=0, padx=(22, 18), pady=13)
         connection_chip = tk.Frame(toolbar, bg=c['field'], padx=9, pady=4)
-        connection_chip.pack(side=tk.LEFT)
+        connection_chip.grid(row=0, column=1, sticky='w')
         self.connection_status = self.label(connection_chip, '已连接', font='small', fg=c['success'],
                                             wraplength=180)
         self.connection_status.pack(side=tk.LEFT)
         toolbar_actions = tk.Frame(toolbar, bg=c['surface'])
-        toolbar_actions.pack(side=tk.RIGHT, padx=(12, 16))
+        toolbar_actions.grid(row=0, column=2, sticky='e', padx=(12, 16))
+        self._toolbar_wrapped = None
+
+        def fit_toolbar(event):
+            if event.widget is not toolbar or not toolbar.winfo_exists():
+                return
+            needed = brand.winfo_reqwidth() + connection_chip.winfo_reqwidth() + toolbar_actions.winfo_reqwidth() + 68
+            wrapped = event.width < needed
+            if wrapped != self._toolbar_wrapped:
+                toolbar_actions.grid_configure(row=1 if wrapped else 0, column=0 if wrapped else 2,
+                                               columnspan=3 if wrapped else 1, pady=(0, 6) if wrapped else 0)
+                self._toolbar_wrapped = wrapped
+        toolbar.bind('<Configure>', fit_toolbar)
         self.disconnect_button = self.theme.button(
             toolbar_actions, '断开连接', self.controller.disconnect, variant='quiet',
             font=f['small'], padx=10, pady=6)
@@ -629,7 +711,7 @@ class TkClientView:
         self.friends_listbox.bind('<<ListboxSelect>>', self.select_friend)
         self.group_listbox.bind('<<ListboxSelect>>', self.select_group)
         self.group_listbox.bind('<Double-1>', self.show_group_info_on_double_click)
-        self.label(sidebar, '双击群聊，查看成员与设置', muted=True, font='small').pack(
+        self.label(sidebar, '双击群聊，查看成员与设置', muted=True, font='small', wraplength=232).pack(
             anchor=tk.W, padx=20, pady=(0, 18))
 
         workspace = tk.Frame(body, bg=c['bg'])
@@ -661,36 +743,50 @@ class TkClientView:
         self.chat_title.pack(fill=tk.X)
         self.chat_subtitle = self.label(heading, '从左侧选择好友或群聊', muted=True, font='small',
                                         wraplength=400)
-        self.chat_subtitle.pack(fill=tk.X, pady=(3, 0))
+        if not self._compact_chat:
+            self.chat_subtitle.pack(fill=tk.X, pady=(3, 0))
         tools = tk.Frame(chat_header, bg=c['surface'])
         tools.pack(side=tk.RIGHT, padx=(0, 20))
-        self.group_info_button = self.theme.button(tools, '群聊信息', self.open_current_group,
-                                                   variant='quiet', state=tk.DISABLED, font=f['small'])
-        self.group_info_button.pack(side=tk.LEFT, padx=(0, 6))
-        self.load_history_button = self.theme.button(
-            tools, '更早的消息', self.controller.load_older_history,
-            variant='quiet', state=tk.DISABLED, font=f['small'])
-        self.load_history_button.pack(side=tk.LEFT)
-        heading.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=24, pady=(20, 16))
-        tk.Frame(right, bg=c['line'], height=1).pack(fill=tk.X)
+        self.search_button = self.theme.button(tools, '搜索', self.search.open, variant='quiet', font=f['small'])
+        self.search_button.pack(side=tk.LEFT, padx=(0, 6))
+        self.more_button = self.theme.button(tools, '更多', self.open_conversation_menu,
+                                             variant='quiet', font=f['small'], state=tk.DISABLED)
+        self.more_button.pack(side=tk.LEFT)
+        self.more_button.bind('<Return>', self.open_conversation_menu)
+        self.conversation_menu = tk.Menu(tools, tearoff=False, bg=c['surface'], fg=c['text'],
+                                         activebackground=c['selected'], activeforeground=c['text'],
+                                         font=f['body'])
+        self.history_menu_index = 0
+        self.conversation_menu.add_command(label='加载更早消息', command=self.controller.load_older_history,
+                                           state=tk.DISABLED)
+        self.group_menu_index = 1
+        self.conversation_menu.add_command(label='群聊信息', command=self.open_current_group, state=tk.DISABLED)
+        heading.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=24,
+                     pady=(4, 4) if self._compact_chat else (20, 16))
+        header_line = tk.Frame(right, bg=c['line'], height=1)
+        header_line.pack(fill=tk.X)
+        self.search.build(right, header_line)
 
         if self.controller.encryption is not None:
             security = tk.Frame(right, bg=c['bg'])
-            security.pack(fill=tk.X, padx=24, pady=(10, 0))
+            security.pack(fill=tk.X, padx=24, pady=(4 if self._compact_chat else 10, 0))
             self.encryption_status = self.label(security, '', muted=True, font='small', wraplength=460)
             self.encryption_status.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            self.theme.button(security, '加密与密钥…', lambda: EncryptionWindow(self),
-                              variant='quiet', font=f['small'], padx=6, pady=2).pack(side=tk.RIGHT)
+            self.encryption_button = self.theme.button(security, '加密与密钥…', lambda: EncryptionWindow(self),
+                              variant='quiet', font=f['small'], padx=6, pady=2)
+            self.encryption_button.pack(side=tk.RIGHT)
 
         composer = tk.Frame(right, bg=c['surface'])
         composer.pack(side=tk.BOTTOM, fill=tk.X)
         tk.Frame(composer, bg=c['line'], height=1).pack(fill=tk.X)
+        self.send_recovery = SendRecoveryPanel(self, right)
         self.status_label = self.label(composer, '', muted=True, font='small', wraplength=550)
-        self.status_label.pack(fill=tk.X, padx=24, pady=(8, 4))
+        self.status_label.pack(fill=tk.X, padx=24, pady=(4, 2) if self._compact_chat else (8, 4))
         input_shell = tk.Frame(composer, bg=c['field'], highlightthickness=1,
                                highlightbackground=c['line'], highlightcolor=c['line'], bd=0)
-        input_shell.pack(fill=tk.X, padx=24, pady=(2, 18))
-        self.msg_entry = tk.Text(input_shell, height=3, wrap=tk.WORD, undo=True, font=f['body'],
+        input_shell.pack(fill=tk.X, padx=24, pady=(2, 8 if self._compact_chat else 18))
+        self.msg_entry = tk.Text(input_shell, height=2 if self._compact_chat else 3,
+                                 wrap=tk.WORD, undo=True, font=f['body'],
                                  bg=c['field'], fg=c['text'], insertbackground=c['text'],
                                  selectbackground=c['selected'], selectforeground=c['text'],
                                  relief=tk.FLAT, bd=0, padx=12, pady=10,
@@ -701,13 +797,17 @@ class TkClientView:
         draft = self.controller.take_draft()
         if draft:
             self.msg_entry.insert('1.0', draft)
+        self.composer_hint = self.label(input_shell, 'Enter 发送 · Shift / Ctrl + Enter 换行',
+                   muted=True, font='small', wraplength=460)
+        if not self._compact_chat:
+            self.composer_hint.pack(fill=tk.X, padx=12, pady=(0, 4))
         composer_actions = tk.Frame(input_shell, bg=c['field'])
         composer_actions.pack(fill=tk.X, padx=10, pady=(0, 10))
-        self.label(composer_actions, 'Enter 发送 · Shift / Ctrl + Enter 换行',
-                   muted=True, font='small').pack(side=tk.LEFT, padx=(2, 8))
         self.send_button = self.theme.button(composer_actions, '发送', self.controller.send_message,
                                               variant='primary', state=tk.DISABLED, width=6, padx=12, pady=6)
         self.send_button.pack(side=tk.RIGHT)
+        self.recover_send_button = self.theme.button(composer_actions, '待确认消息',
+                                                     self.send_recovery.toggle, variant='quiet', font=f['small'])
         self.msg_entry.bind('<Return>', self.on_message_entry_key)
 
         display = tk.Frame(right, bg=c['bg'])
@@ -763,6 +863,17 @@ class TkClientView:
         if key is not None and key.kind == 'group' and self.controller.connection.running:
             self.controller.request_group_info(key.target, open_window=True)
 
+    def open_conversation_menu(self, event=None):
+        if self.state.current_chat is None:
+            return 'break'
+        self.refresh_controls()
+        try:
+            self.conversation_menu.tk_popup(self.more_button.winfo_rootx(),
+                                            self.more_button.winfo_rooty() + self.more_button.winfo_height())
+        finally:
+            self.conversation_menu.grab_release()
+        return 'break'
+
     def resize_chat(self, event):
         canvas = getattr(self, 'chat_canvas', None)
         if (self._destroyed or not self._chat_layout_ready or event.widget is not canvas
@@ -777,40 +888,26 @@ class TkClientView:
         self.status_label.configure(wraplength=max(140, event.width-48))
         security = getattr(self, 'encryption_status', None)
         if security is not None and security.winfo_exists():
-            security.configure(wraplength=max(140, event.width-180))
-        width = max(100, min(520, int(event.width*.78)-48))
-        for frame in self.chat_frames.values():
-            for bubble in frame.winfo_children():
-                for label in bubble.winfo_children():
-                    if isinstance(label, tk.Label):
-                        label.configure(wraplength=width)
+            security.configure(wraplength=max(80, event.width - self.encryption_button.winfo_reqwidth() - 64))
+        self.composer_hint.configure(wraplength=max(100, event.width - 96))
+        self.message_rows.resize()
+        self.search.resize()
+        self.send_recovery.resize()
         self.empty_subtitle.configure(wraplength=max(140, event.width-64))
 
-    def display_message_with_time(self, msg, time_str, is_self=False, key=None, author=None):
-        """Keep metadata separate from the message and adapt to the viewport."""
+    def display_message_with_time(self, msg, time_str, is_self=False, key=None, author=None, *, message=None):
+        """Keep message content independent of its display and date grouping."""
+        if self._destroyed:
+            return
         try:
             if not self.master.winfo_exists():
                 return
-            if key is None:
-                key = self.state.current_chat
-            chat_frame = self.chat_frames.get(key, self.chat_container)
-            if not chat_frame.winfo_exists():
+            key = key or self.state.current_chat
+            frame = self.chat_frames.get(key, self.chat_container)
+            if not frame.winfo_exists():
                 return
-            c = self.colors
-            anchor = tk.E if is_self else tk.W
-            width = max(100, min(520, int(self.chat_canvas.winfo_width()*.78)-48))
-            row = tk.Frame(chat_frame, bg=c['bg'])
-            metadata = '  ·  '.join(str(value) for value in (author, time_str) if value)
-            if metadata:
-                self.label(row, metadata, muted=True, font='small', wraplength=width,
-                           justify=tk.LEFT, anchor=anchor).pack(anchor=anchor, pady=(0, 5))
-            bubble = self.label(row, msg, bg=c['self' if is_self else 'surface'],
-                                wraplength=width, justify=tk.LEFT, padx=14, pady=10)
-            bubble.pack(anchor=anchor)
-            row.pack(fill=tk.X, padx=24, pady=(14, 4))
-            self.bind_chat_wheel(row)
-            for child in row.winfo_children():
-                self.bind_chat_wheel(child)
+            message = message or Message(author or '', msg, time_str, is_self=is_self)
+            row = self.message_rows.create(frame, key, message, author or '')
             if key == self.state.current_chat:
                 self.empty_state.place_forget()
             return row
@@ -845,9 +942,37 @@ class TkClientView:
             for row in frame.pack_slaves():
                 if hasattr(row, '_chat_message') and row.winfo_rooty() + row.winfo_height() > canvas_top:
                     viewport['message'] = row._chat_message
-                    viewport['offset'] = row.winfo_rooty() - canvas_top
+                    viewport['offset'] = self.message_rows.anchor(row).winfo_rooty() - canvas_top
                     break
         return viewport
+
+    def capture_reading_position(self):
+        """Store small identities, without retaining evictable message bodies."""
+        key = self.state.current_chat
+        if key is None or self.current_chat_frame is None:
+            return None
+        viewport = self.capture_chat_scroll()
+        message = viewport.get('message')
+        return {'key': key, 'identity': _message_identity(message) if message is not None else None,
+                'offset': viewport.get('offset', 0), 'following': viewport.get('at_bottom', False)
+                and self.message_list.at_latest(key)
+                and not self.state.conversation(key).newer_evicted}
+
+    def restore_reading_position(self, position):
+        key = position['key']
+        if key != self.state.current_chat or key not in self.state.conversations:
+            return False
+        conversation = self.state.conversations[key]
+        if position['following'] and not conversation.newer_evicted:
+            self.message_list.focus(key, max(0, len(conversation.messages) - self.message_list.MAX_ROWS))
+            self.render_conversation(key, preserve_scroll=False)
+            return True
+        for index, message in enumerate(conversation.messages):
+            if _message_identity(message) == position['identity']:
+                self.message_list.focus(key, index)
+                self.render_conversation(key, focus_message=message, focus_offset=position['offset'])
+                return True
+        return False
 
     def restore_chat_scroll(self, viewport):
         self.update_chat_region()
@@ -857,7 +982,7 @@ class TkClientView:
             for row in frame.winfo_children():
                 if (hasattr(row, '_chat_message')
                         and _message_identity(row._chat_message) == _message_identity(viewport['message'])):
-                    target = (self.chat_canvas.canvasy(0) + row.winfo_rooty()
+                    target = (self.chat_canvas.canvasy(0) + self.message_rows.anchor(row).winfo_rooty()
                               - self.chat_canvas.winfo_rooty() - viewport['offset'])
                     break
         region = self.chat_canvas.bbox('all')
@@ -870,6 +995,7 @@ class TkClientView:
             self.message_list.on_scroll(self.state.current_chat, first, last)
         if (not self._restoring_scroll and self._scroll_after_id is None
                 and self.message_list.at_latest(self.state.current_chat)
+                and not (self.state.current_chat is not None and self.state.conversation(self.state.current_chat).newer_evicted)
                 and float(last) >= .999):
             self._new_messages.pop(self.state.current_chat, None)
             self.update_new_messages_button()
@@ -879,8 +1005,10 @@ class TkClientView:
         if button is None or not button.winfo_exists():
             return
         count = self._new_messages.get(self.state.current_chat, 0)
-        if count:
-            button.configure(text=f'{count} 条新消息 ↓')
+        newer = self.state.current_chat is not None and self.state.conversation(self.state.current_chat).newer_evicted
+        older_window = self.state.current_chat is not None and not self.message_list.at_latest(self.state.current_chat)
+        if count or newer or older_window:
+            button.configure(text=f'{count} 条新消息 ↓' if count else '返回最新消息 ↓')
             button.place(relx=1, rely=1, x=-16, y=-16, anchor=tk.SE)
             button.lift()
         else:
@@ -888,6 +1016,10 @@ class TkClientView:
 
     def scroll_to_bottom(self):
         """Follow the latest message after sending or an explicit request."""
+        key = self.state.current_chat
+        if key is not None and self.state.conversation(key).newer_evicted:
+            self.controller.load_latest_history()
+            return
         self.cancel_scroll()
         if not self.message_list.at_latest(self.state.current_chat):
             self.render_conversation(self.state.current_chat, preserve_scroll=False)

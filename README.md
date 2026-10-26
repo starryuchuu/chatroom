@@ -11,7 +11,7 @@
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v1.4.0 新增历史分页请求关联与超时恢复，并通过复用消息行和滚动窗口改善长历史阅读。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v1.5.0 新增发送结果核对与幂等重试、有限正文缓存、会话草稿和聊天搜索，并改善消息选择复制、时间显示与高 DPI 布局。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -77,7 +77,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v1.4.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.4.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v1.5.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.5.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -112,13 +112,15 @@ python client.py
 
 收到消息时，好友和群聊列表保留滚动、选择及键盘导航位置。向上阅读历史时，新消息不会强制跳到底部；点击聊天区的 **N 条新消息 ↓** 可回到最新消息，手动滚到底部也会清除提示。原本停在底部或本人发送时继续跟随；重连补取后的重绘保留阅读位置，并支持小幅滚轮事件。
 
+v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原页面内的 Ctrl+F 聊天搜索。使用方式、兼容条件和缓存重新加载说明见[发送恢复、缓存与搜索](docs/SEND_RECOVERY_AND_CACHE.md)。
+
 ### 未读消息与提醒
 
 好友和群列表显示未读数与最近消息预览，窗口标题显示总未读数。打开会话且窗口处于前台时清除未读；窗口在后台或最小化时继续累计。首次使用账号时，最近历史作为基线，不会将旧消息批量提醒；之后会恢复按服务器和账号隔离的已读位置与未读编号。
 
 聊天页顶部的 **通知设置** 菜单可开关 **消息提醒** 或 **免打扰**。免打扰保留未读数，不发送通知或提示音。桌面通知只显示通用的新消息提示，不包含正文；不为历史或断线补取消息逐条弹窗。Windows 使用系统通知图标提示，Linux 使用 `notify-send`，macOS 使用系统通知；系统能力不可用时退回窗口提示音。Linux 可安装 `libnotify-bin` 以启用桌面通知。
 
-本地设置只保存服务器配置、主题、提醒偏好、账号标识和消息编号，不保存密码、聊天正文或草稿。多个客户端同时保存时，会在文件锁内读取最新设置再更新，保留其他账号和服务器配置。草稿在当前进程中按服务器和账号隔离保留，关闭进程后不保留。
+本地设置只保存服务器配置、主题、提醒偏好、账号标识和消息编号，不保存密码、聊天正文或草稿。多个客户端同时保存时，会在文件锁内读取最新设置再更新，保留其他账号和服务器配置。草稿在当前进程中按服务器、账号和会话隔离保留，关闭进程后不保留。
 
 点击顶部 **在线用户** 可展开或收起在线列表。输入框中按 Enter 发送，Shift+Enter 或 Ctrl+Enter 换行。
 
@@ -140,7 +142,7 @@ python client.py
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.4.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新不改变数据库结构或密钥格式，无需重新迁移账号；建议两端一起升级以支持分页请求关联和超时后直接重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.5.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -190,6 +192,12 @@ chatroom/
 │   ├── request_context.py    # 异步请求归属与失效判断
 │   ├── login_view.py         # 登录及注册卡片布局
 │   ├── message_list.py       # 有限窗口消息显示和控件复用
+│   ├── message_actions.py    # 原生只读选择与消息复制
+│   ├── desktop_check.py      # 源码与成品的合成桌面检查
+│   ├── message_rows.py       # 日期分段、连续作者与消息信息
+│   ├── sending.py            # 待确认发送、结果查询和安全重试
+│   ├── send_recovery_view.py # 原页面的待确认消息列表
+│   ├── search.py             # 当前缓存正文的搜索与高亮
 │   └── theme.py              # 深浅色主题、即时换色与跨平台字体和控件样式
 ├── go-server/                # Go 服务端及其构建文件
 ├── docs/                     # 文档导航、使用指南、设计说明与截图
@@ -206,6 +214,7 @@ chatroom/
 ├── scripts/build_opaque.py   # 开发者重建并同步两份 WASM
 ├── history_store.py          # 历史分页查询
 ├── pending_store.py          # 待处理申请持久化
+├── send_receipts.py          # 事务内发送回执和内容去重
 ├── requirements.txt          # 固定 Python 运行及传递依赖
 ├── requirements-build.txt    # 固定打包依赖（开发与构建使用）
 ├── VERSION                   # 项目版本
@@ -298,7 +307,7 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 
 `pending_friend_requests` 和 `pending_group_invites` 保存待处理申请与邀请，服务器启动时恢复，24 小时后过期。接受或拒绝后删除记录；好友接受和入群会在同一数据库事务中消费申请。旧数据库在启动时自动增加这两张表及消息查询索引。
 
-登录时加载最近 100 条有权访问的消息。选中会话后点击“更早的消息”，按消息 ID 向前读取最多 100 条；每页再次校验访问权限。
+登录时加载最近 100 条有权访问的消息。选中会话后通过“更多 → 加载更早消息”，按消息 ID 向前读取最多 100 条；每页再次校验访问权限。
 
 `opaque_meta` 保存持久 OPAQUE setup，`opaque_accounts` 保存加密的账号记录、身份备份及更新代次。它们与数据库和对应存储密钥一起备份；不能为已有 OPAQUE 账号生成替代 setup。
 
@@ -340,7 +349,7 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 
 ## 🚀 CI / CD
 
-日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。测试通过后构建跨平台可执行文件；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
+日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。回归与跨平台构建并行，发布依赖二者全部通过；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
 
 - **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
 - **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
@@ -423,11 +432,11 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ## 🆕 版本特性
 
-### 当前开发版本兼容性
+### 当前版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v1.4.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v1.5.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.4.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.4.0/chatroom-v1.4.0-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.4.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.4.0/chatroom-v1.4.0-source.zip)；Python 服务端也需要 `server_handlers/`、`opaque_server.py` 和共享运行时，请保留完整源码包中的模块。
+源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.5.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.5.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-source.zip)；Python 服务端也需要 `server_handlers/`、`opaque_server.py` 和共享运行时，请保留完整源码包中的模块。
 
 客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
 

@@ -65,6 +65,8 @@ func HandleClientMessages(conn net.Conn, username string, sessionKey []byte, cli
 		switch msgType {
 		case "history_request":
 			handleHistoryRequest(conn, username, sessionKey, msg)
+		case "message_status_request":
+			handleMessageStatus(conn, username, msg)
 		case "sync_request":
 			handleSyncRequest(conn, username, sessionKey, msg)
 		case "e2ee_identity_publish":
@@ -818,22 +820,23 @@ func handlePrivateChat(conn net.Conn, fromUser string, sessionKey []byte, msg ma
 		sendChatResult(conn, "private_chat", msg, 0, "消息解密失败")
 		return
 	}
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	payload := chatPayload("private_chat", fromUser, toUser, content, timestamp, 9223372036854775807)
 	if err := validateReplayableChat(payload); err != nil {
 		sendChatResult(conn, "private_chat", msg, 0, "消息内容过长")
 		return
 	}
-	id, err := database.SaveMessageWithID("private", fromUser, toUser, "", plaintext, timestamp)
+	saved, err := saveChatMessage(msg, "private", fromUser, toUser, "", plaintext, timestamp, false)
 	if err != nil {
 		log.Printf("event=private_chat_failed error_type=%T", err)
 		sendChatResult(conn, "private_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
 	// Receipt acknowledges persistence, independently of recipient delivery.
+	id, timestamp := saved.ID, saved.Timestamp
 	sendChatResult(conn, "private_chat", msg, id, "")
 	protocol.SendMsg(conn, chatPayload("private_chat", fromUser, toUser, content, timestamp, id))
-	if recipient, found := clientManager.GetClient(toUser); found {
+	if recipient, found := clientManager.GetClient(toUser); found && !saved.Duplicate {
 		encrypted, err := crypto.EncryptMessage(plaintext, recipient.SessionKey)
 		if err != nil {
 			log.Printf("event=private_chat_failed error_type=%T", err)
@@ -968,19 +971,23 @@ func handleGroupChat(conn net.Conn, fromUser string, sessionKey []byte, msg map[
 		sendChatResult(conn, "group_chat", msg, 0, "消息解密失败")
 		return
 	}
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	if err := validateReplayableChat(chatPayload("group_chat", fromUser, gid, content, timestamp, 9223372036854775807)); err != nil {
 		sendChatResult(conn, "group_chat", msg, 0, "消息内容过长")
 		return
 	}
-	id, err := database.SaveMessageWithID("group", fromUser, "", gid, plaintext, timestamp)
+	saved, err := saveChatMessage(msg, "group", fromUser, "", gid, plaintext, timestamp, false)
 	if err != nil {
 		log.Printf("event=group_chat_failed error_type=%T", err)
 		sendChatResult(conn, "group_chat", msg, 0, "消息保存失败，请重试")
 		return
 	}
+	id, timestamp := saved.ID, saved.Timestamp
 	sendChatResult(conn, "group_chat", msg, id, "")
 	for _, name := range group.Members {
+		if saved.Duplicate && name != fromUser {
+			continue
+		}
 		if name == fromUser {
 			protocol.SendMsg(conn, chatPayload("group_chat", fromUser, gid, content, timestamp, id))
 		} else if recipient, found := clientManager.GetClient(name); found {

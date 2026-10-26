@@ -19,7 +19,7 @@ class _Window:
 
 
 class MessageList:
-    """Keep at most 120 rows per conversation; the model owns the full history.
+    """Keep at most 120 rows per conversation; the model owns the body cache.
 
     Reaching an edge opens an overlapping window, keeping the visible message
     at the same pixel offset. The overlap also bounds native X11 window heights.
@@ -47,6 +47,10 @@ class MessageList:
         window = self.windows.get(key)
         if window is not None:
             window.known.add(message_identity(message))
+
+    def focus(self, key, index):
+        window = self.windows.setdefault(key, _Window())
+        window.forced_start = max(0, index - self.MAX_ROWS // 2)
 
     def reconcile(self, key, frame, messages, viewport, scroll_top):
         window = self.windows.setdefault(key, _Window())
@@ -89,6 +93,7 @@ class MessageList:
             if following is not None:
                 row.pack_configure(before=following)
             following = row
+        self.view.message_rows.layout(rows)
         window.start, window.end, window.count = start, end, len(messages)
         window.first = identities[start] if identities else None
         window.forced_start = None

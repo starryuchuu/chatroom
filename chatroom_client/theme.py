@@ -98,6 +98,7 @@ class DesktopTheme:
         family = next((name for name in candidates if name in families),
                       tkfont.nametofont('TkDefaultFont', root=root).actual('family'))
         self.fonts = {
+            'message': (family, 12),
             'body': (family, 11), 'small': (family, 9), 'list': (family, 10),
             'title': (family, 17, 'bold'), 'heading': (family, 11, 'bold'),
             'hero': (family, 30, 'bold'),
@@ -247,9 +248,13 @@ class DesktopTheme:
                   indicatorbackground=[('selected', c['accent']), ('active', c['selected'])],
                   indicatorforeground=[('selected', c['surface'])])
         style.configure('Treeview', background=c['surface'], fieldbackground=c['surface'],
-                        foreground=c['text'], rowheight=34, borderwidth=0)
+                        foreground=c['text'],
+                        rowheight=max(34, tkfont.Font(root=self.root, font=self.fonts['body']).metrics('linespace') + 10),
+                        borderwidth=0)
         style.map('Treeview', background=[('selected', c['selected'])],
                   foreground=[('selected', c['text'])])
+        style.configure('Pending.Treeview', font=f['small'],
+                        rowheight=max(26, tkfont.Font(root=self.root, font=f['small']).metrics('linespace') + 8))
         style.configure('Treeview.Heading', background=c['sidebar'], foreground=c['muted'],
                         padding=(8, 8), font=f['small'], relief='flat')
         style.map('Treeview.Heading', background=[('active', c['selected'])])

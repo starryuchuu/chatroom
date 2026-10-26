@@ -35,6 +35,9 @@ class FakeView:
     def input_text(self):
         return self.text
 
+    def replace_input(self, text):
+        self.text = text
+
     def encryption_passphrase(self):
         return self.passphrase
 
@@ -45,6 +48,15 @@ class FakeView:
         self.scheduled.append((delay, callback))
 
     def refresh_controls(self):
+        pass
+
+    def keep_history(self, key):
+        return False
+
+    def cache_changed(self, key, evicted):
+        pass
+
+    def note_uncached_message(self, key, message):
         pass
 
     def refresh_encryption(self):
@@ -253,6 +265,8 @@ class EncryptionControllerTests(unittest.TestCase):
                      'clear_selection', 'refresh_groups'):
             setattr(self.view, name, Mock())
         self.app.activity = Mock()
+        self.app.forget_group_draft = Mock()
+        self.app.take_draft = Mock(return_value='')
         self.app.request_group_info = Mock()
         return ServerEvents(self.app)
 

@@ -91,6 +91,8 @@ class ActivityController:
             return
         conversation = self.state.conversation(key)
         ids = conversation.message_ids
+        if conversation.latest_message is not None and type(conversation.latest_message.message_id) is int:
+            ids.append(conversation.latest_message.message_id)
         # Restored unread IDs can refer to messages outside the last login
         # page. Opening the conversation acknowledges its entire unread badge.
         conversation.read_id = max([conversation.read_id, *ids, *conversation.unread_ids])

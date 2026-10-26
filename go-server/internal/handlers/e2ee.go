@@ -207,7 +207,7 @@ func handleE2EEChat(conn net.Conn, sender, kind, target string, members []string
 		fail("加密消息校验失败；收件人或身份可能已变化，请刷新后重试")
 		return
 	}
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	if err := validateReplayableChat(e2eeChatPayload(kind, sender, target, envelope, timestamp, 9223372036854775807)); err != nil {
 		fail("加密消息内容过长")
 		return
@@ -221,14 +221,18 @@ func handleE2EEChat(conn net.Conn, sender, kind, target string, members []string
 	if kind == "group" {
 		to, gid = "", target
 	}
-	id, err := database.SaveE2EEMessageWithID(kind, sender, to, gid, string(serialized), timestamp)
+	saved, err := saveChatMessage(request, kind, sender, to, gid, string(serialized), timestamp, true)
 	if err != nil {
 		fail("加密消息保存失败，请重试")
 		return
 	}
+	id, timestamp := saved.ID, saved.Timestamp
 	sendChatResult(conn, kind+"_chat", request, id, "")
 	payload := e2eeChatPayload(kind, sender, target, envelope, timestamp, id)
 	for _, member := range members {
+		if saved.Duplicate && member != sender {
+			continue
+		}
 		if member == sender {
 			protocol.SendMsg(conn, payload)
 		} else if recipient, found := manager.GetClient(member); found {

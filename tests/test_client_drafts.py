@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import client
+from chatroom_client.models import ChatKey
 from chatroom_client.preferences import PreferencesStore
 
 
@@ -87,6 +88,115 @@ class ClientDraftTests(unittest.TestCase):
         self.login_as('alice', host='server-a.example', port=12345)
         self.assertEqual(self.draft(), 'Connected server draft')
         self.app.connection.send.assert_not_called()
+
+    def test_private_group_and_unselected_drafts_are_independent(self):
+        self.login_as('alice')
+        a, b = ChatKey('private', 'same'), ChatKey('group', 'same')
+        self.app.state.groups['same'] = {'group_name': 'Synthetic group'}
+        self.app.view.replace_input('Unselected draft')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), '')
+        self.app.view.replace_input('Private draft')
+        self.app.select_chat(b)
+        self.assertEqual(self.draft(), '')
+        self.app.view.replace_input('Group draft')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), 'Private draft')
+        self.app.clear_chat_selection()
+        self.assertEqual(self.draft(), 'Unselected draft')
+        self.app.select_chat(b)
+        self.assertEqual(self.draft(), 'Group draft')
+
+    def test_same_selection_keeps_input_and_switching_clears_undo_history(self):
+        self.login_as('alice')
+        a, b = ChatKey('private', 'a'), ChatKey('private', 'b')
+        self.app.select_chat(a)
+        self.app.view.msg_entry.insert('1.0', 'Synthetic A secret')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), 'Synthetic A secret')
+        self.app.select_chat(b)
+        with self.assertRaises(client.tk.TclError):
+            self.app.view.msg_entry.edit_undo()
+        self.assertEqual(self.draft(), '')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), 'Synthetic A secret')
+
+    def test_ack_in_another_chat_clears_only_original_unchanged_draft(self):
+        self.login_as('alice')
+        a, b = ChatKey('private', 'a'), ChatKey('private', 'b')
+        self.app.select_chat(a)
+        self.app.view.replace_input('Synthetic sent input')
+        self.app.send_message()
+        record = self.app.sends.records[0]
+        self.app.select_chat(b)
+        self.app.view.replace_input('Synthetic B draft')
+        self.app.handle_server_message({'type': 'private_chat_result', 'request_id': record.request_id, 'success': True})
+        self.assertEqual(self.draft(), 'Synthetic B draft')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), '')
+
+    def test_late_ack_preserves_edited_draft_while_another_chat_is_active(self):
+        self.login_as('alice')
+        a, b = ChatKey('private', 'a'), ChatKey('private', 'b')
+        self.app.select_chat(a)
+        self.app.view.replace_input('Synthetic original')
+        self.app.send_message()
+        record = self.app.sends.records[0]
+        self.app.view.replace_input('Synthetic edited')
+        self.app.select_chat(b)
+        self.app.handle_server_message({'type': 'private_chat_result', 'request_id': record.request_id, 'success': True})
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), 'Synthetic edited')
+
+    def test_conversation_drafts_survive_login_but_do_not_cross_accounts(self):
+        self.login_as('alice')
+        a = ChatKey('private', 'a')
+        self.app.select_chat(a)
+        self.app.view.replace_input('Synthetic Alice conversation draft')
+        self.app.disconnect()
+        self.login_as('bob')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), '')
+        self.app.disconnect()
+        self.login_as('alice')
+        self.assertEqual(self.draft(), '')
+        self.app.select_chat(a)
+        self.assertEqual(self.draft(), 'Synthetic Alice conversation draft')
+
+    def test_removed_group_draft_is_not_restored_after_rejoin(self):
+        self.login_as('alice')
+        key = ChatKey('group', 'g')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic group'}
+        self.app.select_chat(key)
+        self.app.view.replace_input('Synthetic obsolete group draft')
+        self.app.select_chat(ChatKey('private', 'peer'))
+        self.app.events.remove_group('g')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic rejoined group'}
+        self.app.select_chat(key)
+        self.assertEqual(self.draft(), '')
+        self.app.view.replace_input('Synthetic selected group draft')
+        self.app.events.remove_group('g')
+        self.assertEqual(self.draft(), '')
+
+    def test_removing_selected_group_restores_unselected_draft_before_next_save(self):
+        self.login_as('alice')
+        key = ChatKey('group', 'g')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic group'}
+        self.app.view.replace_input('Synthetic unselected draft')
+        self.app.select_chat(key)
+        self.app.view.replace_input('Synthetic obsolete group draft')
+        self.app.events.remove_group('g')
+        self.assertIsNone(self.app.state.current_chat)
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.select_chat(ChatKey('private', 'peer'))
+        self.app.clear_chat_selection()
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.disconnect()
+        self.login_as('alice')
+        self.assertEqual(self.draft(), 'Synthetic unselected draft')
+        self.app.state.groups['g'] = {'group_name': 'Synthetic rejoined group'}
+        self.app.select_chat(key)
+        self.assertEqual(self.draft(), '')
 
 
 if __name__ == '__main__':

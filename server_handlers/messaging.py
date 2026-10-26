@@ -3,6 +3,36 @@ import datetime
 import logging
 
 import e2ee_server
+import send_receipts
+
+
+def handle_message_status(ctx, sock, username, msg):
+    kind, target, key = msg.get('chat_type'), msg.get('target'), msg.get('idempotency_key')
+    reply = {'type': 'message_status_result', 'request_id': msg.get('request_id'),
+             'idempotency_key': key, 'chat_type': kind, 'target': target, 'success': False}
+    if (not send_receipts.valid_key(key) or kind not in ('private', 'group')
+            or not isinstance(target, str) or not target or len(target) > 256):
+        reply['error'] = '消息查询参数错误'
+    else:
+        try:
+            receipt = ctx.lookup_send_receipt(username, key, kind, target)
+            reply.update(success=True, status='saved' if receipt is not None else 'not_found')
+            if receipt is not None:
+                reply.update(message_id=receipt[0], timestamp=receipt[1])
+        except Exception:
+            logging.error('Send receipt lookup failed')
+            reply['error'] = '暂时无法核对发送结果，请稍后重试'
+    ctx.send_msg(sock, reply)
+
+
+def persist_chat(ctx, request, kind, sender, recipient, gid, body, timestamp, encrypted):
+    if 'idempotency_key' in request:
+        key = request['idempotency_key']
+        if not send_receipts.valid_key(key):
+            raise e2ee_server.E2EEError('消息标识格式错误')
+        return ctx.save_message_once(kind, sender, recipient, gid, body, timestamp,
+                                     e2ee=encrypted, key=key)
+    return ctx.save_message(kind, sender, recipient, gid, body, timestamp, e2ee=encrypted), False, timestamp
 
 def handle_e2ee_identity_publish(ctx, client_sock, current_username, msg):
     ctx.handle_e2ee_identity(client_sock, current_username, msg)
@@ -36,7 +66,7 @@ def handle_private_chat(ctx, client_sock, current_username, msg):
         ctx.group_ops_lock.acquire()
         to_user = msg.get("to")
         # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
-        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
         if to_user == current_username: # 不能给自己发私聊
             logging.warning('Private message rejected: self target')
@@ -60,14 +90,14 @@ def handle_private_chat(ctx, client_sock, current_username, msg):
         stored_content, encrypted_end_to_end = ctx.prepare_chat_content(
             msg, current_username, 'private', to_user, [current_username, to_user],
             sender_session_key, now)
-        message_id = ctx.save_message('private', current_username, to_user, None,
-                                  stored_content, now, e2ee=encrypted_end_to_end)
+        message_id, duplicate, now = persist_chat(ctx, msg, 'private', current_username,
+                                                 to_user, None, stored_content, now, encrypted_end_to_end)
         ctx.send_msg(client_sock, {"type": "private_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
         logging.info('Private message saved')
 
         # 为接收者准备消息
         to_sock = ctx.get_sock_by_username(to_user)
-        if to_sock:
+        if to_sock and not duplicate:
             recipient_session_key = ctx.session_keys.get(to_sock)
             if recipient_session_key:
                 message_for_recipient = {
@@ -111,7 +141,7 @@ def handle_group_chat(ctx, client_sock, current_username, msg):
         ctx.group_ops_lock.acquire()
         gid = msg.get("gid")
         # 使用服务器时间，不信任客户端提供的时间戳（可被伪造污染历史记录排序）
-        now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         from_user = current_username
 
         if gid == "all":
@@ -138,13 +168,15 @@ def handle_group_chat(ctx, client_sock, current_username, msg):
 
         stored_content, encrypted_end_to_end = ctx.prepare_chat_content(
             msg, from_user, 'group', gid, group['members'], sender_session_key, now)
-        message_id = ctx.save_message('group', from_user, None, gid, stored_content, now,
-                                  e2ee=encrypted_end_to_end)
+        message_id, duplicate, now = persist_chat(ctx, msg, 'group', from_user, None, gid,
+                                                 stored_content, now, encrypted_end_to_end)
         ctx.send_msg(client_sock, {"type": "group_chat_result", "success": True, "request_id": msg.get("request_id"), "message_id": message_id})
         logging.info('Group message saved')
 
         # 为每个群成员单独加密并发送消息
         for member in group["members"]:
+            if duplicate and member != current_username:
+                continue
             sock = ctx.get_sock_by_username(member)
             if sock:
                 member_session_key = ctx.session_keys.get(sock)
