@@ -17,6 +17,8 @@
 
 ## 密钥与编码
 
+开发分支新增 `send_receipts` 表，发送者、目标、请求键与内容指纹使用存储查询 HMAC，回执与消息在同一事务提交，不额外保存正文。它随数据库一起备份，不改变字段加密 v1；完整约定见[发送恢复与缓存](SEND_RECOVERY_AND_CACHE.md#协议与存储)。
+
 - 独立随机 32 字节主密钥，默认位于 `<数据库路径>.key`。`CHATROOM_STORAGE_KEY_FILE` 可指定外部路径。
 - 加密子密钥：`HMAC-SHA256(master, "chatroom/storage/v1/encryption")`。
 - 查询子密钥：`HMAC-SHA256(master, "chatroom/storage/v1/lookup")`。

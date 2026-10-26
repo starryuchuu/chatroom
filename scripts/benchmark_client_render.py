@@ -5,6 +5,7 @@ Run under a desktop or xvfb-run. Python allocation figures exclude Tcl/Tk's
 cross-platform timing assertions in the test suite.
 """
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import socket
@@ -18,7 +19,7 @@ from chatroom_client.models import ChatKey, Message
 from chatroom_client.preferences import PreferencesStore
 
 
-def measure(count):
+def measure(count, *, lines=1, authors=1):
     root = client.tk.Tk()
     root.withdraw()
     app = client.ChatClient(root, preferences=PreferencesStore(persistent=False), encryption=False)
@@ -29,13 +30,20 @@ def measure(count):
     app.state.friends = [key.target]
     app.state.current_chat = key
     conversation = app.state.conversation(key)
+    epoch = datetime(2026, 10, 26, tzinfo=timezone.utc)
+    tracemalloc.start()
     for mid in range(2, count + 2):
-        conversation.add(Message(key.target, 'Synthetic benchmark message ' + str(mid), message_id=mid))
+        author = key.target if authors == 1 else f'synthetic-author-{mid % authors}'
+        body = '\n'.join(f'Synthetic benchmark message {mid}, line {line}' for line in range(lines))
+        conversation.add(Message(author, body, (epoch + timedelta(seconds=mid)).isoformat(), message_id=mid))
+    model_peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
     app.view.build_chat()
     root.geometry('1120x760')
     root.deiconify()
     root.update()
-    timings = {}
+    timings = {'cached_messages': len(conversation.messages), 'cached_body_bytes': conversation.cached_bytes,
+               'model_peak_python_bytes': model_peak}
     tracemalloc.start()
     try:
         for stage in ('initial', 'unchanged', 'prepend_one'):
@@ -58,7 +66,13 @@ def measure(count):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--messages', type=int, nargs='+', default=[200, 1000])
+    parser.add_argument('--lines', type=int, default=1)
+    parser.add_argument('--authors', type=int, default=1)
+    parser.add_argument('--repeat', type=int, default=1)
     args = parser.parse_args()
     if any(not 1 <= count <= 10000 for count in args.messages):
         parser.error('message counts must be in 1..10000')
-    print(json.dumps({str(count): measure(count) for count in args.messages}, indent=2))
+    if not 1 <= args.lines <= 4 or not 1 <= args.authors <= 100 or not 1 <= args.repeat <= 10:
+        parser.error('lines must be in 1..4, authors in 1..100, repeat in 1..10')
+    print(json.dumps({str(count): [measure(count, lines=args.lines, authors=args.authors)
+                                 for _ in range(args.repeat)] for count in args.messages}, indent=2))

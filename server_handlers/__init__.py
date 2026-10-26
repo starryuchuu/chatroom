@@ -10,6 +10,7 @@ HANDLERS = {
     'e2ee_keys_request': messaging.handle_e2ee_keys_request,
     'sync_request': messaging.handle_sync_request,
     'history_request': messaging.handle_history_request,
+    'message_status_request': messaging.handle_message_status,
     'friend_request': friends.handle_friend_request,
     'friend_response': friends.handle_friend_response,
     'private_chat': messaging.handle_private_chat,

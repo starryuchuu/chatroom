@@ -3,6 +3,7 @@ import socket
 import transport
 import pending_store
 import history_store
+import send_receipts
 import storage
 import e2ee_server
 import opaque_server
@@ -456,6 +457,7 @@ def init_db():
             )
         """)
         cursor.executescript(pending_store.SCHEMA)
+        cursor.execute(send_receipts.SCHEMA)
         cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_from ON messages(chat_type,from_user,id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS messages_private_to ON messages(chat_type,to_user,id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(chat_type,gid,id)")
@@ -625,6 +627,18 @@ def save_message(chat_type, from_user, to_user, gid, message, timestamp, *, e2ee
         conn.close()
 
 # 发送用户所属的群组列表
+def save_message_once(chat_type, from_user, to_user, gid, message, timestamp, *, e2ee, key):
+    with closing(storage.connect('chat.db')) as conn:
+        with conn:
+            return send_receipts.save(conn, chat_type, from_user, to_user, gid, message,
+                                      timestamp, e2ee=e2ee, key=key)
+
+
+def lookup_send_receipt(username, key, kind, target):
+    with closing(storage.connect('chat.db')) as conn:
+        return send_receipts.lookup(conn, username, key, kind, target)
+
+
 def send_user_groups(client_sock, username):
     """
     查找用户所属的所有群组并发送给客户端。
@@ -1141,6 +1155,8 @@ def handler_services():
         prepare_chat_content=prepare_chat_content,
         save_friend_relationship=save_friend_relationship,
         save_message=save_message,
+        save_message_once=save_message_once,
+        lookup_send_receipt=lookup_send_receipt,
         send_history=send_history,
         send_history_error=send_history_error,
         send_msg=send_msg,
@@ -1189,7 +1205,7 @@ def handle_client(client_sock, addr):
 
         # 1. 发送公钥
         send_msg(client_sock, {"type": "public_key", "protocol": transport.VERSION,
-                               "capabilities": ["message_sync", "e2ee_v1", "opaque_v1", "history_request_id"], "key": public_key_pem.decode('utf-8')})
+                               "capabilities": ["message_sync", "e2ee_v1", "opaque_v1", "history_request_id", "message_receipts"], "key": public_key_pem.decode('utf-8')})
 
         # 2. 接收加密的会话密钥
         encrypted_session_key_data = recv_msg(client_sock, auth_deadline)

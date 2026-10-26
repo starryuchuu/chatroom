@@ -67,6 +67,7 @@ func OpenDB(dataSourceName string) error {
 // createTables 创建所有需要的表
 func createTables() error {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS send_receipts (sender TEXT NOT NULL,receipt_key TEXT NOT NULL,chat_type TEXT NOT NULL,target TEXT NOT NULL,payload_hash TEXT NOT NULL,message_id INTEGER NOT NULL,PRIMARY KEY(sender,receipt_key))`,
 		`CREATE TABLE IF NOT EXISTS pending_friend_requests (requester TEXT NOT NULL,target TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(requester,target))`,
 		`CREATE TABLE IF NOT EXISTS pending_group_invites (gid TEXT NOT NULL,target TEXT NOT NULL,inviter TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(gid,target))`,
 		`CREATE INDEX IF NOT EXISTS pending_friends_target ON pending_friend_requests(target)`,

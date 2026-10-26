@@ -4,6 +4,8 @@ Python 客户端、Python 服务端与 Go 服务端需要一起升级。默认�
 
 ## 握手和报文
 
+开发分支新增可选 `message_receipts`，使用稳定的 `idempotency_key` 进行事务内去重，并以 `message_status_request` / `message_status_result` 核对当前认证账号自己的发送结果；旧请求仍受支持。字段、存储和重试边界见[发送恢复说明](../docs/SEND_RECOVERY_AND_CACHE.md#协议与存储)。该扩展不改变传输 v2 或 OPAQUE 格式，尚未包含在已发布的 v1.4.0 中。
+
 1. 服务端发送长度头加 JSON 的 `public_key`，携带整数 `protocol: 2`。客户端校验 RSA 公钥指纹；远程连接必须配置可信指纹。
 2. 客户端发送 `session_key`，携带 `protocol: 2` 和 RSA-OAEP 加密的 AES 会话密钥。旧协议不降级放行。
 3. 后续每个包：4 字节网络序长度，8 字节网络序序号，UTF-8 JSON，32 字节 HMAC-SHA256。长度包括序号、JSON 和标签，最大 1 MiB。
@@ -28,6 +30,10 @@ v1.3.0 正常注册、登录及改密使用下述 OPAQUE 交换，不发送明�
 一条连接仅允许一次严格有序交换，完整认证共享 30 秒期限及现有认证并发、速率限制，不在中间步骤提前释放认证额度。OPAQUE 字段和身份备份各限制为 128 KiB，WASM 输入输出有相同上限、内存限制 256 MiB。正常密码校验和高成本密码强化在客户端/核心中完成，服务器不能依赖明文密码长度检查替代协议验证。
 
 新增 `opaque_meta` 与 `opaque_accounts`，存储 setup、记录、identity-only 备份与代次，敏感内容沿用加密存储。已有 OPAQUE 账号时缺少 setup 拒绝启动，不能重新生成 setup。云备份不包含信任、群批准或重放状态；双层 v2 本机库保留完整本机记录，离线完整备份仍使用 Argon2id。恢复边界及上游历史审计的适用范围见[单密码指南](../docs/SINGLE_PASSWORD.md)。
+
+## 消息时间
+
+开发分支的新私聊、群聊（含 E2EE）使用服务端 UTC RFC 3339 时间，格式为 `YYYY-MM-DDTHH:MM:SSZ`。已保存的历史、同步与幂等回执保留原始时间。客户端按本地时区显示带偏移的时间；旧版无时区时间保留原值并标记时区未知，不迁移或推断。混合格式的排序、分页与同步仍以 `message_id` 为准。
 
 ## 历史分页
 

@@ -83,7 +83,7 @@ class ServerEvents:
             activity.reconcile_groups(groups)
         self.view.refresh_groups()
 
-    def chat_message(self, message):
+    def chat_message(self, message, *, recovered=False):
         key = ChatKey('group', message['gid']) if message['type'] == 'group_chat' else ChatKey(
             'private', message.get('to') if message.get('from') == self.state.username else message.get('from'))
         history = getattr(self.controller, 'history', None)
@@ -113,18 +113,22 @@ class ServerEvents:
         item = Message(message.get('from'), content, message.get('timestamp', ''),
                        message.get('message_id'), message.get('from') == self.state.username, protection)
         conversation = self.state.conversation(key)
-        previous_count = len(conversation.messages)
-        index = conversation.add(item)
+        fresh = self.state.observe_message(key, item.message_id)
+        previously_cached = type(item.message_id) is int and item.message_id in conversation._seen
+        older_page = self.state.pending_history == key
+        retain = 'older' if (older_page or conversation.newer_evicted
+                            or self.view.keep_history(key) is True) else 'latest'
+        index = conversation.add(item, retain=retain)
         if index is None:
             return
-        inserted = len(conversation.messages) > previous_count
+        inserted = not previously_cached
         if key.kind == 'private' and key.target not in self.state.friends:
             self.state.friends.append(key.target)
             self.view.update_friends_listbox()
         if key.kind == 'group' and key.target not in self.state.groups:
             self.controller.request_group_info(key.target)
         activity = getattr(self.controller, 'activity', None)
-        if activity is not None and inserted:
+        if activity is not None and inserted and fresh:
             # Some already-stored frames leave no space for additive replay
             # flags. The surrounding history/sync batch remains a fallback for
             # those frames as well as for older servers.
@@ -135,17 +139,22 @@ class ServerEvents:
             activity.receive(key, item, historical=historical, catchup=catchup)
         elif activity is not None:
             activity.refresh()
+        self.view.cache_changed(key, self.state.enforce_cache_limits())
         if self.state.current_chat == key and not self.state.history_syncing:
-            if inserted and index == len(conversation.messages) - 1:
+            if index < 0:
+                if (fresh and item.is_self and not recovered and message.get('history') is False
+                        and self.state.pending_history is None):
+                    self.controller.load_latest_history()
+                elif fresh:
+                    self.view.note_uncached_message(key, item)
+                return
+            if inserted and index == len(conversation.messages) - 1 and not recovered:
                 self.view.append_message(key, item)
             else:
                 self.view.render_conversation(key)
 
     def chat_result(self, message):
         self.controller.finish_pending(message)
-        if not message.get('success'):
-            kind = '私聊' if message['type'] == 'private_chat_result' else '群聊'
-            self.view.notify(kind + '失败', message.get('error', kind + '消息发送失败'))
 
     def send_failed(self, message):
         self.controller.finish_pending(message)
@@ -194,7 +203,11 @@ class ServerEvents:
 
     def remove_group(self, gid, *, refresh=True):
         selected = self.state.current_chat == ChatKey('group', gid)
+        self.controller.forget_group_draft(gid)
         self.state.remove_group(gid)
+        sends = getattr(self.controller, 'sends', None)
+        if sends is not None:
+            sends.invalidate(ChatKey('group', gid))
         activity = getattr(self.controller, 'activity', None)
         if activity is not None:
             activity.forget(ChatKey('group', gid))

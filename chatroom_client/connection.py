@@ -176,7 +176,7 @@ class ConnectionManager:
             advertised = public_packet.get('capabilities', ())
             if (isinstance(advertised, (list, tuple))
                     and all(isinstance(item, str) for item in advertised)):
-                capabilities = tuple(item for item in ('message_sync', 'e2ee_v1', 'opaque_v1', 'history_request_id') if item in advertised)
+                capabilities = tuple(item for item in ('message_sync', 'e2ee_v1', 'opaque_v1', 'history_request_id', 'message_receipts') if item in advertised)
             if context is not None and context.prepare is not None and 'e2ee_v1' not in capabilities:
                 raise ValueError('服务器尚不支持端到端加密，请升级服务端；不会降级发送明文消息')
             modern = context is not None and getattr(context.prepare, 'single_password', False) is True

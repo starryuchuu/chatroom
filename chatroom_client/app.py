@@ -8,12 +8,13 @@ from .connection import AuthResult, PasswordChangeResult, ServerEvent
 from .activity import ActivityController
 from .events import ServerEvents
 from .history import HistoryController
-from .models import ClientState
+from .models import ChatKey, ClientState
 from .notifications import DesktopNotifier
 from .preferences import PreferencesStore
 from .protocol import encrypt_message
 from .reconnect import ReconnectPolicy
 from .sync import SyncController
+from .sending import SendController
 
 
 class ChatApplication:
@@ -21,6 +22,7 @@ class ChatApplication:
         self.view, self.connection = view, connection
         self.preferences = preferences if preferences is not None else PreferencesStore(persistent=False)
         self.state = ClientState()
+        self.sends = SendController(self)
         if encryption is True:
             from .encryption import EncryptionController
             self.encryption = EncryptionController(self)
@@ -144,6 +146,8 @@ class ChatApplication:
             self.view.set_connection_status('已连接 · 正在补取消息')
             self.view.refresh_controls()
             self.connection.receive()
+            if resuming:
+                self.sends.resume()
 
     def lost_connection(self):
         if not self.connection.running:
@@ -154,6 +158,7 @@ class ChatApplication:
             return
         self._uncertain_send = bool(self.state.pending_messages) or self._uncertain_send
         self.state.pending_messages.clear()
+        self.sends.pause()
         self.state.pending_history = None
         self.sync.abort()
         self.history.abort()
@@ -197,6 +202,8 @@ class ChatApplication:
                 self._uncertain_send = False
         key = self.state.current_chat
         if key is not None and not self.state.history_syncing:
+            if self.state.conversation(key).cache_evicted and not self.sync.awaiting_initial:
+                self.load_latest_history()
             self.view.render_conversation(key, preserve_scroll=True)
         self.view.refresh_controls()
 
@@ -226,6 +233,8 @@ class ChatApplication:
         if key is None:
             self.view.notify('提示', '请选择好友或群组进行聊天')
             return
+        if not self.sends.before_send(key, text):
+            return
         if self.encryption is not None:
             self.encryption.send_message(text, key)
             return
@@ -236,20 +245,16 @@ class ChatApplication:
         self.send_chat_payload(data, text)
 
     def send_chat_payload(self, data, text):
-        if not self.try_send(data):
-            return
-        request_id = data['request_id']
-        self.state.pending_messages[request_id] = text
-        self.view.refresh_controls()
-        self.view.notify('消息', '发送中，等待服务器保存确认…')
-        sock = self.connection.sock
-        self.view.schedule(15000, lambda: self.expire_pending(sock, request_id))
+        self.sends.send(data, text)
 
     def expire_pending(self, sock, request_id):
+        self.sends.expire(sock, request_id)
         if self.connection.sock is sock and request_id in self.state.pending_messages:
             self.view.notify('消息', '尚未收到确认，输入已保留；可断开后查看历史确认结果')
 
     def finish_pending(self, message):
+        if self.sends.finish(message):
+            return
         text = self.state.pending_messages.pop(message.get('request_id'), None)
         if text is None:
             return
@@ -277,19 +282,35 @@ class ChatApplication:
             self.state.group_info_requests.discard(gid)
 
     def select_chat(self, key):
-        self.state.current_chat = key
+        if key != self.state.current_chat:
+            self.save_draft()
+            self.state.current_chat = key
+            self.view.replace_input(self.take_draft())
         self.view.render_conversation(key)
         self.activity.focus_changed()
+        if self.state.conversation(key).cache_evicted:
+            self.load_latest_history()
 
     def clear_chat_selection(self):
+        self.save_draft()
         self.state.current_chat = None
+        self.view.replace_input(self.take_draft())
         self.view.clear_selection()
 
     def load_older_history(self):
         if self.connection.running and not self.sync.active and not self.sync.awaiting_initial:
             self.history.load_older()
 
+    def load_latest_history(self):
+        if (self.connection.running and not self.sync.active and not self.sync.awaiting_initial
+                and self.history.load_latest() is True):
+            key = self.state.current_chat
+            self.view.remove_conversation(key)
+            self.view.render_conversation(key)
+
     def handle_server_message(self, message):
+        if self.sends.handle(message):
+            return
         if self.encryption is not None and self.encryption.handle(message):
             return
         if self.sync.handle(message):
@@ -333,21 +354,37 @@ class ChatApplication:
                     self.view.bell()
                 self.view.schedule(50, self.drain_incoming)
 
-    def draft_key(self):
+    def draft_key(self, key=None):
         endpoint = self.connection.endpoint or self._session_endpoint or (self.connection.settings.host, self.connection.settings.port)
-        return (*endpoint, self.state.username)
+        return (*endpoint, self.state.username, key)
 
     def take_draft(self):
-        return self.state.drafts.pop(self.draft_key(), '')
+        return self.state.drafts.pop(self.draft_key(self.state.current_chat), '')
+
+    def save_draft(self):
+        key, text = self.draft_key(self.state.current_chat), self.view.input_text()
+        if text:
+            self.state.drafts[key] = text
+        else:
+            self.state.drafts.pop(key, None)
+
+    def clear_sent_draft(self, key, text):
+        if self.state.current_chat == key:
+            self.view.clear_input_if_unchanged(text)
+        draft = self.draft_key(key)
+        if self.state.drafts.get(draft) == text:
+            self.state.drafts.pop(draft)
+
+    def forget_group_draft(self, gid):
+        key = self.draft_key(ChatKey('group', gid))
+        self.state.drafts.pop(key, None)
+        if self.state.current_chat == key[-1]:
+            self.view.replace_input('')
 
     def disconnect(self):
         had_session = self.connection.running or self.reconnecting or self.state.username is not None
         if had_session:
-            draft = self.view.input_text()
-            if draft:
-                self.state.drafts[self.draft_key()] = draft
-            else:
-                self.state.drafts.pop(self.draft_key(), None)
+            self.save_draft()
         self.reconnecting = False
         self.reconnect_policy.stop()
         self.sync.abort()
@@ -359,6 +396,7 @@ class ChatApplication:
         self.notifier.discard_pending()
         self.connection.cancel_auth()
         self.connection.disconnect()
+        self.sends.reset()
         self.state.reset_session()
         self._session_endpoint = None
         self._uncertain_send = False

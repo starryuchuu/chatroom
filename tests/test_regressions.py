@@ -320,7 +320,7 @@ class TkClientTests(unittest.TestCase):
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
         app.view.msg_entry.insert('1.0', 'draft')
         app.disconnect()
-        self.assertEqual(app.state.drafts[(client.SERVER_HOST, app.connection.settings.port, 'alice')], 'draft')
+        self.assertEqual(app.state.drafts[(client.SERVER_HOST, app.connection.settings.port, 'alice', ChatKey('group', 'g'))], 'draft')
         self.assertFalse(self.root.bind_all('<MouseWheel>'))
 
     def scrollable_chat(self):
@@ -440,9 +440,9 @@ class TkClientTests(unittest.TestCase):
         app=self.app
         conversation = app.state.conversation(ChatKey('group', 'g'))
         conversation.add(Message('alice', 'newest', 'now', 101, True))
-        app.view.load_history_button.invoke()
+        app.view.conversation_menu.invoke(app.view.history_menu_index)
         app.connection.send.assert_called_once_with({'type':'history_request','chat_type':'group','target':'g','before_id':101})
-        self.assertEqual(app.view.load_history_button.cget('state'),'disabled')
+        self.assertEqual(app.view.conversation_menu.entrycget(app.view.history_menu_index, 'state'),'disabled')
         app.handle_server_message({'type':'history_begin'})
         for message_id in (99,100):
             app.handle_server_message({'type':'group_chat','gid':'g','from':'bob','message_id':message_id,
@@ -451,7 +451,7 @@ class TkClientTests(unittest.TestCase):
         self.assertEqual(conversation.message_ids,[99,100,101])
         self.assertEqual(len(conversation.messages),3)
         self.assertIsNone(app.state.pending_history)
-        self.assertEqual(app.view.load_history_button.cget('state'),'disabled')
+        self.assertEqual(app.view.conversation_menu.entrycget(app.view.history_menu_index, 'state'),'disabled')
 
     def test_ack_keeps_input_edited_while_send_is_pending(self):
         self.chat()
@@ -553,6 +553,78 @@ class ServerTests(unittest.TestCase):
             self.assertIsNotNone(msg)
             if msg['type'] == kind: return msg
         self.fail('missing message: ' + kind)
+
+    def test_send_receipt_survives_reopen_and_is_account_and_scope_bound(self):
+        s = self.server
+        key = 'a' * 32
+        saved = s.save_message_once('private', 'alice', 'bob', None, 'Synthetic receipt body', 'saved time', e2ee=False, key=key)
+        s.init_db()
+        duplicate = s.save_message_once('private', 'alice', 'bob', None, 'Synthetic receipt body', 'later time', e2ee=False, key=key)
+        self.assertEqual(saved, (duplicate[0], False, duplicate[2]))
+        self.assertTrue(duplicate[1])
+        self.assertEqual(s.lookup_send_receipt('alice', key, 'private', 'bob'), (saved[0], 'saved time'))
+        self.assertIsNone(s.lookup_send_receipt('bob', key, 'private', 'alice'))
+        self.assertIsNone(s.lookup_send_receipt('alice', key, 'private', 'carol'))
+        with self.assertRaises(ValueError):
+            s.save_message_once('private', 'alice', 'bob', None, 'Different synthetic body', 'now', e2ee=False, key=key)
+        with closing(s.storage.connect()) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM messages').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM send_receipts').fetchone()[0], 1)
+
+    def test_receipt_insert_failure_rolls_back_message_and_can_retry(self):
+        s = self.server
+        with closing(s.storage.connect()) as db:
+            db.execute("CREATE TRIGGER fail_receipt BEFORE INSERT ON send_receipts BEGIN SELECT RAISE(ABORT,'synthetic failure'); END")
+            db.commit()
+        with self.assertRaises(Exception):
+            s.save_message_once('private', 'alice', 'bob', None, 'Synthetic rollback body', 'now', e2ee=False, key='b' * 32)
+        with closing(s.storage.connect()) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM messages').fetchone()[0], 0)
+            db.execute('DROP TRIGGER fail_receipt')
+            db.commit()
+        self.assertFalse(s.save_message_once('private', 'alice', 'bob', None, 'Synthetic rollback body', 'now', e2ee=False, key='b' * 32)[1])
+
+    def test_wire_duplicate_send_returns_original_receipt_and_status(self):
+        s = self.server
+        s.save_friend_relationship('alice', 'bob')
+        peer, session, _ = self.connect('alice')
+        self.read_type(peer, 'history_end')
+        request = {'type': 'private_chat', 'to': 'bob', 'request_id': 'first',
+                   'idempotency_key': 'c' * 32, 'content': client.encrypt_message('Synthetic wire receipt 界', session)}
+        ids = []
+        for request_id in ('first', 'retry'):
+            client.send_msg(peer, dict(request, request_id=request_id))
+            result = self.read_type(peer, 'private_chat_result')
+            self.assertTrue(result['success'])
+            ids.append(result['message_id'])
+            self.read_type(peer, 'private_chat')
+        self.assertEqual(ids[0], ids[1])
+        client.send_msg(peer, {'type': 'message_status_request', 'request_id': 'lookup',
+                              'chat_type': 'private', 'target': 'bob', 'idempotency_key': 'c' * 32})
+        result = self.read_type(peer, 'message_status_result')
+        self.assertEqual(result['status'], 'saved')
+        self.assertEqual(result['message_id'], ids[0])
+        self.assertEqual(result['request_id'], 'lookup')
+
+    def test_new_private_and_group_times_are_utc_and_legacy_history_is_unchanged(self):
+        from datetime import datetime, timedelta
+        s = self.server
+        s.save_friend_relationship('alice', 'bob')
+        legacy = '2020-01-02 03:04:05'
+        s.save_message('private', 'alice', 'bob', None, 'Synthetic old time', legacy)
+        peer, session, _ = self.connect('alice')
+        old = self.read_type(peer, 'private_chat')
+        self.assertEqual(old['timestamp'], legacy)
+        self.read_type(peer, 'history_end')
+        gid = s.create_group_db('alice', 'Synthetic time group', ['alice'])
+        for kind, target in (('private', 'bob'), ('group', gid)):
+            client.send_msg(peer, {'type': kind + '_chat', 'to' if kind == 'private' else 'gid': target,
+                                  'content': client.encrypt_message('Synthetic new time', session)})
+            result = self.read_type(peer, kind + '_chat_result')
+            self.assertTrue(result['success'])
+            message = self.read_type(peer, kind + '_chat')
+            self.assertTrue(message['timestamp'].endswith('Z'))
+            self.assertEqual(datetime.fromisoformat(message['timestamp']).utcoffset(), timedelta(0))
 
     def test_large_legacy_group_snapshot_roundtrips_bounded_packets(self):
         import json

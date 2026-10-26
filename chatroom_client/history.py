@@ -28,6 +28,12 @@ class HistoryController:
                 and (token.context is None or token.context.matches(self.state, self.connection)))
 
     def load_older(self):
+        return self._load()
+
+    def load_latest(self):
+        return self._load(latest=True)
+
+    def _load(self, *, latest=False):
         key = self.state.current_chat
         if key is None or self.state.pending_history is not None or self.retry_requires_reconnect:
             return
@@ -35,9 +41,9 @@ class HistoryController:
         if context is not None and not context.matches(self.state, self.connection):
             return
         conversation = self.state.conversation(key)
-        if conversation.exhausted:
+        if conversation.exhausted and not latest:
             return
-        before = conversation.before_id
+        before = 9223372036854775807 if latest else conversation.before_id
         token = RequestToken(context)
         request = {'type': 'history_request', 'chat_type': key.kind,
                    'target': key.target, 'before_id': before}
@@ -48,11 +54,14 @@ class HistoryController:
         except Exception as error:
             self.notify('历史记录', str(error))
             return
+        if latest:
+            conversation.clear_cache(reload_latest=True)
         conversation.cursor = before
         self._request, self.state.pending_history = token, key
         if self.schedule is not None:
             self.schedule(20000, lambda: self._timeout(token))
         self.refresh()
+        return True
 
     def _timeout(self, token):
         if not self._current(token):

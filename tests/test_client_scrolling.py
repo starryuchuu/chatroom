@@ -83,18 +83,16 @@ class ClientScrollingTests(unittest.TestCase):
         canvas_bottom = canvas_top + self.view.chat_canvas.winfo_height()
         for row in self.view.current_chat_frame.winfo_children():
             if canvas_top <= row.winfo_rooty() < canvas_bottom:
-                labels = [child for child in row.winfo_children()
-                          if isinstance(child, client.tk.Label)]
-                if labels:
-                    return labels[-1].cget('text'), row.winfo_rooty() - canvas_top
+                body = getattr(row, '_chat_body', None)
+                if body is not None:
+                    return body.cget('text'), body.winfo_rooty() - canvas_top
         self.fail('No message row is visible in the chat viewport')
 
     def assert_message_position(self, content, position):
         for row in self.view.current_chat_frame.winfo_children():
-            labels = [child for child in row.winfo_children()
-                      if isinstance(child, client.tk.Label)]
-            if labels and labels[-1].cget('text') == content:
-                actual = row.winfo_rooty() - self.view.chat_canvas.winfo_rooty()
+            body = getattr(row, '_chat_body', None)
+            if body is not None and body.cget('text') == content:
+                actual = body.winfo_rooty() - self.view.chat_canvas.winfo_rooty()
                 # The canvas intentionally quantizes vertical movement to 20px.
                 self.assertLessEqual(abs(actual - position), 20)
                 return

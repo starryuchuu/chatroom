@@ -64,6 +64,8 @@ This project implements an encrypted desktop chat room with Python and Go server
 
 ## Current development protocol
 
+The development branch adds send-result reconciliation and idempotent retries, bounded message-body caches, and Ctrl+F search in the existing chat page. These changes are not part of the published v1.4.0 release. See [send recovery, caches and search](docs/SEND_RECOVERY_AND_CACHE.md) for usage, compatibility and reload limits.
+
 Use the v1.4.0 Python client with a v1.3.0 or newer Python or Go server. OPAQUE was introduced in v1.3.0; v1.4.0 preserves the wire protocol, database schema and key formats, so existing OPAQUE accounts need no migration. Upgrade both ends for correlated history pages and direct retries after timeout. Older servers remain compatible, but a timed-out history request requires reconnecting before retrying. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
 Normal registration and login use one unified password. OPAQUE derives a client-only export key, which unlocks a randomly generated chat identity rather than deriving that identity from the username or password. The cloud backup contains only the encrypted identity; it does not synchronize contact verification, group approvals, or replay state. A new device can recover the same identity after successful authentication, but contacts must be verified again. The two-layer local v2 vault retains its full trust state across password changes, including recovery with the new password after another device changes it. Never overwrite newer local trust with a cloud snapshot.
@@ -76,7 +78,7 @@ Use **修改账号密码…** in the encryption/key window to authenticate the c
 
 Saving contact verification compares the fingerprint displayed in the window with the current vault record again; a concurrent key change stops the operation and requires a fresh review. Export backups to a separate file. The client rejects its live vault path and symbolic-link or hard-link aliases of that file.
 
-Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the GUI's “更早的消息” button retrieves earlier pages for the selected conversation.
+Pending friend requests and group invitations survive server restarts and expire after 24 hours. Existing databases automatically receive the new tables and message indexes. Login loads at most 100 recent authorized messages; the history action retrieves earlier pages for the selected conversation (on the development branch, use “更多 → 加载更早消息”).
 
 Both servers enforce a maximum of **256 actual group members, including the owner**, when creating groups, inviting users and accepting invitations. Invitations do not reserve capacity; an unexpired invitation can be retried after space becomes available. Group creation bounds and validates the raw member list before deduplication and batch lookup. Existing oversized groups keep their members and can shrink through leave/kick operations.
 
@@ -100,7 +102,7 @@ Conversation rows show unread counts and recent message previews. Incoming messa
 
 Unexpected disconnects retain the current conversation and draft. Reconnection retries after 1, 2, 4, 8, 15 and then 30 seconds, with a **取消重连** button. Credentials stay in memory only and are cleared on explicit disconnect, cancellation or close. Identity or password failures stop reconnection. Updated Python and Go servers replay missed messages in bounded pages against one fixed boundary, including gaps larger than 100 messages. Only a fully completed replay advances the persisted checkpoint; failed recovery can be retried with **重试补取**. Unconfirmed outgoing messages are retained for manual verification and are never automatically resent.
 
-Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG_HOME/chatroom/client.json` (or `~/.config/chatroom/client.json`) on Linux, and `~/Library/Application Support/Chatroom/client.json` on macOS. `CHATROOM_CONFIG_DIR` overrides the directory. Settings contain the theme, profile data, notification preferences, account identifiers and message IDs; no passwords, message bodies or drafts. The top-level `theme` value is `light` or `dark`, defaults to `light` when absent, and is saved across restarts without changing schema version 1. Drafts last only for the current process. Source constants supply defaults on the first launch; saved profiles take precedence afterward.
+Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG_HOME/chatroom/client.json` (or `~/.config/chatroom/client.json`) on Linux, and `~/Library/Application Support/Chatroom/client.json` on macOS. `CHATROOM_CONFIG_DIR` overrides the directory. Settings contain the theme, profile data, notification preferences, account identifiers and message IDs; no passwords, message bodies or drafts. The top-level `theme` value is `light` or `dark`, defaults to `light` when absent, and is saved across restarts without changing schema version 1. Drafts last only for the current process and are isolated by server, account and conversation. Source constants supply defaults on the first launch; saved profiles take precedence afterward.
 
 ## Security Design
 
@@ -137,6 +139,12 @@ chatroom/
 ├── server.py                 # Python server entry point
 ├── server_handlers/          # Friend, group and messaging handlers with explicit dependencies
 ├── chatroom_client/          # Desktop client components
+│   ├── sending.py            # Volatile pending sends and receipt reconciliation
+│   ├── send_recovery_view.py # Inline pending-send list and per-message actions
+│   ├── search.py             # Search and highlight loaded message bodies
+│   ├── message_actions.py    # Lazy native selection and message copying
+│   ├── desktop_check.py      # Synthetic source/frozen desktop validation
+│   ├── message_rows.py       # Date separators, sender grouping and inline details
 │   └── theme.py              # Light/dark palettes, platform fonts and live widget styling
 ├── go-server/                # Go server and build files
 ├── docs/                     # Documentation, guides, design notes and screenshots
@@ -149,6 +157,7 @@ chatroom/
 ├── e2ee_server.py            # Public identity and encrypted envelope validation
 ├── history_store.py          # History pagination
 ├── pending_store.py          # Durable pending requests
+├── send_receipts.py          # Transactional send receipts and idempotent saves
 ├── opaque_runtime.py         # Bounded Wasmtime host for the shared OPAQUE core
 ├── opaque_server.py          # Python OPAQUE authentication and account transactions
 ├── opaque-core/              # Locked Rust source for the shared core
