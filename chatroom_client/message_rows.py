@@ -88,7 +88,8 @@ class MessageRows:
             if not hasattr(row, '_chat_heading'):
                 continue
             message, at = row._chat_message, row._chat_time
-            date = at.strftime('%Y年%m月%d日') if at and (before is None or before.date() != at.date()) else ''
+            date = (f'{at.year:04d}年{at.month:02d}月{at.day:02d}日'
+                    if at and (before is None or before.date() != at.date()) else '')
             grouped = consecutive(previous, message, before, at)
             style = date, grouped
             if getattr(row, '_chat_style', None) != style:

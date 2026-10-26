@@ -71,7 +71,7 @@ class MessageTimeViewTests(unittest.TestCase):
         self.app.select_chat(key)
         self.root.update()
         row = self.view.current_chat_frame.pack_slaves()[0]
-        self.assertEqual(row._chat_date.cget('text'), expected.strftime('%Y年%m月%d日'))
+        self.assertEqual(row._chat_date.cget('text'), f'{expected.year:04d}年{expected.month:02d}月{expected.day:02d}日')
         self.assertEqual(row._chat_meta.cget('text'), expected.strftime('%H:%M'))
         self.view.message_rows.toggle_details(row)
         self.assertIn(expected.isoformat(' ', timespec='seconds'), row._chat_details.cget('text'))

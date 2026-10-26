@@ -5,6 +5,7 @@ from tkinter import font as tkfont
 
 import client
 import test_client_scrolling as scrolling
+from tk_menu_support import nonblocking_menu_posts
 from chatroom_client.models import ChatKey, Message
 
 
@@ -64,25 +65,26 @@ class MessageActionTests(unittest.TestCase):
         self.assertIn('中文🙂', self.root.clipboard_get())
 
     def test_context_menu_supports_keyboard_copy_and_leaves_no_grab(self):
-        _, rows = self.show()
-        text = self.activate(rows[0])
-        text.tag_add('sel', '1.0', '1.0+9c')
-        self.view.message_actions.popup(rows[0], text=text)
-        menu = self.view.message_actions.menu
-        self.assertEqual(menu.entrycget(0, 'state'), 'normal')
-        menu.invoke(0)
-        menu.unpost()
-        self.assertEqual(self.root.clipboard_get(), 'Synthetic')
-        self.assertIsNone(self.root.grab_current())
-        text.focus_force()
-        self.root.update()
-        text.tag_remove('sel', '1.0', 'end')
-        text.event_generate('<Shift-F10>')
-        self.root.update()
-        self.assertEqual(menu.entrycget(0, 'state'), 'disabled')
-        menu.invoke(1)
-        menu.unpost()
-        self.assertEqual(self.root.clipboard_get(), rows[0]._chat_message.content)
+        with nonblocking_menu_posts():
+            _, rows = self.show()
+            text = self.activate(rows[0])
+            text.tag_add('sel', '1.0', '1.0+9c')
+            self.view.message_actions.popup(rows[0], text=text)
+            menu = self.view.message_actions.menu
+            self.assertEqual(menu.entrycget(0, 'state'), 'normal')
+            menu.invoke(0)
+            menu.unpost()
+            self.assertEqual(self.root.clipboard_get(), 'Synthetic')
+            self.assertIsNone(self.root.grab_current())
+            text.focus_force()
+            self.root.update()
+            text.tag_remove('sel', '1.0', 'end')
+            text.event_generate('<Shift-F10>')
+            self.root.update()
+            self.assertEqual(menu.entrycget(0, 'state'), 'disabled')
+            menu.invoke(1)
+            menu.unpost()
+            self.assertEqual(self.root.clipboard_get(), rows[0]._chat_message.content)
 
     def test_only_one_lazy_overlay_exists_and_activation_does_not_change_geometry(self):
         _, rows = self.show()

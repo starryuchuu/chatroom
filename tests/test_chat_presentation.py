@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import client
 import test_client_scrolling as scrolling
+from tk_menu_support import nonblocking_menu_posts
 from chatroom_client.models import ChatKey, Message
 
 
@@ -31,15 +32,19 @@ class ChatPresentationTests(unittest.TestCase):
         self.assertEqual(controls, ['搜索', '更多'])
         menu = self.view.conversation_menu
         self.assertEqual(menu.entrycget(self.view.group_menu_index, 'state'), 'disabled')
-        self.view.more_button.focus_force()
-        self.view.more_button.event_generate('<Return>')
-        self.root.update()
-        self.assertTrue(menu.winfo_ismapped())
-        menu.invoke(self.view.history_menu_index)
-        menu.unpost()
-        self.assertEqual(self.app.connection.send.call_args.args[0]['before_id'], 101)
-        self.assertEqual(menu.entrycget(self.view.history_menu_index, 'state'), 'disabled')
-        self.assertIsNone(self.root.grab_current())
+        with nonblocking_menu_posts() as posting:
+            self.view.more_button.focus_force()
+            self.view.more_button.event_generate('<Return>')
+            self.root.update()
+            if posting is None:
+                self.assertTrue(menu.winfo_ismapped())
+            else:
+                posting.assert_called_once()
+            menu.invoke(self.view.history_menu_index)
+            menu.unpost()
+            self.assertEqual(self.app.connection.send.call_args.args[0]['before_id'], 101)
+            self.assertEqual(menu.entrycget(self.view.history_menu_index, 'state'), 'disabled')
+            self.assertIsNone(self.root.grab_current())
         self.app.history.abort()
         self.app.state.groups['g'] = {'group_name': 'Synthetic group', 'members': ['synthetic-account']}
         self.app.select_chat(ChatKey('group', 'g'))
