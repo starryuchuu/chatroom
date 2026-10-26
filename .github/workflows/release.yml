@@ -44,7 +44,7 @@ jobs:
     uses: ./.github/workflows/tests.yml
     secrets: inherit
   build:
-    needs: [plan, tests]
+    needs: [plan]
     uses: ./.github/workflows/build-artifacts.yml
     with:
       release: ${{ needs.plan.outputs.release == 'true' }}

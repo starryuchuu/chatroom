@@ -183,7 +183,7 @@ Go interoperability tests are skipped unless `CHATROOM_GO_SERVER_EXE` points to 
 
 From `go-server`, run `go vet ./...`, `go test ./...`, and `go test -race ./...` (the race detector needs a C compiler).
 
-Pull requests, ordinary commits and releases share the Windows/Linux regression workflow before binaries are built.
+Pull requests, ordinary commits and releases share Windows/Linux regression and build workflows. Tests and builds run in parallel; publication requires both to succeed.
 
 Builds use Go 1.27.3. Windows / Linux CI checks Python runtime and build requirements with `pip-audit`; Linux CI checks the Go server with `govulncheck`; pinned tool versions and local commands are in [CONTRIBUTING.md](CONTRIBUTING.md). Dependabot update configuration covers Python, Go, Cargo and GitHub Actions. Repository administrators must separately enable security alerts and automatic security updates in GitHub settings; the update configuration does not establish that these switches are enabled. Advisory checks are not an independent security audit of this integration.
 

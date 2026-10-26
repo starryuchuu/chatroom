@@ -92,6 +92,8 @@ class SearchViewTests(unittest.TestCase):
     def test_enter_before_debounce_uses_current_query(self):
         self.history()
         self.search_for('needle')
+        self.view.search.entry.focus_force()
+        self.root.update()
         self.view.search.query.set('Synthetic body 200')
         self.view.search.entry.event_generate('<Return>')
         self.assertEqual(self.view.search._highlighted._chat_message.message_id, 200)

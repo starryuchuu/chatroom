@@ -49,7 +49,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/tests
           PYTHONIOENCODING: utf-8
-        run: python -m unittest test_chat_presentation test_message_actions test_desktop_check -v -f
+        run: python -m unittest test_chat_presentation test_message_actions test_desktop_check test_message_search -v -f
       - name: Check Go dependency advisories
         if: runner.os == 'Linux'
         working-directory: go-server

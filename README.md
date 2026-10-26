@@ -349,7 +349,7 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 
 ## 🚀 CI / CD
 
-日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。测试通过后构建跨平台可执行文件；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
+日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。回归与跨平台构建并行，发布依赖二者全部通过；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
 
 - **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
 - **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
