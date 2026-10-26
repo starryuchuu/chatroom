@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const friendSnapshotTestWait = 15 * time.Second
+
 // Unlike recordManager, this manager hides reserved sessions until activation,
 // matching the visibility guarantees of the server's real client manager.
 type friendSnapshotManager struct {
@@ -55,15 +57,17 @@ func friendSnapshotPipe(t *testing.T) (net.Conn, *protocol.Conn) {
 	peer, remote := net.Pipe()
 	conn := protocol.WrapConn(remote)
 	t.Cleanup(func() { peer.Close(); conn.Close() })
-	if err := peer.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
 	protocol.EnableQueuedWrites(conn)
 	return peer, conn
 }
 
 func readFriendSnapshotMessage(t *testing.T, peer net.Conn) map[string]interface{} {
 	t.Helper()
+	// This test verifies ordering, not database latency. Start a fresh bounded
+	// read after fixture/transaction work instead of expiring the entire pipe.
+	if err := peer.SetReadDeadline(time.Now().Add(friendSnapshotTestWait)); err != nil {
+		t.Fatal(err)
+	}
 	msg, err := protocol.RecvMsg(peer)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +94,11 @@ func TestFriendSnapshotRefreshesFriendsAcceptedBeforeActivation(t *testing.T) {
 	if err := database.SaveFriendRelationship("alice", "carol"); err != nil {
 		t.Fatal(err)
 	}
-	handleFriendRequest(&recordConn{}, "alice", map[string]interface{}{"to": "bob"}, manager)
+	request := &recordConn{}
+	handleFriendRequest(request, "alice", map[string]interface{}{"to": "bob"}, manager)
+	if request.result(t, "friend_request_result")["success"] != true {
+		t.Fatal("friend request fixture was not saved")
+	}
 	staleFriends, err := database.LoadFriends("alice")
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +142,11 @@ func TestFriendSnapshotPrecedesTrafficAndAcceptanceAtActivation(t *testing.T) {
 	if err := database.SaveFriendRelationship("alice", "carol"); err != nil {
 		t.Fatal(err)
 	}
-	handleFriendRequest(&recordConn{}, "alice", map[string]interface{}{"to": "bob"}, manager)
+	request := &recordConn{}
+	handleFriendRequest(request, "alice", map[string]interface{}{"to": "bob"}, manager)
+	if request.result(t, "friend_request_result")["success"] != true {
+		t.Fatal("friend request fixture was not saved")
+	}
 	peer, conn := friendSnapshotPipe(t)
 	if !manager.AddClient("alice", conn, nil, nil) {
 		t.Fatal("could not reserve the logging-in session")
@@ -163,7 +175,7 @@ func TestFriendSnapshotPrecedesTrafficAndAcceptanceAtActivation(t *testing.T) {
 		close(stop)
 		select {
 		case <-accepted:
-		case <-time.After(3 * time.Second):
+		case <-time.After(friendSnapshotTestWait):
 			t.Error("concurrent friend acceptance did not finish")
 		}
 	}()
@@ -184,7 +196,7 @@ func TestFriendSnapshotPrecedesTrafficAndAcceptanceAtActivation(t *testing.T) {
 	}
 	select {
 	case <-accepted:
-	case <-time.After(3 * time.Second):
+	case <-time.After(friendSnapshotTestWait):
 		t.Fatal("friend acceptance did not complete")
 	}
 	bob.result(t, "friend_update")
