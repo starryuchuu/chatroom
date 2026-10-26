@@ -68,7 +68,8 @@ try {
                CHATROOM_CAPTURE_X=str(root.winfo_rootx()), CHATROOM_CAPTURE_Y=str(root.winfo_rooty()),
                CHATROOM_CAPTURE_W=str(root.winfo_width()), CHATROOM_CAPTURE_H=str(root.winfo_height()))
     subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                   env=env, check=True, capture_output=True, timeout=20)
+                   env=env, check=True, capture_output=True, timeout=20,
+                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
 def _visible(widget, name):
