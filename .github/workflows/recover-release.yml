@@ -1,0 +1,82 @@
+name: Recover verified release publication
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing current release tag (vX.Y.Z)
+        type: string
+        required: true
+      run_id:
+        description: Completed release run with successful tests and builds
+        type: string
+        required: true
+  push:
+    branches: ['release/recover-*']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: chatroom-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Check recovery tooling source privacy
+        run: python scripts/check_release_privacy.py --require-alias-head
+      - name: Verify original tagged run and every validation job
+        id: evidence
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
+          RECOVERY_RUN_ID: ${{ inputs.run_id }}
+        run: python scripts/recover_release.py
+      - name: Preserve corrected publication tools
+        run: |
+          mkdir -p "$RUNNER_TEMP/chatroom-release-tools"
+          cp scripts/release_assets.py scripts/versioning.py "$RUNNER_TEMP/chatroom-release-tools/"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.evidence.outputs.commit }}
+      - name: Verify tagged source and current master version
+        env:
+          RELEASE_TAG: ${{ steps.evidence.outputs.tag }}
+        run: |
+          python -c "import os,sys; from pathlib import Path; sys.path.insert(0,'scripts'); from release_plan import validate; validate(Path.cwd(),'workflow_dispatch','',os.environ['RELEASE_TAG'])"
+          python scripts/check_release_privacy.py --require-alias-head
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.evidence.outputs.run_id }}
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare exact tagged source and verified attachments
+        run: python "$RUNNER_TEMP/chatroom-release-tools/release_assets.py"
+      - name: Check final attachment privacy
+        run: python scripts/check_release_privacy.py --require-alias-head --assets release-assets
+      - name: Prepare reviewed release notes
+        env:
+          RELEASE_TAG: ${{ steps.evidence.outputs.tag }}
+        run: python scripts/release_notes.py "$RELEASE_TAG" --output release-notes.md
+      - name: Publish existing validated tag
+        env:
+          RELEASE_TAG: ${{ steps.evidence.outputs.tag }}
+        run: |
+          RELEASE_TITLE=$(head -n 1 release-notes.md)
+          RELEASE_TITLE=${RELEASE_TITLE#\# }
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag \
+            --title "$RELEASE_TITLE" --notes-file release-notes.md --latest

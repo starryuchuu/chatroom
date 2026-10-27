@@ -252,6 +252,38 @@ class AssetTests(RepositoryTests):
         with self.assertRaisesRegex(ValueError, 'Unexpected'):
             release_assets.prepare(self.root, assets)
 
+    def test_real_upload_directory_layout_is_flattened_without_changing_binaries(self):
+        assets = self.make_assets()
+        original = {path.name: path.read_bytes() for path in assets.iterdir()}
+        desktop = assets / 'desktop' / 'release'
+        desktop.mkdir(parents=True)
+        servers = assets / 'dist'
+        servers.mkdir()
+        for name in release_assets.BINARIES[:4]:
+            (assets / name).replace((desktop if name.endswith('.zip') else servers) / name)
+        self.assertEqual(release_assets.prepare(self.root, assets), 'v1.0.0')
+        self.assertTrue(all(path.is_file() for path in assets.iterdir()))
+        for name, content in original.items():
+            self.assertEqual((assets / name).read_bytes(), content)
+        self.assertEqual(len(list(assets.iterdir())), len(release_assets.BINARIES) + 3)
+
+    def test_duplicate_and_unknown_nested_files_fail_before_moving_anything(self):
+        assets = self.make_assets()
+        nested = assets / 'desktop' / 'release'
+        nested.mkdir(parents=True)
+        name = release_assets.BINARIES[0]
+        shutil.copyfile(assets / name, nested / name)
+        with self.assertRaisesRegex(ValueError, 'Duplicate'):
+            release_assets.prepare(self.root, assets)
+        self.assertTrue((assets / name).exists())
+        self.assertTrue((nested / name).exists())
+        (assets / name).unlink()
+        (nested / 'unexpected.txt').write_text('Synthetic')
+        with self.assertRaisesRegex(ValueError, 'Unexpected'):
+            release_assets.prepare(self.root, assets)
+        self.assertFalse((assets / name).exists())
+        self.assertTrue((nested / name).exists())
+
 
 class DailyPlanTests(RepositoryTests):
     def test_components_are_selected_conservatively(self):

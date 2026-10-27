@@ -19,15 +19,36 @@ BINARIES = (
 def prepare(root, assets):
     root, assets = Path(root), Path(assets)
     version = read_version(root)
-    for name in BINARIES:
-        path = assets / name
-        if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
-            raise ValueError('Missing release artifact: ' + name)
     source = 'chatroom-' + version + '-source.zip'
     license_name = 'OPAQUE_THIRD_PARTY_LICENSES.txt'
     allowed = {*BINARIES, source, license_name, 'SHA256SUMS'}
-    if any(item.name not in allowed or item.is_symlink() for item in assets.iterdir()):
-        raise ValueError('Unexpected release attachment')
+    if not assets.is_dir() or assets.is_symlink():
+        raise ValueError('Release assets must be a directory')
+    # upload-artifact preserves paths below the least common ancestor of its
+    # inputs. merge-multiple merges artifact roots, not nested dist/ directories.
+    # Validate the complete tree before flattening only the known binaries.
+    found, directories = {}, []
+    for item in assets.rglob('*'):
+        if item.is_symlink():
+            raise ValueError('Unexpected release attachment link')
+        if item.is_dir():
+            directories.append(item)
+            continue
+        if (not item.is_file() or item.name not in allowed
+                or item.parent != assets and item.name not in BINARIES):
+            raise ValueError('Unexpected release attachment')
+        if item.name in found:
+            raise ValueError('Duplicate release attachment: ' + item.name)
+        found[item.name] = item
+    for name in BINARIES:
+        path = found.get(name)
+        if path is None or path.stat().st_size == 0:
+            raise ValueError('Missing release artifact: ' + name)
+    for name, path in found.items():
+        if path.parent != assets:
+            path.replace(assets / name)
+    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+        directory.rmdir()
     subprocess.run(['git', 'archive', '--format=zip', '--prefix=chatroom-' + version + '/',
                     '--output=' + str((assets / source).resolve()), 'HEAD'], cwd=root, check=True)
     shutil.copyfile(root / 'chatroom_client' / license_name, assets / license_name)
