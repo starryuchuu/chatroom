@@ -1,8 +1,8 @@
 # Electron 桌面客户端
 
-v2.0.1 使用 Electron + React + TypeScript + Vite，替换旧 Tkinter 桌面界面。视觉参考 Codex Desktop 的低对比侧栏、宽松消息排版和底部输入区。通信与加密暂时复用独立 Python 核心。
+v2.0.2 使用 Electron + React + TypeScript + Vite，替换旧 Tkinter 桌面界面。视觉参考 Codex Desktop 的低对比侧栏、宽松消息排版和底部输入区。通信与加密暂时复用独立 Python 核心。
 
-普通用户从 [v2.0.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。升级时关闭旧客户端并保留原配置和独立离线密钥备份；新核心沿用原本机配置与密钥库。先处理旧进程的待确认发送，草稿不跨进程保存。
+普通用户从 [v2.0.2 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.2) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。升级时关闭旧客户端并保留原配置和独立离线密钥备份；新核心沿用原本机配置与密钥库。先处理旧进程的待确认发送，草稿不跨进程保存。
 
 ## 源码运行
 
@@ -51,9 +51,11 @@ npm run dist
 
 新入口和核心不导入 Tk，桌面分发包不包含旧视图。旧 Tk 源码与测试暂留仓库，作为迁移期间的历史回归基准。
 
-发布隐私检查允许更大的单一归档成员以容纳 Electron，但保持总展开预算。Electron 45.0.0 Linux / Windows x64 官方二进制包含公开构建路径；只有与已核验官方 ZIP 中程序 SHA-256 完全一致的原始字节才豁免通用个人路径启发式。配置的禁止值、密钥和凭据检查仍执行，修改或追加字节立即失去豁免。升级 Electron 必须重新核验，不能扩大通用用户名白名单。
+发布隐私检查允许更大的单一归档成员以容纳 Electron，但保持总展开预算。Electron 45.0.0 Linux / Windows x64 官方二进制包含公开构建路径，官方 ZIP 使用固定 npm 包内的校验值验证。只有完全匹配已核验文件 SHA-256 的原始字节，或 Windows PE 中完全匹配已核验 `.rdata` 段 SHA-256 的字节区域，才可识别为上游构建路径；不扩大通用用户名白名单。
 
-Windows 设置 `signAndEditExecutable: false`，保留原始 Electron 程序字节与上游资源信息，不改写 EXE 图标和文件属性，也不额外签名；Chatroom 版本来自应用包的 `package.json`。未来加入品牌资源或签名时，需重新设计相应的上游路径校验，不能对已修改 EXE 套用原文件的哈希豁免。
+Windows 打包器会写入 ASAR 完整性资源，改变整个 EXE 的哈希，但不改动上述 `.rdata` 原始字节。检查只对完整位于已核验区域内的路径匹配应用豁免；新增资源、其他段和尾部附加数据继续扫描。显式禁止值、密钥及凭据检查仍覆盖全部字节。修改 `.rdata` 中任一字节就失去对应信任，畸形 PE 或越界段不会取得豁免。
+
+Windows 设置 `signAndEditExecutable: false`，不额外修改图标、版本资源或签名，打包器仍保留 ASAR 完整性资源。Chatroom 版本来自应用包的 `package.json`。升级 Electron 时必须重新核验官方归档及相应字节区域。Windows 资源注入后的打包目录已在 Linux 交叉构建复现隐私检查；这不替代原生 Windows 的启动及成品测试。
 
 ## 验证
 
