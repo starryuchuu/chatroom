@@ -1,8 +1,8 @@
 # Go Chatroom Server
 
-## 当前版本：v2.0.0，传输协议 v2 + OPAQUE 单密码认证
+## 当前版本：v2.0.1，传输协议 v2 + OPAQUE 单密码认证
 
-v2.0.0 配套全新 Electron 桌面客户端；Go 服务端业务逻辑与 v1.5.0 相同，协议、数据库及密钥格式兼容，已有 OPAQUE 账号无需重新迁移。客户端运行与下载见[桌面指南](../docs/DESKTOP_CLIENT.md)。
+v2.0.1 配套全新 Electron 桌面客户端；Go 服务端业务逻辑与 v1.5.0 相同，协议、数据库及密钥格式兼容，已有 OPAQUE 账号无需重新迁移。客户端运行与下载见[桌面指南](../docs/DESKTOP_CLIENT.md)。
 
 单密码认证需要 v1.3.0 或更新的 Python 客户端和 Go 服务端；v1.5.0 新增可选 `message_receipts`，在同一事务保存消息与回执，配合新版客户端核对结果并以原幂等键重试；旧客户端请求继续受支持。正常注册、登录只输入一个统一密码，通过 OPAQUE 认证后在客户端解锁随机生成的聊天身份，服务器不接收正常登录密码，也不接收明文身份私钥。新版客户端要求 `e2ee_v1` 与 `opaque_v1`；连接旧服务器会停止，不回退到旧密码登录。
 
@@ -28,7 +28,7 @@ v1.3.2 对旧认证登录、OPAQUE 登录和迁移在凭据验证通过后共用
 
 ## 下载与验证
 
-在 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载，详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，可使用 v1.3.0 或更新的 Python 客户端；OPAQUE WASM 已嵌入可执行文件，无需另外安装 WASM 运行时。
+在 [v2.0.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) 下载，详见 [发布说明](RELEASE_NOTES.md)。发布程序支持 Windows、Linux、macOS 的 amd64 与 arm64，默认监听 `127.0.0.1:12346`，可使用 v1.3.0 或更新的 Python 客户端；OPAQUE WASM 已嵌入可执行文件，无需另外安装 WASM 运行时。
 
 ```bash
 go test ./...
@@ -188,7 +188,7 @@ go test ./...
 
 ### 使用 Python 客户端联调
 
-在 Python 客户端登录页选择 Go 服务器配置，或填入端口 `12346`。使用 v2.0.0 客户端验证新账号注册、登录、显式迁移、改密及同一数据库在 Python/Go 间切换后的身份恢复。
+在 Python 客户端登录页选择 Go 服务器配置，或填入端口 `12346`。使用 v2.0.1 客户端验证新账号注册、登录、显式迁移、改密及同一数据库在 Python/Go 间切换后的身份恢复。
 
 > 注意：Go 服务端仅监听 `127.0.0.1`，请确保客户端与服务端在同一主机上运行。
 

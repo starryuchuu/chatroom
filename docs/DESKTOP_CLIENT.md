@@ -1,8 +1,8 @@
 # Electron 桌面客户端
 
-v2.0.0 使用 Electron + React + TypeScript + Vite，替换旧 Tkinter 桌面界面。视觉参考 Codex Desktop 的低对比侧栏、宽松消息排版和底部输入区。通信与加密暂时复用独立 Python 核心。
+v2.0.1 使用 Electron + React + TypeScript + Vite，替换旧 Tkinter 桌面界面。视觉参考 Codex Desktop 的低对比侧栏、宽松消息排版和底部输入区。通信与加密暂时复用独立 Python 核心。
 
-普通用户从 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。升级时关闭旧客户端并保留原配置和独立离线密钥备份；新核心沿用原本机配置与密钥库。先处理旧进程的待确认发送，草稿不跨进程保存。
+普通用户从 [v2.0.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。升级时关闭旧客户端并保留原配置和独立离线密钥备份；新核心沿用原本机配置与密钥库。先处理旧进程的待确认发送，草稿不跨进程保存。
 
 ## 源码运行
 

@@ -4,6 +4,11 @@ import sys
 
 
 def main():
+    # The RPC contract uses UTF-8 even when a host launches us in a legacy
+    # Windows code page without Electron's PYTHONIOENCODING environment.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING,
                         format='%(levelname)s %(name)s: %(message)s')
     if sys.argv[1:] == ['--check-encryption-runtime']:

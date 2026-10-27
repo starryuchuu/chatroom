@@ -2,7 +2,7 @@
 
 [English Version](README_en.md) | [文档目录](docs/README.md) | [单密码指南](docs/SINGLE_PASSWORD.md) | [群组功能指南](docs/GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](go-server/README.md)
 
-> **v2.0.0：全新桌面客户端。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
+> **v2.0.1：全新桌面客户端。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
@@ -13,7 +13,7 @@
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v2.0.0 重构桌面客户端，采用简洁的双栏布局与虚拟消息列表，自己的消息靠右、别人的消息靠左，在线用户可从侧栏查看；保留发送恢复、有限缓存、草稿和聊天搜索。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v2.0.1 重构桌面客户端，采用简洁的双栏布局与虚拟消息列表，自己的消息靠右、别人的消息靠左，在线用户可从侧栏查看；保留发送恢复、有限缓存、草稿和聊天搜索。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -76,7 +76,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v2.0.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -89,7 +89,7 @@ go build -o chatroom-server ./cmd/server/main.go
 
 ### 启动客户端
 
-普通用户可从 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
+普通用户可从 [v2.0.1 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.1) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
 
 源码开发：
 
@@ -149,7 +149,7 @@ v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原�
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v2.0.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。v1.5.0 起自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v2.0.1 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。v1.5.0 起自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -448,11 +448,11 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.1 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码开发使用 [chatroom-v2.0.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.0/chatroom-v2.0.0-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
+源码开发使用 [chatroom-v2.0.1-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.1/chatroom-v2.0.1-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
 
-新客户端使用 React 界面、受限 Electron IPC 和独立 Python 核心，详见[客户端结构](docs/CLIENT_ARCHITECTURE.md)与 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。v2.0.0 不再单独提供旧式客户端源码包或散装 Python 附件。
+新客户端使用 React 界面、受限 Electron IPC 和独立 Python 核心，详见[客户端结构](docs/CLIENT_ARCHITECTURE.md)与 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。v2.0.1 不再单独提供旧式客户端源码包或散装 Python 附件。
 
 ### 最新功能
 

@@ -1,6 +1,6 @@
 # Electron 客户端迁移验证
 
-验证日期：2026-10-27。目标版本：v2.0.0。环境：Linux x64、Python 3.12.14、Node.js 24.19.0、Electron 45.0.0、React 19.3.1、TypeScript 7.0.2、Vite 8.3.5；图形检查使用 Xvfb。本页记录本地验证范围；正式 Windows / Linux 发布检查由该版本的 Actions 执行。
+验证日期：2026-10-27。目标版本：v2.0.1。环境：Linux x64、Python 3.12.14、Node.js 24.19.0、Electron 45.0.0、React 19.3.1、TypeScript 7.0.2、Vite 8.3.5；图形检查使用 Xvfb。本页记录本地验证范围；正式 Windows / Linux 发布检查由该版本的 Actions 执行。
 
 ## 已验证
 
