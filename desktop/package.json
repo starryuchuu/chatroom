@@ -1,11 +1,14 @@
 {
   "name": "chatroom-desktop",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "Chatroom desktop client",
   "author": "starryuchuu",
-  "repository": { "type": "git", "url": "https://github.com/starryuchuu/chatroom.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/starryuchuu/chatroom.git"
+  },
   "license": "GPL-3.0-only",
   "main": "dist/main.cjs",
   "scripts": {
@@ -39,17 +42,54 @@
     "productName": "Chatroom",
     "executableName": "chatroom",
     "asar": true,
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "package.json", "!node_modules/**/*"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
     "extraResources": [
-      { "from": "core-dist", "to": "core", "filter": ["**/*"] },
-      { "from": "../LICENSE", "to": "LICENSE.chatroom.txt" },
-      { "from": "../chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt", "to": "OPAQUE_THIRD_PARTY_LICENSES.txt" },
-      { "from": "dist/THIRD_PARTY_NOTICES.txt", "to": "THIRD_PARTY_NOTICES.txt" }
+      {
+        "from": "core-dist",
+        "to": "core",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE.chatroom.txt"
+      },
+      {
+        "from": "../chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt",
+        "to": "OPAQUE_THIRD_PARTY_LICENSES.txt"
+      },
+      {
+        "from": "dist/THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      }
     ],
     "artifactName": "chatroom-desktop-${os}-${arch}.${ext}",
-    "win": { "target": ["zip"], "artifactName": "chatroom-desktop-windows-${arch}.${ext}", "signAndEditExecutable": false },
-    "linux": { "target": ["zip"], "category": "Network" },
-    "mac": { "target": ["zip"], "category": "public.app-category.social-networking" }
+    "win": {
+      "target": [
+        "zip"
+      ],
+      "artifactName": "chatroom-desktop-windows-${arch}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "linux": {
+      "target": [
+        "zip"
+      ],
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "category": "public.app-category.social-networking"
+    }
   }
 }
