@@ -2,6 +2,8 @@
 
 [English Version](README_en.md) | [文档目录](docs/README.md) | [单密码指南](docs/SINGLE_PASSWORD.md) | [群组功能指南](docs/GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](go-server/README.md)
 
+> **v2.0.0：全新桌面客户端。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
+
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
 ![Go](https://img.shields.io/badge/go-1.27.3-blue.svg)
@@ -11,7 +13,7 @@
 
 ## 📖 项目简介
 
-本项目提供私聊、群聊、好友及群组管理。v1.5.0 新增发送结果核对与幂等重试、有限正文缓存、会话草稿和聊天搜索，并改善消息选择复制、时间显示与高 DPI 布局。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
+本项目提供私聊、群聊、好友及群组管理。v2.0.0 重构桌面客户端，采用简洁的双栏布局与虚拟消息列表，自己的消息靠右、别人的消息靠左，在线用户可从侧栏查看；保留发送恢复、有限缓存、草稿和聊天搜索。桌面客户端保留可保存的**深色 / 浅色模式**，沿用 v1.3.0 引入的 OPAQUE **单密码登录**，用一份统一密码解锁随机端到端身份，无需另设本机口令。新消息使用 Ed25519、X25519 与 AES-256-GCM 进行**端到端加密**，服务端仅保存和转发密文。原有 RSA 会话密钥交换与 HMAC-SHA256 完整报文认证继续保护连接；数据库敏感字段仍加密存储。旧历史保留并明确标记为非端到端加密，详见[端到端加密与密钥恢复](docs/END_TO_END_ENCRYPTION.md)。
 
 ### ✨ 核心优势
 
@@ -27,15 +29,11 @@
 
 ## 🖼️ 界面预览
 
-| 登录界面 | 主界面 | 聊天界面 |
-|---------|--------|---------|
-| ![v1.3.2 登录界面：单密码登录、主题切换、旧账号迁移与旧密钥解锁入口](docs/images/login.png) | ![主界面：未读计数、会话摘要和消息提醒](docs/images/main.png) | ![聊天界面：端到端加密消息与密钥管理入口](docs/images/chat.png) |
+![Electron 浅色聊天界面](docs/images/electron-chat.png)
 
-![v1.3.2 深色聊天界面：端到端加密消息与浅色模式切换入口](docs/images/chat-dark.png)
+![Electron 深色聊天界面](docs/images/electron-chat-dark.png)
 
-点击登录页或聊天页右上角的 **深色模式** / **浅色模式** 即时切换，保留输入、草稿、聊天连接和已打开的应用对话框；下次启动沿用已保存的选择。
-
-以上截图于 2026-10-23 使用 v1.3.2 源码在 Linux 上实拍，展示单密码登录、“迁移旧账号…”与“解锁旧密钥…”入口、未读摘要及深浅两种主题的端到端加密聊天。拍摄环境为 Python 3.13.5、Tk 8.6.16，窗口大小为 1120 × 760。使用临时本地 Python 服务端、全新配置和演示密钥；`demo_alice`、`demo_bob`、`demo_carol`、群组和消息均为虚构数据。源码版本与截图隐私说明见[截图说明](docs/images/README.md)。
+截图于 2026-10-27 在真实 Electron 窗口采集，聊天内容是虚构的渲染夹具。真实加密互操作由 Python / Go 服务端测试单独验证。聊天页右上角或「设置 → 通用」切换主题，保留输入与连接。旧版截图保存在 [截图目录](docs/images/README.md) 作为历史记录。
 
 ---
 
@@ -43,7 +41,8 @@
 
 ### 环境要求
 
-- **Python 客户端 / 服务端**: Python 3.11+
+- **桌面开发**: Node.js 24 + Python 3.11+（成品内置运行时）
+- **Python 服务端**: Python 3.11+
 - **Go 服务端**: 源码构建推荐 Go 1.27.3，CI / 发布工具链固定为该版本（`go.mod` 语言最低版本 1.26.0）
 - **操作系统**: Windows / Linux / macOS
 
@@ -77,7 +76,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v1.5.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v1.5.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -90,17 +89,25 @@ go build -o chatroom-server ./cmd/server/main.go
 
 ### 启动客户端
 
+普通用户可从 [v2.0.0 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
+
+源码开发：
+
 ```bash
-python client.py
+cd desktop
+npm ci
+npm start
 ```
+
+已激活 Python 虚拟环境时，也可在根目录运行 `python client.py`，启动器会使用当前解释器。打包方式及 Rust 核心替换边界见 [桌面指南](docs/DESKTOP_CLIENT.md)。
 
 ### 客户端连接配置
 
-登录页可直接选择服务器，点击 **连接设置…** 新增、编辑或删除配置，填写地址、端口及公钥指纹后保存并使用。内置本机 Python（`127.0.0.1:12345`）和 Go（`127.0.0.1:12346`）配置，打包程序同样可用，无需修改源码。登录页的端口输入仅覆盖本次连接；要长期保存端口，请编辑服务器配置。
+登录页选择服务器，右上角进入 **设置 → 服务器** 管理地址、端口及指纹。默认提供本机 Python（12345）和 Go（12346）配置。
 
 连接远程服务器必须填写通过可信渠道核实的 SHA-256 公钥指纹。配置窗口接受 64 位十六进制指纹，也会规范化带冒号或空格的指纹。连接、认证或重连期间不能切换服务器。
 
-首次启动仍使用 `client.py` 顶部常量作为默认值；已有保存配置时，以所选配置为准。配置文件为 Windows `%APPDATA%/Chatroom/client.json`、Linux `$XDG_CONFIG_HOME/chatroom/client.json`（未设置时为 `~/.config/chatroom/client.json`）、macOS `~/Library/Application Support/Chatroom/client.json`。可用 `CHATROOM_CONFIG_DIR` 指定其他目录。
+新核心继续使用原有服务器配置和密钥库；已有保存配置时，以所选配置为准。配置文件为 Windows `%APPDATA%/Chatroom/client.json`、Linux `$XDG_CONFIG_HOME/chatroom/client.json`（未设置时为 `~/.config/chatroom/client.json`）、macOS `~/Library/Application Support/Chatroom/client.json`。可用 `CHATROOM_CONFIG_DIR` 指定其他目录。
 
 ### 深色与浅色模式
 
@@ -108,7 +115,7 @@ python client.py
 
 主题保存在 `client.json` 顶层的 `theme` 字段，仅接受 `light` / `dark`；未设置时默认 `light`。主题由用户手动选择，不自动跟随系统。保存失败会提示错误并保留原主题。
 
-点击 **创建账号** 在原登录页切换到注册表单，点击 **已有账号？返回登录** 原地返回；注册成功后保留用户名并清空密码，失败在原表单显示原因。按钮获得焦点时回车只执行该按钮，输入框中的回车提交当前表单。登录页使用居中表单卡片；高 DPI 或窗口高度不足时可滚动，Tab 键聚焦的操作会自动进入可见区域。聊天侧栏按实际宽度省略过长摘要，完整消息仍在会话中显示。
+点击 **创建新账号** 在原登录页切换到注册表单，点击 **已有账号？返回登录** 原地返回；注册成功后保留用户名并清空密码，失败在原表单显示原因。按钮获得焦点时回车只执行该按钮，输入框中的回车提交当前表单。登录页使用居中表单卡片；高 DPI 或窗口高度不足时可滚动，Tab 键聚焦的操作会自动进入可见区域。聊天侧栏按实际宽度省略过长摘要，完整消息仍在会话中显示。
 
 收到消息时，好友和群聊列表保留滚动、选择及键盘导航位置。向上阅读历史时，新消息不会强制跳到底部；点击聊天区的 **N 条新消息 ↓** 可回到最新消息，手动滚到底部也会清除提示。原本停在底部或本人发送时继续跟随；重连补取后的重绘保留阅读位置，并支持小幅滚轮事件。
 
@@ -118,15 +125,15 @@ v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原�
 
 好友和群列表显示未读数与最近消息预览，窗口标题显示总未读数。打开会话且窗口处于前台时清除未读；窗口在后台或最小化时继续累计。首次使用账号时，最近历史作为基线，不会将旧消息批量提醒；之后会恢复按服务器和账号隔离的已读位置与未读编号。
 
-聊天页顶部的 **通知设置** 菜单可开关 **消息提醒** 或 **免打扰**。免打扰保留未读数，不发送通知或提示音。桌面通知只显示通用的新消息提示，不包含正文；不为历史或断线补取消息逐条弹窗。Windows 使用系统通知图标提示，Linux 使用 `notify-send`，macOS 使用系统通知；系统能力不可用时退回窗口提示音。Linux 可安装 `libnotify-bin` 以启用桌面通知。
+**设置 → 通用** 可开关 **桌面通知** 和 **勿扰模式**。勿扰保留未读数；桌面通知由 Electron 调用系统能力，只显示通用提示，不包含正文，不为历史或断线补取逐条提醒。通知是否显示取决于操作系统权限与设置。
 
 本地设置只保存服务器配置、主题、提醒偏好、账号标识和消息编号，不保存密码、聊天正文或草稿。多个客户端同时保存时，会在文件锁内读取最新设置再更新，保留其他账号和服务器配置。草稿在当前进程中按服务器、账号和会话隔离保留，关闭进程后不保留。
 
-点击顶部 **在线用户** 可展开或收起在线列表。输入框中按 Enter 发送，Shift+Enter 或 Ctrl+Enter 换行。
+点击侧栏底部 **在线用户** 查看和搜索当前服务器在线列表，人数包含自己；断线时显示为上次列表。输入框中按 Enter 发送，Shift+Enter 或 Ctrl+Enter 换行。
 
 ### 端到端加密与密钥
 
-单密码认证需 v1.3.0 或更新的服务端和客户端。正常注册、登录只输入一份统一密码（新密码 8–128 个字符），通过 OPAQUE 认证解锁随机生成的端到端身份。旧账号先点击登录页 **迁移旧账号…**，输入旧登录密码、原本机密钥口令和新的统一密码；原私钥缺失或身份不符时停止，不替换已有身份。旧登录密码仅在这次显式迁移中经加密传输交给服务端验证。若服务端已提交迁移、本机仍是旧 v1 密钥文件，点击 **解锁旧密钥…** 输入原本机口令，再以新统一密码正常登录，保留本机信任，无需重复迁移。
+单密码认证需 v1.3.0 或更新的服务端和客户端。正常注册、登录只输入一份统一密码（新密码 8–128 个字符），通过 OPAQUE 认证解锁随机生成的端到端身份。旧账号先点击登录页 **恢复与迁移 → 迁移旧账号**，输入旧登录密码、原本机密钥口令和新的统一密码；原私钥缺失或身份不符时停止，不替换已有身份。旧登录密码仅在这次显式迁移中经加密传输交给服务端验证。若服务端已提交迁移、本机仍是旧 v1 密钥文件，点击 **恢复与迁移 → 解锁旧密钥** 输入原本机口令，再以新统一密码正常登录，保留本机信任，无需重复迁移。
 
 聊天页 **加密与密钥…** 可核对指纹、**修改账号密码…** 或 **导出加密密钥备份…**。新设备可在正确认证后恢复云端加密身份，但云备份不包含联系人信任、群接收人批准或重放记录，仍需重新核对。本机 v2 分层密钥库可在另一设备改密后验证并保留原信任，云端不会覆盖或回滚这些记录。
 
@@ -142,7 +149,7 @@ v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原�
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v1.5.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。本次更新自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v2.0.0 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。v1.5.0 起自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -185,45 +192,36 @@ Python / Go 服务端均限制每群最多 **256 位实际成员（含群主）*
 
 ```
 chatroom/
-├── client.py                 # 客户端启动入口
-├── server.py                 # Python 服务端启动入口
-├── server_handlers/          # 好友、群管理、消息处理及显式依赖
-├── chatroom_client/          # 客户端组件
-│   ├── request_context.py    # 异步请求归属与失效判断
-│   ├── login_view.py         # 登录及注册卡片布局
-│   ├── message_list.py       # 有限窗口消息显示和控件复用
-│   ├── message_actions.py    # 原生只读选择与消息复制
-│   ├── desktop_check.py      # 源码与成品的合成桌面检查
-│   ├── message_rows.py       # 日期分段、连续作者与消息信息
-│   ├── sending.py            # 待确认发送、结果查询和安全重试
-│   ├── send_recovery_view.py # 原页面的待确认消息列表
-│   ├── search.py             # 当前缓存正文的搜索与高亮
-│   └── theme.py              # 深浅色主题、即时换色与跨平台字体和控件样式
+├── client.py                 # Electron 启动器（复用当前 Python 环境）
+├── core_client.py            # 无界面 Python 核心 / JSON-RPC stdio 入口
+├── desktop/                  # Electron + React + TypeScript 桌面
+│   ├── electron/             # 主进程、受限 preload 与核心进程桥接
+│   ├── src/                  # 聊天、登录、设置、主题与界面组件
+│   ├── scripts/              # 开发、构建及许可收集
+│   └── tests/                # 真实 Electron 与双窗口加密测试
+├── chatroom_client/          # 通信、模型、认证、加密、同步与 rpc.py
+│   └── view.py 等            # 旧 Tk 视图，仅用于迁移回归
+├── server.py                 # Python 服务端入口
+├── server_handlers/          # 好友、群管理及消息处理
 ├── go-server/                # Go 服务端及其构建文件
-├── docs/                     # 文档导航、使用指南、设计说明与截图
-│   ├── README.md              # 文档导航
-│   ├── images/                # 界面截图
-│   └── reviews/               # 历史审查与验证记录
-├── tests/                    # Python、Tk 及 Go 互操作测试
+├── opaque-core/              # 固定 opaque-ke 版本的 Rust/WASM 源码
+├── opaque_runtime.py         # Python OPAQUE WASM 包装
+├── opaque_server.py          # Python OPAQUE 认证与账号记录
 ├── transport.py              # 共享传输协议
 ├── storage.py                # 共享加密存储
-├── e2ee_server.py            # 端到端公开身份与密文校验
-├── opaque_runtime.py         # Python wasmtime 共享认证核心包装
-├── opaque_server.py          # Python OPAQUE 认证与账号记录
-├── opaque-core/              # 固定 opaque-ke 版本的 Rust/WASM 源码
-├── scripts/build_opaque.py   # 开发者重建并同步两份 WASM
-├── history_store.py          # 历史分页查询
-├── pending_store.py          # 待处理申请持久化
-├── send_receipts.py          # 事务内发送回执和内容去重
-├── requirements.txt          # 固定 Python 运行及传递依赖
-├── requirements-build.txt    # 固定打包依赖（开发与构建使用）
-├── VERSION                   # 项目版本
-├── README.md                 # 中文项目入口
-├── README_en.md              # 英文项目入口
-├── CONTRIBUTING.md           # 开发、测试与发布约定
-├── RELEASE_NOTES.md          # 当前发布说明
-├── .github/                  # 持续集成与发布工作流
-├── .gitignore                # 本地运行与构建文件的忽略规则
+├── e2ee_server.py             # 公开身份与密文校验
+├── history_store.py          # 历史分页
+├── pending_store.py          # 待处理申请
+├── send_receipts.py          # 事务内发送回执及去重
+├── scripts/                  # 核心重建、版本同步、发布与隐私检查
+├── tests/                    # Python、旧 Tk、核心及 Go 互操作回归
+├── docs/                     # 指南、架构、截图及历史验证记录
+├── .github/                  # 日常 CI、正式发布及依赖更新
+├── requirements.txt          # 固定 Python 运行依赖
+├── requirements-build.txt    # 固定 Python 打包依赖
+├── VERSION                   # 统一版本源
+├── CONTRIBUTING.md           # 开发、测试与单命令发布
+├── RELEASE_NOTES.md          # 按版本维护的发布说明
 └── LICENSE                   # GNU GPL v3 许可证
 ```
 
@@ -244,6 +242,17 @@ xvfb-run -a python -m unittest discover -s tests -v
 ```
 
 未设置 `CHATROOM_GO_SERVER_EXE` 时，Go 互操作测试会明确跳过。要运行全部测试，先在 `go-server` 中编译 `go build -o ../go-interop-server ./cmd/server`，然后将该环境变量设为二进制的绝对路径（Windows 使用 `.exe`）。
+
+### Electron 桌面测试
+
+```bash
+cd desktop
+npm ci
+npm run build
+npm test  # Linux 无显示环境使用 xvfb-run -a npm test
+```
+
+同一套件可检查打包成品，详见[桌面指南](docs/DESKTOP_CLIENT.md)。
 
 ### Go 测试
 
@@ -349,12 +358,17 @@ go test -race ./...  # 需要支持 CGO 的 C 编译器
 
 ## 🚀 CI / CD
 
-日常提交、Pull Request 和 Release 由 `.github/workflows/release.yml` 统一调度，共用 `tests.yml` 和 `build-artifacts.yml`，同一提交只测试、构建一次。Windows / Linux 运行 Python、真实 Tk、Go 互操作及 Go 检查，Linux 额外执行数据竞争检测。回归与跨平台构建并行，发布依赖二者全部通过；`master` 的版本文件变化或明确的手动发布才进入发布任务，使用同次运行的产物：
+日常推送由 `.github/workflows/ci.yml` 按改动选择检查：只改界面时运行桌面检查，核心 / 服务端变化运行回归和互操作，文档变化只做版本与隐私检查。已有 PR 的相同提交避免重复跑完整检查，日常不打跨平台发布包。
 
-- **Python 服务端 / 客户端**：Windows（EXE）与 Linux 平台，使用 PyInstaller 打包
-- **Go 服务端**：Windows / Linux / macOS 三平台 × amd64 / arm64 交叉编译
-- 触发条件：推送到 `main` / `master` / `test` 分支，或 Pull Request
-- 构建产物通过 GitHub Actions Artifacts 下载
+正式发版时，在干净的 `master` 上运行一条命令：
+
+```bash
+python scripts/release.py 1.6.0
+```
+
+命令统一更新版本副本、提交并创建标签，然后原子推送主分支和标签。可先加 `--dry-run` 预览。标签触发完整 Windows / Linux 测试、桌面 / Python 服务端及六平台 Go 构建，再校验并发布；所有产物固定到同一标签提交。
+
+Release 保留平台程序、一个完整源码包、许可与 `SHA256SUMS`，发布页自动提取 `RELEASE_NOTES.md` 中对应版本的说明。不再重复上传客户端源码包和零散脚本。失败重试、检查选择与命令细节见[贡献指南](CONTRIBUTING.md#日常推送与发布)。
 
 Go 构建固定使用 1.27.3。Windows / Linux CI 使用固定版本的 `pip-audit` 检查 Python 运行和构建依赖，Linux CI 以 `govulncheck` 检查 Go 服务端；工具版本和命令见[贡献指南](CONTRIBUTING.md)。Dependabot 更新配置覆盖 Python、Go、Cargo 和 GitHub Actions；安全告警及自动安全更新的仓库开关仍需管理员在 GitHub 设置中启用，不能仅凭配置文件视为已开启。依赖检查不等于对本项目的独立安全审计。
 
@@ -371,10 +385,10 @@ A: 检查是否有其他程序占用端口，或修改服务端端口配置（`s
 A: 确认服务端已启动，检查防火墙设置和网络连接。同时确认客户端端口与服务端一致（Python 服务端 `12345`，Go 服务端 `12346`）。
 
 **Q: 客户端提示"未配置服务器公钥指纹"并拒绝连接？**  
-A: 通过可信渠道取得服务器实际指纹，在登录页“连接设置…”中保存。不能使用未经核实的远程响应代替指纹核对；首次启动默认值也可通过 `EXPECTED_SERVER_KEY_FINGERPRINT` 配置。
+A: 通过可信渠道取得服务器实际指纹，在登录页“设置 → 服务器”中保存。不能使用未经核实的远程响应代替指纹核对；首次启动默认值也可通过 `EXPECTED_SERVER_KEY_FINGERPRINT` 配置。
 
 **Q: 如何连接 Go 服务端？**  
-A: 启动新版 Go 服务端后，在登录页选择本机 Go 配置，或通过“连接设置…”填写其地址、`12346` 端口及可信公钥指纹。
+A: 启动新版 Go 服务端后，在登录页选择本机 Go 配置，或通过“设置 → 服务器”填写其地址、`12346` 端口及可信公钥指纹。
 
 ### 数据库问题
 
@@ -434,11 +448,11 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v1.5.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.0 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码运行可直接下载包含完整 `chatroom_client/`、`opaque_runtime.py` 及预编译 WASM 的 [chatroom-v1.5.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-client.zip)，安装依赖后执行 `python client.py`。完整项目请使用 [chatroom-v1.5.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-source.zip)；Python 服务端也需要 `server_handlers/`、`opaque_server.py` 和共享运行时，请保留完整源码包中的模块。
+源码开发使用 [chatroom-v2.0.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.0/chatroom-v2.0.0-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
 
-客户端按会话模型、连接管理、应用操作、服务器事件和 Tk 视图分工，详见[客户端结构说明](docs/CLIENT_ARCHITECTURE.md)。服务器配置可在登录页管理，`client.py` 顶部常量提供首次启动默认值；启动命令仍为 `python client.py`。
+新客户端使用 React 界面、受限 Electron IPC 和独立 Python 核心，详见[客户端结构](docs/CLIENT_ARCHITECTURE.md)与 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。v2.0.0 不再单独提供旧式客户端源码包或散装 Python 附件。
 
 ### 最新功能
 

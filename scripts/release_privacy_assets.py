@@ -4,6 +4,7 @@ Only primitive marshal objects in PYZ tables are decoded. Marshaled code stays
 opaque and is scanned as bytes, so foreign Python bytecode is also supported.
 """
 from io import BytesIO
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -15,7 +16,9 @@ import zlib
 
 
 MAX_FILE_BYTES = 256 * 1024 * 1024
-MAX_MEMBER_BYTES = 128 * 1024 * 1024
+# Electron's signed upstream executable is larger than 128 MiB. Keep each
+# expanded member bounded by the same 256 MiB limit used for standalone files.
+MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_EXPANDED_BYTES = 1536 * 1024 * 1024
 MAX_MEMBERS = 30000
 MAX_DEPTH = 8
@@ -25,6 +28,16 @@ PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
 CARCHIVE_MAGIC = b'MEI\014\013\012\013\016'
 COOKIE = struct.Struct('!8sIIII64s')
 TOC_ENTRY = struct.Struct('!IIIIBc')
+
+# Pristine upstream Electron 45.0.0 linux-x64 and win32-x64 executables, verified
+# against the official ZIP checksums shipped in the pinned electron npm package.
+# They embed public build paths. ONLY exact immutable bytes may skip personal-path
+# heuristic; explicit forbidden values, private keys and tokens still fail.
+# Updates must verify the official archive checksum and record the new hash.
+UPSTREAM_RUNTIME_SHA256 = frozenset({
+    'b36c3ce9b423098a7854f4912f730b0654b41ae183818f887b8f1cd0a90725eb',
+    '8e84549b05d27d444da2957653200d1e0ac287eff0fc5722b92835b9e0821a59',
+})
 
 
 class PrivacyError(Exception):
@@ -114,7 +127,8 @@ class ScanPolicy:
             if pattern is self._windows_path:
                 allowed = allowed | self._windows_build_users
             if any(match[1].lower() not in allowed for match in pattern.finditer(data)):
-                raise PrivacyError('personal-path')
+                if hashlib.sha256(data).hexdigest() not in UPSTREAM_RUNTIME_SHA256:
+                    raise PrivacyError('personal-path')
 
     def source(self, data, name):
         self.content(data)

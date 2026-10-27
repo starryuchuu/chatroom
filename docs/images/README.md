@@ -1,5 +1,13 @@
 # 界面截图 / Interface screenshots
 
+## Electron 开发分支 / Development desktop
+
+`electron-chat.png`、`electron-chat-dark.png`、`electron-login-dark.png` 于 2026-10-27 在真实 Electron 45.0.0 Linux 窗口中采集。账号、会话和文字是合成渲染夹具；真实加密互操作另经 Python / Go 服务端及双 Electron 窗口验证。见 [Electron 迁移验证](../reviews/ELECTRON_MIGRATION_VALIDATION.md)。
+
+新增 `electron-online-users.png` 展示新侧栏入口与在线列表，使用真实本机测试服务和虚构账号 `alice`、`bob` 采集。
+
+## v1.3.2 历史截图 / Historical screenshots
+
 这些图片是 v1.3.2 客户端的真实窗口截图，展示深浅色主题、单密码登录、旧账号迁移与旧密钥解锁入口、双栏会话布局、可收起的在线用户面板及端到端加密消息。认证操作见[单密码指南](../SINGLE_PASSWORD.md)。
 
 These real window captures show the v1.3.2 client: light and dark themes, single-password login, explicit legacy-account migration and legacy-key unlock entries, two-column conversations, a collapsible online-users panel, and end-to-end encrypted messages. See the [single-password guide](../SINGLE_PASSWORD.md).

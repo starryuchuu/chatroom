@@ -1,0 +1,55 @@
+{
+  "name": "chatroom-desktop",
+  "version": "1.5.0",
+  "private": true,
+  "type": "module",
+  "description": "Chatroom desktop client",
+  "author": "starryuchuu",
+  "repository": { "type": "git", "url": "https://github.com/starryuchuu/chatroom.git" },
+  "license": "GPL-3.0-only",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "test": "playwright test",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "lucide-react": "1.62.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-virtuoso": "4.18.19"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "45.0.0",
+    "electron-builder": "26.18.0",
+    "esbuild": "^0.27.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  },
+  "build": {
+    "appId": "io.github.starryuchuu.chatroom",
+    "productName": "Chatroom",
+    "executableName": "chatroom",
+    "asar": true,
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json", "!node_modules/**/*"],
+    "extraResources": [
+      { "from": "core-dist", "to": "core", "filter": ["**/*"] },
+      { "from": "../LICENSE", "to": "LICENSE.chatroom.txt" },
+      { "from": "../chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt", "to": "OPAQUE_THIRD_PARTY_LICENSES.txt" },
+      { "from": "dist/THIRD_PARTY_NOTICES.txt", "to": "THIRD_PARTY_NOTICES.txt" }
+    ],
+    "artifactName": "chatroom-desktop-${os}-${arch}.${ext}",
+    "win": { "target": ["zip"], "artifactName": "chatroom-desktop-windows-${arch}.${ext}", "signAndEditExecutable": false },
+    "linux": { "target": ["zip"], "category": "Network" },
+    "mac": { "target": ["zip"], "category": "public.app-category.social-networking" }
+  }
+}

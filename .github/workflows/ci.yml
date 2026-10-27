@@ -1,0 +1,105 @@
+name: Daily CI
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, master, test]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.paths.outputs.python }}
+      go: ${{ steps.paths.outputs.go }}
+      desktop: ${{ steps.paths.outputs.desktop }}
+      opaque: ${{ steps.paths.outputs.opaque }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Select checks by changed files
+        id: paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_plan.py
+      - name: Check source privacy
+        run: python scripts/check_release_privacy.py
+  regression:
+    needs: plan
+    if: needs.plan.outputs.python == 'true'
+    uses: ./.github/workflows/tests.yml
+    with:
+      full: false
+      go_checks: ${{ needs.plan.outputs.go == 'true' }}
+      opaque_checks: ${{ needs.plan.outputs.opaque == 'true' }}
+    secrets: inherit
+  desktop:
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Python runtime
+        run: python -m pip install -r requirements.txt
+      - name: Install Linux desktop dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth fonts-noto-cjk
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Audit desktop dependencies
+        working-directory: desktop
+        run: npm audit --omit=dev
+      - name: Build desktop code
+        working-directory: desktop
+        run: npm run build
+      - name: Test source desktop
+        working-directory: desktop
+        run: xvfb-run -a npm test
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: desktop-ci-debug
+          path: desktop/test-results
+          retention-days: 7
+  result:
+    name: CI result
+    needs: [plan, regression, desktop]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every selected check to pass
+        env:
+          PLAN: ${{ needs.plan.result }}
+          REGRESSION: ${{ needs.regression.result }}
+          DESKTOP: ${{ needs.desktop.result }}
+        run: |
+          test "$PLAN" = success
+          for result in "$REGRESSION" "$DESKTOP"; do
+            test "$result" = success || test "$result" = skipped
+          done

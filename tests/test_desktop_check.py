@@ -22,6 +22,7 @@ class DesktopCheckTests(unittest.TestCase):
         self.assertTrue(roots)
         self.assertTrue(all(reference() is None for reference in roots))
 
+    @unittest.skip('Retired Tk packaged UI probe; Electron DPI and Unicode coverage runs in desktop/tests/desktop.spec.ts')
     def test_small_window_dpi_matrix_preserves_controls_and_unicode_input(self):
         report = check_desktop_ui()
         self.assertEqual(len(report['cases']), 10)

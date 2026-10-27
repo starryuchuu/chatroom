@@ -1,39 +1,41 @@
-"""Decide publication in the same run that tests and builds a commit."""
+"""Validate an explicit release tag, its versions, and master ancestry."""
 import os
 from pathlib import Path
-import re
 import subprocess
 
+from versioning import parse_version, read_version
 
-VERSION_FILES = frozenset({'VERSION', 'go-server/VERSION'})
 
+def validate(root, event, ref, dispatch_tag=''):
+    if event == 'push' and ref.startswith('refs/tags/'):
+        tag = ref[len('refs/tags/'):]
+    elif event == 'workflow_dispatch':
+        tag = dispatch_tag
+    else:
+        raise ValueError('Only a version tag push or explicit tag retry can publish')
+    parse_version(tag)
+    if read_version(root) != tag:
+        raise ValueError('Release tag does not match every version copy')
 
-def should_publish(event, ref, changed, requested=False):
-    if ref != 'refs/heads/master':
-        return False
-    return ((event == 'push' and bool(VERSION_FILES.intersection(changed)))
-            or (event == 'workflow_dispatch' and requested))
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=root, stderr=subprocess.DEVNULL).decode('ascii').strip()
+
+    commit = git('rev-parse', '--verify', '--end-of-options', 'refs/tags/' + tag + '^{commit}')
+    if git('rev-parse', 'HEAD') != commit:
+        raise ValueError('Release checkout must be the tagged commit')
+    subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'refs/remotes/origin/master'],
+                   cwd=root, check=True, capture_output=True)
+    if git('show', 'refs/remotes/origin/master:VERSION') != tag:
+        raise ValueError('This version is no longer the release version on master')
+    return tag, commit
 
 
 def main():
-    version = Path('VERSION').read_text().strip()
-    if (not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', version)
-            or Path('go-server/VERSION').read_text().strip() != version):
-        raise SystemExit('Version files must contain the same vX.Y.Z value')
-    event, before = os.environ['EVENT_NAME'], os.environ.get('BEFORE_SHA', '')
-    changed = []
-    if event == 'push' and before:
-        if set(before) == {'0'}:
-            changed = list(VERSION_FILES)
-        else:
-            changed = subprocess.check_output(
-                ['git', 'diff', '--name-only', before, 'HEAD', '--', *sorted(VERSION_FILES)],
-                text=True).splitlines()
-    publish = should_publish(event, os.environ['GIT_REF'], changed,
-                             os.environ.get('PUBLISH_REQUESTED') == 'true')
+    tag, commit = validate(Path.cwd(), os.environ['GITHUB_EVENT_NAME'], os.environ.get('GITHUB_REF', ''),
+                           os.environ.get('DISPATCH_TAG', ''))
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-        output.write('release=' + str(publish).lower() + '\n')
-    print('Release publication: ' + str(publish).lower())
+        output.write('tag=' + tag + '\ncommit=' + commit + '\n')
+    print('Validated release ' + tag)
 
 
 if __name__ == '__main__':

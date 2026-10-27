@@ -1,1 +1,1 @@
-"""Desktop client components: model, connection, controller and Tk views."""
+"""Shared client core, headless desktop RPC and historical Tk regression views."""

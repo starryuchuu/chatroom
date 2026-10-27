@@ -1,99 +1,92 @@
-name: Build and Release Chatroom
+name: Release Chatroom
 on:
   push:
-    branches: [main, master, test]
-  pull_request:
-    branches: [main, master, test]
+    tags: ['v*']
   workflow_dispatch:
     inputs:
-      publish:
-        description: Publish the current version (master only)
-        type: boolean
-        default: false
+      tag:
+        description: Existing release tag to build or retry (vX.Y.Z)
+        type: string
+        required: true
 permissions:
   contents: read
 concurrency:
-  group: chatroom-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: chatroom-release
+  cancel-in-progress: false
 env:
   PRIVACY_FORBIDDEN_VALUES_JSON: ${{ secrets.PRIVACY_FORBIDDEN_VALUES_JSON }}
 jobs:
-  plan:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      commit: ${{ steps.plan.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      - name: Decide publication
+      - name: Validate release tag and all version copies
         id: plan
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          GIT_REF: ${{ github.ref }}
-          BEFORE_SHA: ${{ github.event.before }}
-          PUBLISH_REQUESTED: ${{ inputs.publish || false }}
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: python scripts/release_plan.py
+      - name: Check release source privacy
+        run: python scripts/check_release_privacy.py --require-alias-head
+      - name: Validate reviewed release notes
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: python scripts/release_notes.py "$RELEASE_TAG" --output release-notes.md
   tests:
-    needs: plan
+    needs: validate
     uses: ./.github/workflows/tests.yml
+    with:
+      full: true
+      ref: ${{ needs.validate.outputs.commit }}
     secrets: inherit
   build:
-    needs: [plan]
+    needs: [validate, tests]
     uses: ./.github/workflows/build-artifacts.yml
     with:
-      release: ${{ needs.plan.outputs.release == 'true' }}
+      release: true
+      ref: ${{ needs.validate.outputs.commit }}
     secrets: inherit
   publish:
-    needs:
-    - plan
-    - tests
-    - build
-    if: needs.plan.outputs.release == 'true' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    needs: [validate, tests, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
     steps:
-    - uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-        ref: ${{ github.event.pull_request.head.sha || github.sha }}
-    - uses: actions/setup-python@v6
-      with:
-        python-version: '3.11'
-    - uses: actions/download-artifact@v8
-      with:
-        pattern: release-*
-        path: release-assets
-        merge-multiple: true
-    - name: Check release privacy
-      run: python scripts/check_release_privacy.py --require-alias-head
-    - name: Publish versioned release
-      env:
-        GH_TOKEN: ${{ github.token }}
-      shell: bash
-      run: |
-        set -euo pipefail
-        tag=$(tr -d '\r\n' < VERSION)
-        go_tag=$(tr -d '\r\n' < go-server/VERSION)
-        [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-        [[ "$tag" == "$go_tag" ]]
-        for binary in client-windows.exe server-windows.exe client-linux server-linux go-server-windows-amd64.exe go-server-windows-arm64.exe go-server-linux-amd64 go-server-linux-arm64 go-server-darwin-amd64 go-server-darwin-arm64; do
-          test -s "release-assets/$binary"
-        done
-        git archive --format=zip --output="release-assets/chatroom-${tag}-source.zip" HEAD
-        git archive --format=zip --output="release-assets/chatroom-${tag}-client.zip" HEAD client.py chatroom_client transport.py opaque_runtime.py requirements.txt LICENSE
-        cp client.py server.py e2ee_server.py send_receipts.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt release-assets/
-        cp chatroom_client/OPAQUE_THIRD_PARTY_LICENSES.txt release-assets/
-        (cd release-assets && sha256sum client-* server-* go-server-* "chatroom-${tag}-source.zip" "chatroom-${tag}-client.zip" client.py server.py e2ee_server.py send_receipts.py transport.py history_store.py pending_store.py storage.py opaque_runtime.py opaque_server.py requirements.txt OPAQUE_THIRD_PARTY_LICENSES.txt > SHA256SUMS)
-        python scripts/check_release_privacy.py --require-alias-head --assets release-assets
-        gh release create "$tag" release-assets/* \
-          --target "$GITHUB_SHA" --title "$tag — Python 客户端与双服务端" \
-          --notes-file RELEASE_NOTES.md --latest
-
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.commit }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare source archive and checksums
+        run: python scripts/release_assets.py
+      - name: Check final release privacy
+        run: python scripts/check_release_privacy.py --require-alias-head --assets release-assets
+      - name: Prepare reviewed release notes
+        run: python scripts/release_notes.py "$RELEASE_TAG" --output release-notes.md
+      - name: Publish existing validated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TITLE=$(head -n 1 release-notes.md)
+          RELEASE_TITLE=${RELEASE_TITLE#\# }
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag \
+            --title "$RELEASE_TITLE" --notes-file release-notes.md --latest

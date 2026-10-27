@@ -2,9 +2,11 @@
 
 [中文文档](README.md) | [Documentation](docs/README.md) | [Go Server Documentation](go-server/README.md)
 
+> **v2.0.0: a rebuilt desktop client.** The UI uses **Electron + React + TypeScript**, with a separate Python core behind versioned JSON-RPC for future Rust replacement. [Download](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0) · [Release notes](RELEASE_NOTES.md) · [Desktop guide](docs/DESKTOP_CLIENT.md).
+
 ## Project Overview
 
-This project implements an encrypted desktop chat room with Python and Go servers. It supports registration, login, private and group chat, friends, and group management. Release v1.5.0 adds send-result reconciliation and idempotent retries, bounded message caches, conversation drafts and local search, with improved text selection, timestamps and high-DPI layout. Persistent light and dark modes remain available. OPAQUE single-password authentication and unlocking of the encrypted chat identity were introduced in v1.3.0. RSA session-key exchange, AES-GCM and HMAC-SHA256 protect transport frames; clients encrypt chat bodies end to end. Servers persist records in SQLite with encrypted sensitive fields.
+This project implements an encrypted desktop chat room with Python and Go servers. It supports registration, login, private and group chat, friends, and group management. Release v2.0.0 rebuilds the desktop with a two-column layout, virtualized messages, incoming messages on the left, outgoing messages on the right, and an online-user panel. Send recovery, bounded caches, drafts and local search are retained. Persistent light and dark modes remain available. OPAQUE single-password authentication and unlocking of the encrypted chat identity were introduced in v1.3.0. RSA session-key exchange, AES-GCM and HMAC-SHA256 protect transport frames; clients encrypt chat bodies end to end. Servers persist records in SQLite with encrypted sensitive fields.
 
 ## Key Features
 
@@ -39,7 +41,12 @@ This project implements an encrypted desktop chat room with Python and Go server
   - Group member management
   - User-friendly error handling
 
-- 🖼️ **Interface Showcase**
+- 🖼️ **New desktop preview**
+  - ![Electron light chat](docs/images/electron-chat.png)
+  - ![Electron dark chat](docs/images/electron-chat-dark.png)
+  - Captured in real Electron windows using synthetic rendering data. Actual E2EE is tested separately against both servers.
+
+- 🖼️ **Historical v1.3.2 Interface Showcase**
   - Login Interface
     ![v1.3.2 single-password login with theme switching, legacy account migration and old-key unlock actions](docs/images/login.png)
   - Main Page
@@ -53,7 +60,7 @@ This project implements an encrypted desktop chat room with Python and Go server
 
 - 🛠 **Technical Stack**
   - Python 3.11+ (Client/Server)
-  - Tkinter (GUI interface)
+  - Electron + React + TypeScript + Vite (desktop UI; Node.js 24 for development)
   - pycryptodome (Encryption features)
   - argon2-cffi (Offline backup encryption and legacy password verification)
   - wasmtime 50.0.1 (Runs the bundled OPAQUE WebAssembly core)
@@ -66,13 +73,13 @@ This project implements an encrypted desktop chat room with Python and Go server
 
 Release v1.5.0 adds send-result reconciliation and idempotent retries, bounded message-body caches, and Ctrl+F search in the existing chat page. See [send recovery, caches and search](docs/SEND_RECOVERY_AND_CACHE.md) for usage, compatibility and reload limits.
 
-Use the v1.5.0 Python client with a v1.3.0 or newer Python or Go server. OPAQUE was introduced in v1.3.0; v1.5.0 preserves transport v2 and key formats, and automatically adds a send_receipts table; existing OPAQUE accounts need no migration. Upgrade both ends for receipt lookup and idempotent retries. Older servers remain compatible, but a timed-out history request requires reconnecting before retrying. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
+Use the v2.0.0 desktop client with a v1.3.0 or newer Python or Go server. OPAQUE was introduced in v1.3.0; v2.0.0 preserves transport v2, database and key formats; the send_receipts table was added in v1.5.0; existing OPAQUE accounts need no migration. Upgrade both ends for receipt lookup and idempotent retries. Older servers remain compatible, but a timed-out history request requires reconnecting before retrying. The modern client requires both `e2ee_v1` and `opaque_v1`; it refuses older servers instead of sending a password through legacy login. Transport v2 continues to authenticate complete frames with directional HMAC keys and uint64 sequence counters. Private and group chat use Ed25519 signatures, ephemeral X25519 key agreement, and AES-256-GCM. Servers store and relay opaque envelopes. Routing and membership metadata remain visible; legacy history is explicitly labelled as not end-to-end encrypted.
 
 Normal registration and login use one unified password. OPAQUE derives a client-only export key, which unlocks a randomly generated chat identity rather than deriving that identity from the username or password. The cloud backup contains only the encrypted identity; it does not synchronize contact verification, group approvals, or replay state. A new device can recover the same identity after successful authentication, but contacts must be verified again. The two-layer local v2 vault retains its full trust state across password changes, including recovery with the new password after another device changes it. Never overwrite newer local trust with a cloud snapshot.
 
-Use **迁移旧账号…** on the login screen for a one-time upgrade of an existing account. Prepare its old login password, original local key passphrase and a new unified password of 8–128 characters. The local passphrase may be left empty only if the account never enabled end-to-end encryption; the new password must differ from the old login password. Only this explicit migration sends the old login password inside the authenticated encrypted transport for legacy verification. Keep the original vault or import its encrypted offline backup first; a missing or incorrect original identity stops migration. Unmigrated accounts remain usable by legacy clients; migrated and newly registered accounts reject legacy authentication. See the [single-password migration and recovery guide](docs/SINGLE_PASSWORD.md).
+Use **恢复与迁移 → 迁移旧账号** on the login screen for a one-time upgrade of an existing account. Prepare its old login password, original local key passphrase and a new unified password of 8–128 characters. The local passphrase may be left empty only if the account never enabled end-to-end encryption; the new password must differ from the old login password. Only this explicit migration sends the old login password inside the authenticated encrypted transport for legacy verification. Keep the original vault or import its encrypted offline backup first; a missing or incorrect original identity stops migration. Unmigrated accounts remain usable by legacy clients; migrated and newly registered accounts reject legacy authentication. See the [single-password migration and recovery guide](docs/SINGLE_PASSWORD.md).
 
-If the server committed a migration but its reply was lost, the local vault may still be v1. On the login screen, choose **解锁旧密钥…**, enter the original local passphrase, then log in normally with the new unified password. Successful authentication upgrades the original local vault while preserving its identity and full trust state; do not repeat the account migration.
+If the server committed a migration but its reply was lost, the local vault may still be v1. On the login screen, choose **恢复与迁移 → 解锁旧密钥**, enter the original local passphrase, then log in normally with the new unified password. Successful authentication upgrades the original local vault while preserving its identity and full trust state; do not repeat the account migration.
 
 Use **修改账号密码…** in the encryption/key window to authenticate the current password and set a new one. The identity and chat keys are retained. Explicit offline exports still use Argon2id and AES-GCM with the password at export time; re-export after changing it. A raw v2 vault file cannot be unlocked offline using the password alone. If the password and all usable recovery materials are lost, the server cannot guarantee recovery. Compare contact fingerprints through another trusted channel and explicitly approve group recipients. First-use trust requires independent verification; the chat protocol does not provide forward secrecy against later compromise of a recipient's long-term private key. See [encryption, recovery and limitations](docs/END_TO_END_ENCRYPTION.md).
 
@@ -82,23 +89,23 @@ Pending friend requests and group invitations survive server restarts and expire
 
 Both servers enforce a maximum of **256 actual group members, including the owner**, when creating groups, inviting users and accepting invitations. Invitations do not reserve capacity; an unexpired invitation can be retried after space becomes available. Group creation bounds and validates the raw member list before deduplication and batch lookup. Existing oversized groups keep their members and can shrink through leave/kick operations.
 
-Download [chatroom-v1.5.0-client.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-client.zip) for the client source bundle, or [chatroom-v1.5.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v1.5.0/chatroom-v1.5.0-source.zip) for both servers and development files. Executables and `SHA256SUMS` are available on the [v1.5.0 release page](https://github.com/starryuchuu/chatroom/releases/tag/v1.5.0). Keep `opaque_runtime.py`, the complete `chatroom_client/` package including `opaque_core.wasm`, and the other bundled Python modules together. Ordinary source packages include the precompiled WASM: run `python -m pip install -r requirements.txt`; Rust is not needed to run them. Rebuilding the shared core with `python scripts/build_opaque.py` requires Rust 1.87+ and the `wasm32-unknown-unknown` target.
+Download the Windows / Linux x64 desktop ZIP from the [v2.0.0 release page](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.0), extract the complete archive, and run `chatroom.exe` / `./chatroom`. Packaged applications bundle Electron and the Python core; users need no Python or Node.js installation. macOS desktop releases are not yet provided. For development or Python servers, use the single complete [chatroom-v2.0.0-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.0/chatroom-v2.0.0-source.zip), which includes the desktop, shared Python modules and precompiled OPAQUE WASM. Install Python dependencies, then run `npm ci && npm start` from `desktop/` (Node.js 24 required). Rebuilding the authentication core requires Rust 1.87+; the desktop core itself remains Python in this release.
 
-`requirements.txt` pins Python runtime dependencies and their transitive packages. Developers building executables use `requirements-build.txt`, which also pins packaging dependencies; it is not needed to run the client source bundle.
+`requirements.txt` pins Python runtime dependencies and their transitive packages. Developers building executables use `requirements-build.txt`, which also pins packaging dependencies; it is not needed for source development.
 
 The shared core uses `opaque-ke` 4.0.1 and RFC 9807 OPAQUE, executed by Python Wasmtime and Go wazero. The upstream library has an audit history; that does not establish an independent audit of this exact version, its WASM build, or Chatroom's integration. v1.3.0 adds persistent OPAQUE setup and account tables while retaining transport v2 and storage encryption v1. Back up the database, storage key, server RSA key pair and client offline key backup before upgrading. Preserve the OPAQUE setup together with its account records, and do not run old servers against the upgraded database.
 
 ## Desktop settings and recovery
 
-The client offers light and dark themes with a two-column layout. Click **深色模式** or **浅色模式** at the top right of the login or chat screen to switch immediately. Drafts, entered text, the active chat connection and already-open application dialogs are preserved. The default is light mode; the client does not automatically follow the system theme. Native file pickers and message boxes remain controlled by the operating system. Toggle **在线用户** to show or hide the online list. Enter sends a message; Shift+Enter or Ctrl+Enter inserts a newline.
+The client offers light and dark themes with a two-column layout. Click **深色模式** or **浅色模式** at the top right of the login or chat screen to switch immediately. Drafts, entered text, the active chat connection and already-open application dialogs are preserved. The default is light mode; the client does not automatically follow the system theme. Native file pickers and message boxes remain controlled by the operating system. Click **在线用户** at the bottom of the sidebar to view and search online users; the count includes yourself. After disconnecting, the panel labels the retained list as stale. Enter sends a message; Shift+Enter or Ctrl+Enter inserts a newline.
 
-Click **创建账号** to switch the existing card to signup and **已有账号？返回登录** to return. Successful signup keeps the username and clears the password; errors appear in the form. Enter activates the focused button, while Enter in an input submits the current form. The centered login card scrolls when large text or the available height requires it, and keyboard focus automatically brings each control into view. Long sidebar previews use an ellipsis while the full message remains available in the conversation.
+Click **创建新账号** to switch the existing card to signup and **已有账号？返回登录** to return. Successful signup keeps the username and clears the password; errors appear in the form. Enter activates the focused button, while Enter in an input submits the current form. The centered login card scrolls when large text or the available height requires it, and keyboard focus automatically brings each control into view. Long sidebar previews use an ellipsis while the full message remains available in the conversation.
 
 Incoming messages preserve the friend/group lists' scroll, selection and keyboard navigation positions. While you read earlier chat history, arrivals retain the visible message instead of jumping to the bottom. Click **N 条新消息 ↓** to reach the latest messages; scrolling there manually also clears the indicator. A view already at the bottom and your own live sends continue to follow new messages. Reconnection redraws preserve the reading position, and small mouse-wheel deltas scroll correctly.
 
-Use the server selector and **连接设置…** on the login screen to save multiple server profiles. Python and Go loopback presets are included. Remote servers require a verified SHA-256 public-key fingerprint; the optional login port field affects only the current connection. Profiles cannot be changed during authentication, an active session or reconnection.
+Use the server selector and **设置 → 服务器** on the login screen to save multiple server profiles. Python and Go loopback presets are included. Remote servers require a verified SHA-256 public-key fingerprint; the optional login port field affects only the current connection. Profiles cannot be changed during authentication, an active session or reconnection.
 
-Conversation rows show unread counts and recent message previews. Incoming messages stay unread while the window is inactive or minimized; opening a conversation in the foreground marks it read. The title shows the total count. The initial history snapshot establishes a baseline on the first-ever account login. Later logins restore read markers and unread IDs, isolated by endpoint and account. Desktop alerts contain generic text, without message bodies. The **通知设置** menu contains **消息提醒** for alerts; **免打扰** preserves unread counts while muting notifications and sounds. Native desktop notifications are best effort (Windows notification icon, Linux `notify-send`, macOS notifications); unavailable backends fall back to a window bell.
+Conversation rows show unread counts and recent message previews. Incoming messages stay unread while the window is inactive or minimized; opening a conversation in the foreground marks it read. The title shows the total count. The initial history snapshot establishes a baseline on the first-ever account login. Later logins restore read markers and unread IDs, isolated by endpoint and account. Desktop alerts contain generic text, without message bodies. **设置 → 通用** contains desktop-notification and Do Not Disturb controls. Notifications use Electron system integration and depend on operating-system permissions and settings; Do Not Disturb preserves unread counts.
 
 Unexpected disconnects retain the current conversation and draft. Reconnection retries after 1, 2, 4, 8, 15 and then 30 seconds, with a **取消重连** button. Credentials stay in memory only and are cleared on explicit disconnect, cancellation or close. Identity or password failures stop reconnection. Updated Python and Go servers replay missed messages in bounded pages against one fixed boundary, including gaps larger than 100 messages. Only a fully completed replay advances the persisted checkpoint; failed recovery can be retried with **重试补取**. Unconfirmed outgoing messages are retained for manual verification and are never automatically resent.
 
@@ -121,7 +128,7 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
   - pycryptodome (AES and RSA encryption/decryption; pinned in `requirements.txt`)
   - argon2-cffi (offline backups and legacy password verification)
   - wasmtime==50.0.1 (bundled OPAQUE WASM runtime)
-  - Tkinter (GUI, usually built-in, may require separate installation on some systems)
+  - Node.js 24 and npm for desktop development; packaged applications bundle their runtimes
 
 ### Go Server
 - Go 1.27.3 recommended, matching CI and release builds (`go.mod` language minimum: 1.26.0)
@@ -135,44 +142,38 @@ Settings are stored in `%APPDATA%/Chatroom/client.json` on Windows, `$XDG_CONFIG
 
 ```
 chatroom/
-├── client.py                 # Desktop client entry point
+├── client.py                 # Electron launcher using the selected Python
+├── core_client.py            # Headless Python / JSON-RPC entry point
+├── desktop/
+│   ├── electron/             # Main process, restricted preload and core bridge
+│   ├── src/                  # React UI, themes and protocol types
+│   ├── scripts/              # Development, build and license collection
+│   └── tests/                # Real Electron and two-client E2EE checks
+├── chatroom_client/          # Model, crypto, connection, sync and RPC adapter
+│   └── view.py and others    # Legacy Tk views, retained for regression tests
 ├── server.py                 # Python server entry point
-├── server_handlers/          # Friend, group and messaging handlers with explicit dependencies
-├── chatroom_client/          # Desktop client components
-│   ├── sending.py            # Volatile pending sends and receipt reconciliation
-│   ├── send_recovery_view.py # Inline pending-send list and per-message actions
-│   ├── search.py             # Search and highlight loaded message bodies
-│   ├── message_actions.py    # Lazy native selection and message copying
-│   ├── desktop_check.py      # Synthetic source/frozen desktop validation
-│   ├── message_rows.py       # Date separators, sender grouping and inline details
-│   └── theme.py              # Light/dark palettes, platform fonts and live widget styling
+├── server_handlers/          # Friend, group and message handlers
 ├── go-server/                # Go server and build files
-├── docs/                     # Documentation, guides, design notes and screenshots
-│   ├── README.md              # Documentation index
-│   ├── images/                # Interface screenshots
-│   └── reviews/               # Historical reviews and validation
-├── tests/                    # Python, Tk and Go interoperability tests
-├── transport.py              # Shared authenticated transport
-├── storage.py                # Shared encrypted storage
-├── e2ee_server.py            # Public identity and encrypted envelope validation
-├── history_store.py          # History pagination
-├── pending_store.py          # Durable pending requests
-├── send_receipts.py          # Transactional send receipts and idempotent saves
-├── opaque_runtime.py         # Bounded Wasmtime host for the shared OPAQUE core
-├── opaque_server.py          # Python OPAQUE authentication and account transactions
-├── opaque-core/              # Locked Rust source for the shared core
-├── scripts/build_opaque.py   # Rebuilds Python and Go WASM artifacts
-├── requirements.txt          # Pinned runtime and transitive Python dependencies
-├── requirements-build.txt    # Pinned executable-build dependencies
-├── VERSION                   # Project version
-├── README.md                 # Chinese project overview
-├── README_en.md              # English project overview
-├── CONTRIBUTING.md           # Development, testing and release conventions
-├── RELEASE_NOTES.md          # Current release notes
-├── .github/                  # CI and release workflows
-├── .gitignore                # Runtime and build exclusions
+├── opaque-core/              # Locked Rust source for OPAQUE WASM
+├── scripts/                  # Core rebuild, CI planning and release helpers
+├── tests/                    # Python, legacy Tk, core and Go interoperability
+├── docs/                     # Guides, architecture, screenshots and validation
+├── .github/                  # Daily CI, tagged releases and dependency updates
+├── requirements.txt          # Pinned Python runtime dependencies
+├── requirements-build.txt    # Pinned Python build dependencies
+├── VERSION                   # Canonical version
+├── CONTRIBUTING.md           # Development, checks and release conventions
+├── RELEASE_NOTES.md          # Reviewed per-version release notes
 └── LICENSE                   # GNU GPL v3 license
 ```
+
+## Daily CI and releases
+
+Ordinary pushes and PRs select Linux checks by changed component; they do not package every platform. Matching pushes already covered by an open PR avoid duplicate runs. Source privacy checks remain enabled.
+
+From a clean `master`, run `python scripts/release.py 1.6.0` to synchronize every version copy, commit, create an annotated tag and atomically push the branch and tag. Add `--dry-run` to plan locally without changes or network access. The tag workflow validates master ancestry and matching versions, runs the full Windows/Linux tests, builds the platform artifacts and publishes the exact tagged commit. The workflow extracts the requested version from `RELEASE_NOTES.md`; add and commit that section before running the release command.
+
+Attachments contain the desktop/server binaries, one complete source ZIP, required notices and `SHA256SUMS`. See the [contribution guide](CONTRIBUTING.md#日常推送与发布) for retries and checks.
 
 ## Testing
 
@@ -261,10 +262,14 @@ Both servers only listen on `127.0.0.1` by default for security.
 ### Client
 
 ```bash
-python client.py
+cd desktop
+npm ci
+npm start
 ```
 
-The client defaults to the local Python server at `127.0.0.1:12345`. Select the Go profile or use **连接设置…** on the login screen to save another endpoint and its verified public-key fingerprint. For remote servers, obtain the SHA-256 fingerprint through a trusted channel and save it in that profile. Source constants only supply first-launch defaults; existing saved profiles take precedence.
+Set `CHATROOM_PYTHON` to your Python interpreter when using a virtual environment. Alternatively, run `python client.py` from the repository root to forward the current interpreter. See the [desktop guide](docs/DESKTOP_CLIENT.md) for packaging.
+
+The client defaults to the local Python server at `127.0.0.1:12345`. Select the Go profile or use **设置 → 服务器** on the login screen to save another endpoint and its verified public-key fingerprint. For remote servers, obtain the SHA-256 fingerprint through a trusted channel and save it in that profile. Source constants only supply first-launch defaults; existing saved profiles take precedence.
 
 ## Notes
 
@@ -284,7 +289,7 @@ The client defaults to the local Python server at `127.0.0.1:12345`. Select the 
 
 - Port occupied: Check if the port is in use or change the port constant (`server.py` / `main.go`)
 - Connection failure: Ensure the server is running and the network is operational, and that client port matches the server (Python `12345`, Go `12346`)
-- "Server public key fingerprint not configured" refusal: save the independently verified fingerprint in the selected profile through **连接设置…**
+- "Server public key fingerprint not configured" refusal: save the independently verified fingerprint in the selected profile through **设置 → 服务器**
 - Database errors: Verify write permissions or check sqlite3 installation
 - Group chat issues: Ensure group members are correct, owner cannot leave group directly
 

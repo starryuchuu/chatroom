@@ -28,11 +28,13 @@ class EncryptionRuntimeTests(unittest.TestCase):
                 patch.object(client.tk, 'Tk', side_effect=AssertionError('Tk must not be created'))):
             self.assertEqual(client.main(['--check-encryption-runtime']), 1)
 
-    def test_normal_gui_entry_point_keeps_its_existing_startup(self):
-        with patch.object(client.tk, 'Tk') as make_root, patch.object(client, 'ChatClient') as application:
-            self.assertIsNone(client.main([]))
-            application.assert_called_once_with(make_root.return_value)
-            make_root.return_value.mainloop.assert_called_once_with()
+    def test_normal_entry_launches_electron_with_the_current_python(self):
+        with (patch('shutil.which', return_value='npm'), patch('pathlib.Path.is_dir', return_value=True),
+              patch('subprocess.call', return_value=0) as launch,
+              patch.object(client.tk, 'Tk', side_effect=AssertionError('desktop must not create Tk'))):
+            self.assertEqual(client.main([]), 0)
+            self.assertEqual(launch.call_args.args[0], ['npm', 'start'])
+            self.assertEqual(launch.call_args.kwargs['env']['CHATROOM_PYTHON'], sys.executable)
 
 
 if __name__ == '__main__':

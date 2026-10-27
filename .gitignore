@@ -57,3 +57,13 @@ Thumbs.db
 *.swo
 *~
 
+# Electron desktop dependencies and artifacts
+node_modules/
+desktop/release/
+desktop/core-dist/
+desktop/test-results/
+desktop/playwright-report/
+SingletonCookie
+SingletonLock
+SingletonSocket
+

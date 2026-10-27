@@ -1,4 +1,4 @@
-"""Python desktop client entry point and first-launch server defaults.
+"""Electron source launcher and historical protocol/test compatibility exports.
 
 The application is composed in chatroom_client. Wire helpers remain exported
 here for existing protocol integrations and command-line scripts.
@@ -39,8 +39,6 @@ if __name__ == '__main__' and '--check-encryption-runtime' in sys.argv[1:]:
 
 import logging
 import socket
-import tkinter as tk
-from tkinter import messagebox
 
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.PublicKey import RSA
@@ -53,7 +51,6 @@ from chatroom_client.protocol import (
 from chatroom_client.app import ChatApplication
 from chatroom_client.connection import ClientSettings, ConnectionManager
 from chatroom_client.preferences import PreferencesStore, ServerProfile
-from chatroom_client.view import TkClientView
 
 SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 12345
@@ -70,7 +67,13 @@ def check_server_public_key(public_key_data):
 
 
 class ChatClient(ChatApplication):
+    """Historical Tk test fixture; the desktop entry point uses Electron.
+
+    Kept during migration so existing controller/protocol regressions can still
+    run. Tk and the old view are never imported by the Electron desktop core.
+    """
     def __init__(self, master, *, preferences=None, encryption=True):
+        from chatroom_client.view import TkClientView
         if preferences is None:
             default = ServerProfile('默认服务器', SERVER_HOST, SERVER_PORT, EXPECTED_SERVER_KEY_FINGERPRINT)
             preferences = PreferencesStore(default_profile=default)
@@ -89,30 +92,35 @@ def main(argv=None):
     arguments = sys.argv[1:] if argv is None else list(argv)
     if '--check-encryption-runtime' in arguments:
         return _check_encryption_runtime() if arguments == ['--check-encryption-runtime'] else 2
-    if '--check-desktop-ui' in arguments:
-        if len(arguments) not in (1, 2) or arguments[0] != '--check-desktop-ui':
-            return 2
-        from chatroom_client.desktop_check import check_desktop_ui
-        try:
-            check_desktop_ui(arguments[1] if len(arguments) == 2 else None)
-        except Exception as error:
-            if len(arguments) == 2:
-                from pathlib import Path
-                try:
-                    destination = Path(arguments[1])
-                    destination.mkdir(parents=True, exist_ok=True)
-                    (destination / 'desktop-ui-error.txt').write_text(
-                        f'{type(error).__name__}: {error}\n', encoding='utf-8')
-                except OSError:
-                    pass
-            if sys.stderr is not None:
-                sys.stderr.write(f'Desktop UI self-check failed: {type(error).__name__}: {error}\n')
-            return 1
-        return 0
-    logging.info('Starting Chat Client')
-    root = tk.Tk()
-    ChatClient(root)
-    root.mainloop()
+    if arguments:
+        if sys.stderr is not None:
+            sys.stderr.write('桌面验证请从 desktop/ 运行 npm test；加密自检使用 --check-encryption-runtime。\n')
+        return 2
+    import shutil
+    import subprocess
+    from pathlib import Path
+    desktop = Path(__file__).resolve().parent / 'desktop'
+    npm = shutil.which('npm.cmd' if sys.platform == 'win32' else 'npm')
+    if npm is None or not (desktop / 'node_modules').is_dir():
+        if sys.stderr is not None:
+            sys.stderr.write('请安装 Node.js 24，然后运行 cd desktop && npm ci && npm start。\n')
+        return 1
+    # Make source launches use the same Python interpreter and installed crypto
+    # providers as the invoking environment. Frozen releases bundle the core.
+    import os
+    return subprocess.call([npm, 'start'], cwd=desktop,
+                           env=dict(os.environ, CHATROOM_PYTHON=sys.executable))
+
+
+def __getattr__(name):
+    """Lazy historical exports for regression fixtures, not desktop startup."""
+    if name == 'tk':
+        import tkinter
+        return tkinter
+    if name == 'messagebox':
+        from tkinter import messagebox
+        return messagebox
+    raise AttributeError(name)
 
 
 if __name__ == '__main__':

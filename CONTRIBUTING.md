@@ -1,5 +1,9 @@
 # 开发与发布
 
+## Electron 桌面开发
+
+当前桌面入口为 Electron + React + TypeScript，运行与打包见 [桌面指南](docs/DESKTOP_CLIENT.md)，Rust 可替换边界见 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。从 `desktop/` 运行 `npm ci`、`npm run build`、`npm test`（Linux 无显示环境加 `xvfb-run -a`）。`tests/test_desktop_rpc.py` 使用无界面核心验证两个真实服务端。旧 Tk 视图及测试暂留作历史回归，不进入新客户端成品。
+
 ## 模块职责
 
 | 文件 / 目录 | 职责 |
@@ -102,19 +106,44 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./cmd/server
 
 `pip-audit` 检查列出的运行与构建包公告，`govulncheck` 分析指定服务端入口的可达漏洞；结果受公告库、平台和分析范围限制，不能据此声称所有依赖、构建产物或本项目均无漏洞。`.github/dependabot.yml` 已配置 Python、Go、Cargo 和 GitHub Actions 的定期更新；安全告警与自动安全更新需仓库管理员在 GitHub 设置中另行启用，不能把更新配置视为这些开关已经开启。
 
-## 发布
+## 日常推送与发布
 
-1. 同步更新根目录和 `go-server/` 的 `VERSION`，版本格式为 `vX.Y.Z`。
-2. 更新两处 `RELEASE_NOTES.md`，说明修复、兼容性和升级方式。
-3. 新增 Python 模块或 WASM 资源时，更新 README 文件结构及 `.github/workflows/release.yml` 的源码附件、源码压缩包与校验文件清单。普通源码包必须包含预编译核心；Python 客户端和服务端打包需收集 wasmtime 动态运行库及 `chatroom_client/opaque_core.wasm`，Go 需内嵌匹配的 WASM。PyInstaller 会自动收集静态导入的模块；加密库动态加载的曲线模块通过 `--collect-submodules Crypto.PublicKey` 收集。构建和发布流水线必须执行成品的 `--check-encryption-runtime` 自检，验证曲线签名、密钥协商、本机密钥库及实际 OPAQUE 注册/认证核心，不能只检查模块可以导入。
-4. 将验证通过的提交推送到 `master`。统一的 `Build and Release Chatroom` 流程执行一次测试、一次跨平台构建；版本文件变更才进入发布任务。手动运行时可在 `master` 选择 `publish`，其他分支或 Pull Request 只能测试和构建。
-5. 确认 Windows / Linux 测试、Python 双平台构建及 Go 六平台构建均通过，Release 包含带预编译 WASM 的源码、可执行文件和 `SHA256SUMS`。普通客户端源码附件提供 `requirements.txt`，构建锁仅供开发与打包使用。
-6. 示例、日志和截图仅用虚构演示数据与公开别名。发布隐私检查应覆盖本次全部新增提交的作者和提交者元数据、源码、PNG 元数据及嵌套 ZIP / PYZ 产物，而不只检查最后一个提交。发现个人身份、运行配置、数据库或私钥时停止发布，检查输出本身也不得回显私人姓名、邮箱或密钥。
+日常只需提交并 `git push`。`Daily CI` 根据文件变化选择检查：
 
-发布只使用当前工作流、同一提交生成的产物，发布任务具有独立写权限；构建和 PR 任务只有读取权限。最终发布任务创建指向该提交的版本标签和 GitHub Release。可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 在本机检查；`--base` 可显式指定本次发布之前的祖先提交或标签。可选的 `PRIVACY_FORBIDDEN_VALUES_JSON` 接收需禁止出现的字符串数组，工作流从同名仓库 Secret 读取；未配置时仍执行身份、凭据、个人路径和元数据规则，检查输出不回显匹配内容。
+| 改动 | 日常检查 |
+| --- | --- |
+| 文档 / 截图 | 版本一致性与源码隐私 |
+| Electron 界面 | 类型与构建检查、运行依赖公告、真实 Linux Electron 测试 |
+| Python 核心 / 服务端 | Linux Python 回归和真实 Python / Go 互操作；核心接口变化也检查桌面 |
+| Go 服务端 | 上述互操作，加 Go 静态、竞争和公告检查 |
+| OPAQUE / 发布脚本 / 工作流 | 所有关联检查；OPAQUE 从锁定源重建并比较两个内嵌 WASM |
+
+日常不生成跨平台发布包。已有面向 `main` / `master` / `test` 的 PR 时，匹配相同提交的分支推送交给 PR 流程；GitHub API 不可用时仍执行检查。发布标签和主分支一起推送时，完整验证交给 Release 流程。需要分支保护检查时使用汇总项 **CI result**。
+
+准备正式发版时，在 `RELEASE_NOTES.md` 添加 `# vX.Y.Z — 标题` 及该版本说明，将功能与文档提交 / 合并到 `master`，保持工作区干净，再从仓库根目录执行：
+
+```bash
+# 仅预览：不改文件、提交、标签或远端
+python scripts/release.py 1.6.0 --dry-run
+
+# 正式执行：同步版本、提交、创建标签、原子推送主分支和标签
+python scripts/release.py 1.6.0
+```
+
+版本以根目录 `VERSION` 为准。命令自动同步 `go-server/VERSION`、`desktop/package.json` 和 `desktop/package-lock.json`（含 npm 根包版本），使用项目公开别名创建发布提交与注解标签，再执行完整源码 / 元数据隐私检查。只接受递增的 `vX.Y.Z`，拒绝脏工作区、非 master、重复标签和分叉的远端历史；推送不使用强制覆盖。若本地准备或推送中途失败，已有本地结果保留供检查；远端不接受原子推送时，不会只更新主分支。
+
+`Release Chatroom` 只由版本标签触发，普通版本文件修改不会直接发布。它先验证标签对应的确切提交属于 `origin/master`、所有版本副本一致，并且仍是 master 当前发布版本，然后执行 Windows / Linux 完整回归，再构建双平台桌面 / Python 服务端与六平台 Go 服务端。构建、自检和发布均固定在该标签提交，手动重试也不会误用 master 后续代码。
+
+发布失败可在 Actions 重跑原任务，或手动运行 `Release Chatroom` 并填写已有标签。不要为重试重复执行版本命令。流水线从 `RELEASE_NOTES.md` 提取对应版本的标题与正文作为 GitHub Release 文案，缺失或重复的版本说明会停止发布，无需另写第二份说明。
+
+附件保留平台客户端 / 服务端、**一个完整源码 ZIP**、必要许可文件和 `SHA256SUMS`。源码 ZIP 包含客户端与两个服务端；不再重复上传客户端源码 ZIP 和零散 Python 文件。`scripts/release_assets.py` 统一验证清单并计算校验值。
+
+成品仍须包含 wasmtime 动态运行库、OPAQUE WASM 和相关许可，并执行冻结核心的 `--check-encryption-runtime` 及实际 Electron 检查。发布隐私检查覆盖发布基线后的提交 / 注解标签、源码、PNG、嵌套 ZIP / PYZ 和最终附件。检查失败会停止发布，输出不回显私人姓名、邮箱或凭据。可选 `PRIVACY_FORBIDDEN_VALUES_JSON` 仍从仓库同名 Secret 读取；可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 本地核验。
 
 ### 桌面成品验证
 
-`python client.py --check-desktop-ui <输出目录>` 在 900×700 窗口、100% / 125% / 150% / 175% / 200% 缩放和深浅主题下检查布局、只读复制及合成 Unicode 输入，不连接网络或读取用户账号。冻结客户端支持同一参数；Windows 检查实际字体的中文字形及原生 `WM_CHAR` 提交，保存截图和 JSON。此路径不能替代安装输入法后的人工候选窗口 / 预编辑验证。Linux 检查应使用支持 Xft 与中文字体的 Tk，CI 安装 `fonts-noto-cjk`。
+新客户端从 `desktop/` 执行 `npm test`，Linux 无显示环境使用 `xvfb-run -a npm test`。设置 `CHATROOM_DESKTOP_EXECUTABLE` 为解包客户端的绝对路径可检查实际打包产物。Playwright 覆盖真实 Electron 启动、设置、Unicode 输入、100% / 150% / 200% 缩放、深浅主题、搜索和 2,000 条虚构消息的虚拟渲染。
 
-`python scripts/benchmark_client_render.py --messages 2000 10000 --repeat 3` 输出重复采样，`--lines 4 --authors 5` 覆盖多行及多作者消息；需在相同环境、字体、消息内容与无其他重负载条件下比较中位数。
+新核心使用 `core_client.py --check-encryption-runtime`，PyInstaller 成品支持相同参数。桌面程序不再使用 Tk 自检参数；旧 `desktop_check.py` 和 Tk 渲染脚本只作为历史验证材料。实际中文输入法候选窗口与预编辑仍需在 Windows / Linux 人工检查。
+
+发布版本由上方的一键命令同步。本次流程改动没有更新版本号或发布。Windows / Linux 客户端附件改为 `chatroom-desktop-<platform>-<arch>.zip`，内置 `chatroom-core`；不要再构建旧 Tk 入口为客户端。完整源码包包含 `desktop/`、核心入口、两个服务端与预编译 OPAQUE WASM。

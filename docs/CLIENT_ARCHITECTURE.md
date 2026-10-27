@@ -1,4 +1,31 @@
-# Python 客户端结构
+# 客户端结构
+
+## Electron 开发分支
+
+新桌面采用 Electron + React + TypeScript + Vite；Python 作为独立核心，通过带版本号的 JSON-RPC / stdio 与界面通信。未来 Rust 核心实现相同协议即可复用界面，服务器协议及加密格式不变。运行与构建见 [Electron 桌面客户端](DESKTOP_CLIENT.md)，接口见 [Desktop Protocol v1](DESKTOP_PROTOCOL.md)。
+
+```mermaid
+flowchart LR
+    UI[React / TypeScript] --> Preload[受限 preload]
+    Preload --> Main[Electron 主进程]
+    Main <-->|JSON-RPC / stdio| RPC[核心适配器 rpc.py]
+    RPC --> App[ChatApplication]
+    App --> State[ClientState]
+    App --> Crypto[EncryptionController]
+    App --> Sync[History / Sync / Sends / Activity]
+    App --> Conn[ConnectionManager]
+    Conn --> Server[Python 或 Go 服务端]
+```
+
+`desktop/src/protocol.ts` 定义版本、方法白名单和投影类型；`desktop/electron/core.ts` 仅管理核心进程及传输，不依赖 Python 业务实现。`core_client.py` 与 `chatroom_client/rpc.py` 不导入 Tk：stdin 线程只入队，所有调度、状态及确认均在核心主线程执行。发布的核心显式排除 tkinter。
+
+React Virtuoso 复用可见消息，沿用模型的每会话 2,000 条 / 8 MiB、全账号 8,000 条 / 32 MiB 正文缓存预算。消息编号以字符串穿过 RPC。历史前插使用稳定 ID 和索引偏移，阅读历史时不自动跟随。草稿切换显式提交旧输入；回执清空携带原文本，不能覆盖新编辑。每条变更携带账号会话令牌；发送 / 草稿 / 历史还验证当前聊天键。
+
+群核验使用带 ID 的 `prompt` / `prompt.reply`，等待期间不重入网络事件，超时或断开即拒绝；后续仍执行原有加密上下文检查。私钥始终留在核心。Electron 处理原生文件选择和通知，渲染界面无 Node / 文件系统权限，不将正文、草稿或密码落盘。
+
+`client.py` 的默认启动入口已改为 Electron。旧 Tk 视图和历史测试暂留源码作为迁移回归基准，不进入新桌面包。下面记录的是 **v1.5.0 已发布 Tk 客户端的历史实现**，新界面入口以以上两份文档为准。
+
+## v1.5.0 Python / Tk 历史结构
 
 客户端采用组合：`ChatApplication` 协调状态、连接、历史、增量同步、未读和视图。`client.py` 创建组件并启动 Tk，不包含业务事件分支。登录界面支持保存并切换服务器配置；`client.py` 顶部常量只提供首次启动默认值。启动命令仍为 `python client.py`。
 
