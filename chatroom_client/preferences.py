@@ -195,7 +195,7 @@ class PreferencesStore:
                 go = ServerProfile('Go 本机（12346）', go.host, go.port)
             profiles.append(asdict(go))
         self._data = {'version': 1, 'theme': 'light', 'profiles': profiles, 'selected_profile': first.name,
-                      'notifications': {'enabled': True, 'do_not_disturb': False}, 'accounts': {}}
+                      'notifications': {'enabled': True, 'do_not_disturb': False, 'preview': 'sender'}, 'accounts': {}}
         self.warning = None
         self._blocked = False
         if persistent:
@@ -240,12 +240,15 @@ class PreferencesStore:
             raise PreferencesError('服务器配置名称重复或当前配置不存在')
         data['profiles'] = [asdict(profile) for profile in validated]
         notifications = data.get('notifications', {})
-        if not isinstance(notifications, dict) or notifications.keys() - {'enabled', 'do_not_disturb'}:
+        if not isinstance(notifications, dict) or notifications.keys() - {'enabled', 'do_not_disturb', 'preview'}:
             raise PreferencesError('提醒设置格式错误')
-        if any(type(value) is not bool for value in notifications.values()):
+        if any(type(notifications[key]) is not bool for key in ('enabled', 'do_not_disturb') if key in notifications):
             raise PreferencesError('提醒设置格式错误')
+        preview = notifications.get('preview', 'sender')
+        if not isinstance(preview, str) or preview not in ('generic', 'sender', 'message'):
+            raise PreferencesError('通知内容须为 generic、sender 或 message')
         data['notifications'] = {'enabled': notifications.get('enabled', True),
-                                 'do_not_disturb': notifications.get('do_not_disturb', False)}
+                                 'do_not_disturb': notifications.get('do_not_disturb', False), 'preview': preview}
         accounts = data.get('accounts', {})
         if not isinstance(accounts, dict) or len(accounts) > 10000:
             raise PreferencesError('账号状态格式错误')
@@ -405,15 +408,19 @@ class PreferencesStore:
     def do_not_disturb(self):
         return self._data['notifications']['do_not_disturb']
 
-    def set_notifications(self, *, enabled=None, do_not_disturb=None):
+    def set_notifications(self, *, enabled=None, do_not_disturb=None, preview=None):
         for key, value in (('enabled', enabled), ('do_not_disturb', do_not_disturb)):
             if value is not None and type(value) is not bool:
                 raise PreferencesError('提醒设置格式错误')
+        if preview is not None and (not isinstance(preview, str) or preview not in ('generic', 'sender', 'message')):
+            raise PreferencesError('通知内容须为 generic、sender 或 message')
 
         def mutation(candidate):
             for key, value in (('enabled', enabled), ('do_not_disturb', do_not_disturb)):
                 if value is not None:
                     candidate['notifications'][key] = value
+            if preview is not None:
+                candidate['notifications']['preview'] = preview
 
         self._mutate(mutation, explicit=True)
         return self.notifications

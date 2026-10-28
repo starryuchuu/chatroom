@@ -35,6 +35,17 @@ test('real core startup, server settings, registration layout and themes', async
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '深色', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.getByRole('combobox', { name: '通知内容', exact: true }).selectOption('message');
+  await expect.poll(async () => (await page.evaluate(() => window.chatroom.request('initialize')) as { state: State }).state.notifications.preview).toBe('message');
+  if (process.platform === 'win32' && process.env.CHATROOM_DESKTOP_EXECUTABLE) {
+    const registration = await app.evaluate(({ app, shell }) => {
+      const shortcut = app.getPath('appData') + '/Microsoft/Windows/Start Menu/Programs/Chatroom Desktop.lnk';
+      const details = shell.readShortcutLink(shortcut);
+      return { target: details.target, executable: process.execPath, appUserModelId: details.appUserModelId };
+    });
+    expect(registration.target).toBe(registration.executable);
+    expect(registration.appUserModelId).toBe('io.github.starryuchuu.chatroom');
+  }
   await page.getByRole('button', { name: '服务器', exact: true }).click();
   await page.getByRole('button', { name: '新建配置' }).click();
   await page.getByLabel('配置名称', { exact: true }).fill('测试服务器');
@@ -152,6 +163,15 @@ test('two desktop windows register, add friends and exchange real encrypted mess
       args: process.env.CHATROOM_DESKTOP_EXECUTABLE ? [] : [resolve('.')],
       env: { ...process.env, CHATROOM_CONFIG_DIR: bobDirectory, XDG_CACHE_HOME: bobDirectory } });
     const bob = await bobApp.firstWindow();
+    // Exercise the real core -> main -> native notification path without
+    // posting test message content to the host's actual notification center.
+    await bobApp.evaluate(({ Notification }) => {
+      const notices: import('electron').Notification[] = [];
+      (globalThis as unknown as { notificationSpies: import('electron').Notification[] }).notificationSpies = notices;
+      Notification.isSupported = () => true;
+      Notification.prototype.show = function () { notices.push(this); };
+      Notification.prototype.close = function () { this.emit('close'); };
+    });
     await expect(bob.getByRole('heading', { name: '让对话，继续发生' })).toBeVisible();
     const password = 'synthetic-desktop-unified-password';
     for (const [targetPage, username] of [[page, 'alice'], [bob, 'bob']] as const) {
@@ -192,11 +212,27 @@ test('two desktop windows register, add friends and exchange real encrypted mess
     await expect(online.getByText('你', { exact: true })).toBeVisible();
     await page.screenshot({ path: 'test-results/online-users.png' });
     await page.getByRole('button', { name: '关闭', exact: true }).click();
+    await bob.evaluate(async () => {
+      const { state } = await window.chatroom.request('initialize') as { state: State };
+      await window.chatroom.request('settings.notifications', { session: state.session, enabled: true, doNotDisturb: false, preview: 'message' });
+      await window.chatroom.request('window.activity', { session: state.session, focused: false, atBottom: true });
+    });
     await page.getByLabel('消息输入', { exact: true }).fill('真实界面发送 · 中文🙂');
     await expect(page.getByRole('button', { name: '发送消息', exact: true })).toBeEnabled();
     await page.getByLabel('消息输入', { exact: true }).press('Enter');
     await expect(bob.locator('.message-body')).toContainText('真实界面发送 · 中文🙂');
+    await expect.poll(() => bobApp!.evaluate(() => (globalThis as unknown as {
+      notificationSpies: import('electron').Notification[];
+    }).notificationSpies.map(item => ({ title: item.title, body: item.body })))).toContainEqual({ title: 'alice', body: '真实界面发送 · 中文🙂' });
     await expect(page.getByLabel('消息输入', { exact: true })).toHaveValue('');
+    // Wait past the one-second notification rate limit, then exercise Unicode
+    // truncation through the real core and main process (UTF-16 != characters).
+    await new Promise(resolve => setTimeout(resolve, 1050));
+    await page.getByLabel('消息输入', { exact: true }).fill('🙂'.repeat(160));
+    await page.getByLabel('消息输入', { exact: true }).press('Enter');
+    await expect.poll(() => bobApp!.evaluate(() => (globalThis as unknown as {
+      notificationSpies: import('electron').Notification[];
+    }).notificationSpies.map(item => item.body))).toContain('🙂'.repeat(139) + '…');
     await bob.getByLabel('消息输入', { exact: true }).fill('收到，已经端到端加密。');
     await bob.getByLabel('消息输入', { exact: true }).press('Enter');
     await expect(page.locator('.message-body').last()).toHaveText('收到，已经端到端加密。');
@@ -224,6 +260,24 @@ test('two desktop windows register, add friends and exchange real encrypted mess
     await page.getByRole('button', { name: '保存名称', exact: true }).click();
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Renamed group', exact: true })).toBeVisible();
+    await expect(bob.getByRole('heading', { name: 'Renamed group', exact: true })).toBeVisible();
+    await bob.getByLabel('消息输入', { exact: true }).fill('群聊里尚未发送的草稿');
+    const clickPrivateNotification = (body = '真实界面发送 · 中文🙂') => bobApp!.evaluate((_electron, body) => {
+      const notice = (globalThis as unknown as { notificationSpies: import('electron').Notification[] })
+        .notificationSpies.find(item => item.body === body);
+      if (!notice) throw new Error('Missing native notification');
+      notice.emit('click');
+    }, body);
+    await clickPrivateNotification();
+    await expect(bob.getByRole('heading', { name: 'alice', exact: true })).toBeVisible();
+    await bob.locator('.conversation').filter({ hasText: 'Renamed group' }).click();
+    await expect(bob.getByLabel('消息输入', { exact: true })).toHaveValue('群聊里尚未发送的草稿');
+    await bob.evaluate(async () => {
+      const { state } = await window.chatroom.request('initialize') as { state: State };
+      await window.chatroom.request('settings.notifications', { session: state.session, enabled: true, doNotDisturb: true, preview: 'generic' });
+    });
+    await clickPrivateNotification('🙂'.repeat(139) + '…');
+    await expect(bob.getByRole('heading', { name: 'Renamed group', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '群聊详情', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '群聊详情' })).toBeVisible();
     await page.getByRole('button', { name: '关闭', exact: true }).click();

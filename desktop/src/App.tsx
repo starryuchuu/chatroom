@@ -48,6 +48,16 @@ export function App() {
   useEffect(() => {
     const unsubscribe = window.chatroom.subscribe((event: CoreEvent) => {
       if (event.method === 'state.changed') applyState(event.params as State);
+      else if (event.method === 'notification.open') {
+        const data = event.params as { session: string; key: ChatKey };
+        const state = current.current;
+        if (state?.page !== 'chat' || state.session !== data.session
+            || !state.conversations.some(item => sameKey(item.key, data.key))) return;
+        const draft = drafts.current.get(state.session + keyId(state.currentChat)) || '';
+        void window.chatroom.request('conversation.select', { session: state.session, key: data.key, draft })
+          .then(() => setPanel(null))
+          .catch(() => notify('打开会话', '此会话暂时无法打开，请从侧栏重新选择。'));
+      }
       else if (event.method === 'notice') {
         const data = event.params as { title: string; text: string }; notify(data.title, data.text);
       } else if (event.method === 'prompt') {
@@ -396,10 +406,10 @@ function MessageRow({ message, previous, highlighted, query }: { message: Messag
     {newDate && <div className="date-divider"><span>{dateLabel}</span></div>}
     <article className={`message-row ${message.self ? 'own' : ''} ${highlighted ? 'highlighted' : ''}`} data-message-id={message.id}>
       <Avatar name={message.author} small />
-      <div className="message-content"><div className="message-heading"><strong>{message.self ? '你' : message.author}</strong>
-        <button className="message-time" onClick={() => setDetails(value => !value)} aria-label="消息详情">{clock(message.timestamp)}</button>
-        {message.protection !== 'e2ee' && <span className={`message-protection ${message.protection === 'failed' ? 'danger-text' : ''}`}>{message.protection === 'failed' ? '验证失败' : '旧消息'}</span>}</div>
+      <div className="message-content"><div className="message-heading"><strong>{message.self ? '你' : message.author}</strong></div>
         <div className="message-body" dir="auto">{parts.map((part, index) => typeof part === 'string' ? part : <mark key={index}>{part.match}</mark>)}</div>
+        <div className="message-footer"><button className="message-time" onClick={() => setDetails(value => !value)} aria-label="消息详情" aria-expanded={details}>{clock(message.timestamp)}</button>
+          {message.protection !== 'e2ee' && <span className={`message-protection ${message.protection === 'failed' ? 'danger-text' : ''}`}>{message.protection === 'failed' ? '验证失败' : '旧消息'}</span>}</div>
         {details && <div className="message-details">{clock(message.timestamp, true)}<br />原始时间：{message.timestamp || '未提供'}<br />
           消息编号：{message.id}<br />{message.protection === 'e2ee' ? '端到端加密 · 已通过身份与完整性验证' : message.protection === 'failed' ? '此消息未通过安全验证' : '旧消息 · 非端到端加密'}</div>}
       </div>

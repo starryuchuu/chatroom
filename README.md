@@ -2,7 +2,7 @@
 
 [English Version](README_en.md) | [文档目录](docs/README.md) | [单密码指南](docs/SINGLE_PASSWORD.md) | [群组功能指南](docs/GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](go-server/README.md)
 
-> **v2.0.2：全新桌面客户端。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.2) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
+> **v2.0.3：极简聊天气泡与 Windows 通知改进。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.3) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
@@ -76,7 +76,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v2.0.2 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.2) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v2.0.3 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.3) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -89,7 +89,7 @@ go build -o chatroom-server ./cmd/server/main.go
 
 ### 启动客户端
 
-普通用户可从 [v2.0.2 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.2) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
+普通用户可从 [v2.0.3 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.3) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
 
 源码开发：
 
@@ -125,7 +125,7 @@ v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原�
 
 好友和群列表显示未读数与最近消息预览，窗口标题显示总未读数。打开会话且窗口处于前台时清除未读；窗口在后台或最小化时继续累计。首次使用账号时，最近历史作为基线，不会将旧消息批量提醒；之后会恢复按服务器和账号隔离的已读位置与未读编号。
 
-**设置 → 通用** 可开关 **桌面通知** 和 **勿扰模式**。勿扰保留未读数；桌面通知由 Electron 调用系统能力，只显示通用提示，不包含正文，不为历史或断线补取逐条提醒。通知是否显示取决于操作系统权限与设置。
+**设置 → 通用** 可开关 **桌面通知** 和 **勿扰模式**。勿扰保留未读数，不为历史或断线补取逐条提醒。v2.0.3 新增通知内容档位：通用提醒、发送者与会话（默认）、消息摘要；开启正文摘要后，系统通知中心或锁屏可能显示正文。Windows 便携版补齐当前用户的通知身份和开始菜单快捷方式，点击通知可打开对应会话并保留草稿。详见[桌面客户端通知说明](docs/DESKTOP_CLIENT.md#桌面通知)。通知是否显示取决于操作系统权限与设置。
 
 本地设置只保存服务器配置、主题、提醒偏好、账号标识和消息编号，不保存密码、聊天正文或草稿。多个客户端同时保存时，会在文件锁内读取最新设置再更新，保留其他账号和服务器配置。草稿在当前进程中按服务器、账号和会话隔离保留，关闭进程后不保留。
 
@@ -149,7 +149,7 @@ v1.5.0 增加发送结果核对与去重重试、有限正文缓存，以及原�
 
 在支持 `message_sync` 的新版 Python 或 Go 服务端上，重新连接会按固定历史边界分页补取全部遗漏消息，超过 100 条也可恢复，并按消息 ID 去重。补取失败可点击 **重试补取**，已完成的同步位置不会被半页结果覆盖。未收到保存确认的发送结果仍可能已经写入数据库，客户端保留输入供查看历史后确认，不自动重发。
 
-传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v2.0.2 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。v1.5.0 起自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
+传输协议 v2、存储加密格式 v1 和端到端消息封装保持不变。v2.0.3 客户端兼容 v1.3.0 或更新的 Python / Go 服务端，沿用 `opaque_v1` 与 `e2ee_v1` 认证要求，缺少能力时拒绝连接，不回退旧认证。v1.5.0 起自动新增 `send_receipts` 回执表，保留原消息与密钥格式，无需重新迁移已有 OPAQUE 账号；建议两端一起升级以支持发送结果核对与幂等重试；连接旧服务端时，分页超时后需重新连接。`opaque_meta` 与 `opaque_accounts` 自 v1.3.0 引入；已有 OPAQUE 账号但 setup 缺失时停止启动。升级前备份数据库、存储密钥、RSA 身份及客户端离线密钥备份，不要用 v1.3.0 以前的服务端运行含 OPAQUE 账号的数据库。
 
 ---
 
@@ -448,9 +448,9 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 ### 当前版本兼容性
 
-本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.2 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
+本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.3 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码开发使用 [chatroom-v2.0.2-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.2/chatroom-v2.0.2-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
+源码开发使用 [chatroom-v2.0.3-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.3/chatroom-v2.0.3-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
 
 新客户端使用 React 界面、受限 Electron IPC 和独立 Python 核心，详见[客户端结构](docs/CLIENT_ARCHITECTURE.md)与 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。v2.0.2 不再单独提供旧式客户端源码包或散装 Python 附件。
 

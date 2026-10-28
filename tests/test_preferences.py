@@ -149,7 +149,7 @@ class PreferencesTests(unittest.TestCase):
 
     def test_notification_preferences_persist(self):
         self.assertEqual(self.store.set_notifications(enabled=False, do_not_disturb=True),
-                         {'enabled': False, 'do_not_disturb': True})
+                         {'enabled': False, 'do_not_disturb': True, 'preview': 'sender'})
         reopened = PreferencesStore(self.path)
         self.assertFalse(reopened.notifications_enabled)
         self.assertTrue(reopened.do_not_disturb)
@@ -242,7 +242,7 @@ class PreferencesTests(unittest.TestCase):
         reopened = PreferencesStore(self.path)
         self.assertEqual(reopened.theme, 'light')
         self.assertEqual(reopened.selected_profile, remote)
-        self.assertEqual(reopened.notifications, {'enabled': False, 'do_not_disturb': True})
+        self.assertEqual(reopened.notifications, {'enabled': False, 'do_not_disturb': True, 'preview': 'sender'})
         self.assertEqual(reopened.account(('localhost', 12345), 'alice'),
                          {'sync_cursor': 42, 'activity': activity})
         self.assertEqual(reopened.account(('localhost', 12345), 'bob'), {'sync_cursor': 99})

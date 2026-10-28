@@ -6,6 +6,8 @@
   --input: #fdfcfb; --focus: #a29e91; --primary-hover: #44423d;
   --composer: #fdfcfb; --composer-line: #dedbd3; --composer-focus: #b9b4a7;
   --avatar: #e6e8e1; --avatar-text: #606a55; --own-avatar: #e9e3da; --own-avatar-text: #80705b;
+  --bubble: #eeede9; --bubble-text: #292824; --bubble-line: #e6e4de;
+  --own-bubble: #30302e; --own-bubble-text: #faf9f6; --own-bubble-line: #30302e;
   --selection: #ddd9cb; --highlight: #f2d995; --scrollbar: #24221825;
   --success: #6a7d5e; --warning: #96733a; --danger: #a34d45;
   --danger-bg: #f6eeea; --danger-line: #ebd6cd;
@@ -19,6 +21,8 @@
   --input: #272724; --focus: #8b897c; --primary-hover: #c7c4b9;
   --composer: #292926; --composer-line: #41413a; --composer-focus: #69675b;
   --avatar: #343c30; --avatar-text: #adbda0; --own-avatar: #3c352c; --own-avatar-text: #c5b18e;
+  --bubble: #2d2d2a; --bubble-text: #e5e3db; --bubble-line: #373732;
+  --own-bubble: #41413d; --own-bubble-text: #f3f2ec; --own-bubble-line: #4a4a45;
   --selection: #555244; --highlight: #6c592b; --scrollbar: #e9e5d52a;
   --success: #a1b38c; --warning: #c0a16b; --danger: #d18e80;
   --danger-bg: #362c27; --danger-line: #4e3830;

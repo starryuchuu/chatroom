@@ -39,10 +39,16 @@ export function SettingsPanel({ state, call, close }: { state: State; call: Call
         onClick={() => { void call('settings.theme', { theme }).catch(() => {}); }}>
         <span className={`theme-preview ${theme}`}><i /><i /><i /></span><span>{theme === 'light' ? <Sun size={15} /> : <Moon size={15} />}
           {theme === 'light' ? '浅色' : '深色'}{state.theme === theme && <Check size={15} />}</span></button>)}</div>
-      <h3>通知</h3><label className="setting-check"><span><strong>桌面通知</strong><small>收到新消息时提醒你，通知不显示消息正文。</small></span>
+      <h3>通知</h3><label className="setting-check"><span><strong>桌面通知</strong><small>收到新消息时提醒你，可选择通知显示的详细程度。</small></span>
         <input type="checkbox" checked={state.notifications.enabled} onChange={event => {
           void call('settings.notifications', { enabled: event.target.checked, doNotDisturb: state.notifications.do_not_disturb }).catch(() => {});
         }} /></label>
+      <label className="field"><span>通知内容</span><select aria-label="通知内容" value={state.notifications.preview}
+        onChange={event => { void call('settings.notifications', { enabled: state.notifications.enabled,
+          doNotDisturb: state.notifications.do_not_disturb, preview: event.target.value }).catch(() => {}); }}>
+        <option value="generic">仅提示有新消息</option><option value="sender">发送者与会话名称</option>
+        <option value="message">发送者、会话与消息预览</option></select></label>
+      <p className="caption">消息预览最多显示 140 个字符；系统可能将通知保留在通知中心或显示在锁屏。</p>
       <label className="setting-check"><span><strong>勿扰模式</strong><small>保留未读标记，暂停桌面提醒。</small></span>
         <input type="checkbox" checked={state.notifications.do_not_disturb} onChange={event => {
           void call('settings.notifications', { enabled: state.notifications.enabled, doNotDisturb: event.target.checked }).catch(() => {});

@@ -36,7 +36,7 @@ UI 编辑文本只在内存。`draft.set` 同步核心；`conversation.select` �
 | `profile.select` / `profile.delete` | `name`；连接 / 认证 / 重连时禁止 |
 | `profile.save` | `name,host,port,fingerprint,replaceName?`；保存并选用 |
 | `settings.theme` | `theme:light|dark` |
-| `settings.notifications` | `enabled,doNotDisturb` 两个布尔值 |
+| `settings.notifications` | `enabled,doNotDisturb` 两个布尔值；可选 `preview:generic\|sender\|message`，省略时保留当前档位 |
 | `window.activity` | `focused,atBottom`；已读和提醒判断 |
 | `conversation.select` / `conversation.clear` | `key,draft` / `draft` |
 | `draft.set` / `message.send` | `key,text` |
@@ -63,7 +63,11 @@ UI 编辑文本只在内存。`draft.set` 同步核心；`conversation.select` �
 
 等待确认期间不重入网络事件，也不允许其他变更，仅接受 `prompt.reply`、`session.disconnect`、`shutdown`。120 秒超时、EOF、退出或账号变化均拒绝；结束通知 `prompt.closed`。随后既有控制器仍核验账号、socket、输入与群上下文。
 
-其他通知：`notice {title,text}`、`auth.registered {username}`、`session.reset {session}`、`group.opened {gid}`、`draft.changed`、`conversation.latest {key}`、`conversation.uncached {key}`、`desktop.notification {title,body}`、`bell {}`。桌面通知只提示有新消息，不包含聊天正文。
+其他通知：`notice {title,text}`、`auth.registered {username}`、`session.reset {session}`、`group.opened {gid}`、`draft.changed`、`conversation.latest {key}`、`conversation.uncached {key}`、`bell {}`。
+
+v2.0.3 的 `state.notifications` 包含 `enabled,do_not_disturb,preview`。旧配置默认 `preview:sender`，不展示正文；`generic` 只提示有新消息，`message` 允许最多 140 个字符的正文摘要。核心在同一 owner 线程捕获策略、会话和聊天键，限速一秒，先刷新快照，再发送 `desktop.notification {title,body,session,key,preview}`。正文验证失败时只显示失败提示；通知不触发正文落盘。
+
+Electron 收到后再次比较当前会话、通知档位、勿扰及聊天存在性；账号切换、静音、会话删除或档位改变时关闭仍受管理的通知。原生点击只向渲染进程发送 `notification.open {session,key}`，渲染进程再次校验并以 `conversation.select {session,key,draft}` 跳转，保留当前草稿。此事件来自 Electron，不是新增核心 RPC 方法。系统通知历史及锁屏显示由系统控制。
 
 ## 界面隔离
 

@@ -8,11 +8,13 @@ export type Peer = { username: string; fingerprint: string; verified: boolean; c
 export type Group = { group_name: string; owner: string; members: string[] };
 export type Conversation = { key: ChatKey; title: string; preview: string; unread: number; timestamp: string; online: boolean };
 export type Pending = { id: string; key: ChatKey; text: string; status: string; receipts: boolean; createdAt: string };
+export type NotificationPreview = 'generic' | 'sender' | 'message';
+export type DesktopNotification = { title: string; body: string; session: string; key: ChatKey; preview: NotificationPreview };
 export type State = {
   session: string; page: 'login' | 'chat'; username: string | null;
   busy: boolean; authStatus: string; status: string; connected: boolean; reconnecting: boolean;
   theme: 'light' | 'dark'; profiles: Profile[]; selectedProfile: string;
-  notifications: { enabled: boolean; do_not_disturb: boolean };
+  notifications: { enabled: boolean; do_not_disturb: boolean; preview: NotificationPreview };
   conversations: Conversation[]; currentChat: ChatKey | null; messages: Message[];
   groups: Record<string, Group>; onlineUsers: string[]; unread: number;
   loadingHistory: boolean; syncing: boolean; syncFailed: boolean;

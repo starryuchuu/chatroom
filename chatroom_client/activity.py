@@ -11,11 +11,12 @@ from .models import ChatKey
 
 class ActivityController:
     def __init__(self, state, preferences=None, *, refresh=None, notify=None,
-                 is_visible=None, schedule=None, on_error=None):
+                 is_visible=None, schedule=None, on_error=None, notify_message=None):
         self.state = state
         self.preferences = preferences
         self.refresh = refresh or (lambda: None)
         self.notify = notify or (lambda title, text: None)
+        self.notify_message = notify_message
         self.is_visible = is_visible or (lambda key: False)
         self.schedule = schedule
         self.on_error = on_error or (lambda text: None)
@@ -83,7 +84,10 @@ class ActivityController:
                 added_unread = True
         self._changed()
         if added_unread and not historical and not catchup and self._notifications_allowed():
-            self.notify('聊天室新消息', '你收到了一条新消息，请打开聊天室查看。')
+            if self.notify_message is not None:
+                self.notify_message(key, item)
+            else:
+                self.notify('聊天室新消息', '你收到了一条新消息，请打开聊天室查看。')
         self.refresh()
 
     def mark_read(self, key, *, refresh=True):

@@ -23,6 +23,7 @@ from .connection import ClientSettings, ConnectionManager
 from .e2ee_crypto import bundle_fingerprint
 from .key_vault import VaultExistsError
 from .models import ChatKey
+from .notification_preview import message_preview
 from .preferences import PreferencesStore, ServerProfile
 
 
@@ -318,7 +319,8 @@ class CoreRuntime:
         except BaseException:
             connection.close()
             raise
-        self.app.notifier.deliver = self.desktop_notification
+        self.last_notification = None
+        self.app.activity.notify_message = self.desktop_message_notification
 
     def write(self, packet):
         raw = json.dumps(packet, ensure_ascii=False, separators=(',', ':'))
@@ -329,9 +331,18 @@ class CoreRuntime:
     def emit(self, method, params):
         self.write({'jsonrpc': '2.0', 'method': method, 'params': params})
 
-    def desktop_notification(self, title, body):
-        self.emit('desktop.notification', {'title': title, 'body': body})
-        return True
+    def desktop_message_notification(self, key, message):
+        # Capture chat, session and policy on the owner thread, before IPC.
+        now, session = time.monotonic(), self.view.session
+        if self.last_notification is not None and self.last_notification[0] == session and now - self.last_notification[1] < 1:
+            return
+        self.last_notification = session, now
+        preview = self.app.preferences.notifications['preview']
+        title, body = message_preview(key, message, self.app.state.groups, preview)
+        self.view.changed()
+        self.flush()
+        self.emit('desktop.notification', {'title': title, 'body': body,
+                  'session': session, 'key': key_data(key), 'preview': preview})
 
     def flush(self):
         if self.dirty and not self.stopped:
@@ -490,7 +501,15 @@ class CoreRuntime:
             for field in ('enabled', 'doNotDisturb'):
                 if type(params.get(field)) is not bool:
                     raise ValueError('提醒设置无效')
-            app.preferences.set_notifications(enabled=params['enabled'], do_not_disturb=params['doNotDisturb'])
+            preview = params.get('preview', app.preferences.notifications['preview'])
+            if not isinstance(preview, str) or preview not in ('generic', 'sender', 'message'):
+                raise ValueError('通知内容设置无效')
+            app.preferences.set_notifications(enabled=params['enabled'], do_not_disturb=params['doNotDisturb'], preview=preview)
+            app.notifier.discard_pending()
+            # Revoke old native notifications before acknowledging a policy
+            # change, rather than leaving a response/state-update race.
+            view.changed()
+            self.flush()
         elif method == 'window.activity':
             view.focused = params.get('focused') is True
             view.at_bottom = params.get('atBottom') is True
