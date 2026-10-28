@@ -29,11 +29,22 @@
 
 ## 🖼️ 界面预览
 
-![Electron 浅色聊天界面](docs/images/electron-chat.png)
+![v2.0.4 浅色聊天气泡与服务器保存状态](docs/images/electron-chat.png)
 
-![Electron 深色聊天界面](docs/images/electron-chat-dark.png)
+![v2.0.4 深色聊天气泡与服务器保存状态](docs/images/electron-chat-dark.png)
 
-截图于 2026-10-27 在真实 Electron 窗口采集，聊天内容是虚构的渲染夹具。真实加密互操作由 Python / Go 服务端测试单独验证。聊天页右上角或「设置 → 通用」切换主题，保留输入与连接。旧版截图保存在 [截图目录](docs/images/README.md) 作为历史记录。
+自己的消息靠右、他人的消息靠左；单勾和「服务器已保存」表示服务端已保存，不代表对方已收到或已读。
+
+<details>
+<summary>查看待确认、核对与发送失败示例</summary>
+
+![v2.0.4 消息发送状态、核对原结果按钮和失败原因](docs/images/message-send-status-dark.png)
+
+保存结果不确定时可先「核对原结果」，服务器确认无保存回执后才允许显式重试。详见[消息发送状态](docs/DESKTOP_CLIENT.md#消息发送状态)。
+
+</details>
+
+以上为 2026-10-28 从 [v2.0.4 源码](https://github.com/starryuchuu/chatroom/tree/v2.0.4) 采集的真实 Electron 内容区截图，使用虚构聊天和状态，不包含系统标题栏。真实加密与保存行为另由 Python / Go 服务端和桌面测试验证。聊天页右上角或「设置 → 通用」切换主题，保留输入与连接。采集信息及旧版截图见[截图目录](docs/images/README.md)。
 
 ---
 

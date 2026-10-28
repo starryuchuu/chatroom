@@ -1,10 +1,23 @@
 # 界面截图 / Interface screenshots
 
-## Electron 开发分支 / Development desktop
+## v2.0.4 Electron 桌面 / Current desktop
 
-`electron-chat.png`、`electron-chat-dark.png`、`electron-login-dark.png` 于 2026-10-27 在真实 Electron 45.0.0 Linux 窗口中采集。账号、会话和文字是合成渲染夹具；真实加密互操作另经 Python / Go 服务端及双 Electron 窗口验证。见 [Electron 迁移验证](../reviews/ELECTRON_MIGRATION_VALIDATION.md)。
+首页的深浅色聊天图已更新到 [v2.0.4](https://github.com/starryuchuu/chatroom/tree/v2.0.4)，展示左右对齐的气泡及本人消息的服务器保存状态。发送状态图展示已保存、保存结果待确认、核对入口与失败原因；这些状态从 v2.0.4 起提供。
 
-新增 `electron-online-users.png` 展示新侧栏入口与在线列表，使用真实本机测试服务和虚构账号 `alice`、`bob` 采集。
+The README chat previews now use [v2.0.4](https://github.com/starryuchuu/chatroom/tree/v2.0.4), showing incoming/outgoing bubbles and server persistence status. Additional status captures demonstrate saved, uncertain and failed sends with reconciliation controls and failure reasons.
+
+- 采集日期 / Capture date: 2026-10-28（Asia/Shanghai）
+- 环境 / Environment: Linux, Electron 45.0.0, 1180 × 791 content area
+- [浅色聊天 / Light chat](electron-chat.png)、[深色聊天 / Dark chat](electron-chat-dark.png): 当前聊天布局及「服务器已保存」状态 / Current chat layout and saved status
+- [浅色发送状态 / Light send states](message-send-status-light.png)、[深色发送状态 / Dark send states](message-send-status-dark.png): 已保存、待确认、核对入口及失败原因 / Saved, uncertain, reconciliation and failure states
+
+以上图片由真实 Electron 渲染器从隔离临时配置采集，账号、聊天和状态是虚构展示数据，不包含系统标题栏。截图不作为真实加密、回执或收件人已读的证据；相关行为由核心测试与 Python / Go 双服务端桌面互操作测试验证。单勾仅表示服务器保存，不表示对方收到或已读。
+
+These images were captured from the actual Electron renderer with isolated temporary configuration and synthetic accounts, messages and states. They exclude the native system title bar. They do not establish real E2EE, receipt or read behavior; core tests and desktop interoperability tests against both servers verify the relevant behavior separately. A single check indicates server persistence only.
+
+其他 Electron 截图保留对应功能的采集记录：`electron-login-dark.png` 于 2026-10-27 使用虚构渲染数据采集；`electron-online-users.png` 使用真实本机测试服务和虚构账号 `alice`、`bob` 展示侧栏入口与在线列表；`electron-notification-settings.png` 展示 v2.0.3 起提供的通知内容设置。见[桌面指南](../DESKTOP_CLIENT.md)与 [Electron 迁移验证](../reviews/ELECTRON_MIGRATION_VALIDATION.md)。
+
+Other Electron captures show login, online users and notification settings. The dark login capture dates from 2026-10-27 and uses synthetic rendering data; the online-user capture uses a local test server and synthetic `alice` / `bob` accounts. Notification content settings are available from v2.0.3. See the [desktop guide](../DESKTOP_CLIENT.md) and [migration validation](../reviews/ELECTRON_MIGRATION_VALIDATION.md).
 
 ## v1.3.2 历史截图 / Historical screenshots
 
@@ -31,7 +44,7 @@ v1.3.2 阅读历史时收到新消息会保留当前可见消息，聊天区的�
 
 In v1.3.2, arrivals retain the visible historical message while “N 条新消息 ↓” returns to the latest messages. Friend/group lists also retain their scroll and keyboard navigation positions. The indicator appears after an actual arrival while reading earlier history; captures do not draw or overlay mock controls.
 
-## 演示数据与采集 / Demo data and capture
+## v1.3.2 演示数据与采集 / Historical demo data and capture
 
 采集时使用临时本地 Python 服务端、全新的独立配置和演示密钥。`demo_alice`、`demo_bob`、`demo_carol`、群组和消息均为虚构数据；地址为本机回环地址。截图仅包含应用窗口，不含桌面、个人账号、私人聊天、密码、私钥、个人姓名、个人邮箱或文件路径。PNG 不附带文本或拍摄元数据。
 

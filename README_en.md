@@ -42,9 +42,23 @@ This project implements an encrypted desktop chat room with Python and Go server
   - User-friendly error handling
 
 - 🖼️ **New desktop preview**
-  - ![Electron light chat](docs/images/electron-chat.png)
-  - ![Electron dark chat](docs/images/electron-chat-dark.png)
-  - Captured in real Electron windows using synthetic rendering data. Actual E2EE is tested separately against both servers.
+
+  ![v2.0.4 light chat bubbles and server persistence status](docs/images/electron-chat.png)
+
+  ![v2.0.4 dark chat bubbles and server persistence status](docs/images/electron-chat-dark.png)
+
+  Incoming messages appear on the left and your messages on the right. A single check and “服务器已保存” mean the server saved the message; they do not indicate recipient delivery or reading.
+
+  <details>
+  <summary>View uncertain and failed message examples</summary>
+
+  ![v2.0.4 message status, original-result lookup and failure reason](docs/images/message-send-status-dark.png)
+
+  Reconcile an uncertain result first; an explicit retry is available only after the server reports no saved receipt. See [message sending status](docs/DESKTOP_CLIENT.md#消息发送状态).
+
+  </details>
+
+  Captured from the [v2.0.4 source](https://github.com/starryuchuu/chatroom/tree/v2.0.4) on 2026-10-28 in real Electron content areas, with synthetic chats and states. System title bars are outside the captures. E2EE and persistence behavior are tested separately against the Python and Go servers and desktop clients. See [capture notes](docs/images/README.md).
 
 - 🖼️ **Historical v1.3.2 Interface Showcase**
   - Login Interface
