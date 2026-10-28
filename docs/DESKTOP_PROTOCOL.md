@@ -22,6 +22,10 @@
 
 UI 编辑文本只在内存。`draft.set` 同步核心；`conversation.select` 必须同时传旧会话最新 `draft`。核心通知 `draft.changed {session,key,text,previous}`，界面仅在当前文本仍等于 `previous` 时接受确认清空，防止迟到回执抹掉新编辑。
 
+v2.0.4 新增 `state.outgoing`：当前会话的本机发送气泡，与 `state.messages` 的已验证历史分开。消息可附带 `sendStatus:sending|saved|uncertain|checking|retry|failed`；本机气泡使用 `outgoing:<记录ID>` 标识及 `protection:local`，附带 `sendId,canRecover,sendError,serverId`。本机时间和未知的服务器编号须明确标注，不将原文占位记录声称为已经过身份及完整性验证。`messages` 中带正整数编号的本人消息附带 `sendStatus:saved`。
+
+界面只在最新历史尾部合并 `messages` 与 `outgoing`。服务器保存确认与原消息到达之间保留占位；已有对应服务器编号时不再显示占位。已验证本人消息与原待发送 E2EE 封装完全一致时，可以解决丢失的 ACK；不同聊天、验证失败、仅正文相同或旧账号不能关联。`send.recover` 沿用原核对与显式幂等重试，不新增任意正文重发 API。近期结果记录与待发送共同受 8 MiB 内存预算约束，退出后清除。
+
 ## 方法
 
 表内省略共同的 `session`。核心验证字符串、布尔、集合及权限，不暴露任意网络发送、脚本或 shell 执行。

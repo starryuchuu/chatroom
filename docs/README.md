@@ -43,6 +43,6 @@ Run commands from the repository root unless a command explicitly changes direct
 
 These reports document checks for specific releases. Refer to the current guides and release notes for current behavior and limits.
 
-当前 Electron 截图位于 [images/](images/)，于 2026-10-27 至 2026-10-28 在真实窗口采集，展示浅色 / 深色聊天气泡、登录、在线用户与通知设置。画面使用虚构演示数据，实际加密另有双服务端互操作验证。v1.3.2 的 Tk 截图保留作历史记录。新增指南和设计放在本目录，验证记录放在 `reviews/`。
+当前 Electron 截图位于 [images/](images/)，于 2026-10-27 至 2026-10-28 在真实窗口采集，展示浅色 / 深色聊天气泡、登录、在线用户、通知设置与消息发送状态。画面使用虚构演示数据，实际加密另有双服务端互操作验证。v1.3.2 的 Tk 截图保留作历史记录。新增指南和设计放在本目录，验证记录放在 `reviews/`。
 
-Current Electron screenshots in [images/](images/) were captured in real windows on 2026-10-27 and 2026-10-28 with synthetic data. They show light/dark chat bubbles, login, online users and notification settings. E2EE is tested separately against both servers; v1.3.2 Tk captures remain historical records.
+Current Electron screenshots in [images/](images/) were captured in real windows on 2026-10-27 and 2026-10-28 with synthetic data. They show light/dark chat bubbles, login, online users, notification settings and message sending states. E2EE is tested separately against both servers; v1.3.2 Tk captures remain historical records.

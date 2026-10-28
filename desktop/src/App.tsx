@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CircleHelp, Copy, Hash, Inbox, Info, LockKeyhole, Menu, MessageSquare, Moon, MoreHorizontal,
+  CircleHelp, Copy, Hash, Inbox, Info, LoaderCircle, LockKeyhole, Menu, MessageSquare, Moon, MoreHorizontal,
   PanelLeftClose, Plus, Search, Settings, ShieldCheck, Sun, Users, X } from 'lucide-react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { PROTOCOL_VERSION, keyId, sameKey, type ChatKey, type CoreEvent, type InitResult,
@@ -11,6 +11,7 @@ import { SettingsPanel, KeysPanel, GroupPanel, PendingPanel, RecoveryPanel, Onli
 export type Call = (method: Method, params?: Record<string, unknown>) => Promise<unknown>;
 type Panel = 'settings' | 'keys' | 'friend' | 'createGroup' | 'group' | 'pending' | 'requests' | 'recovery' | 'online' | null;
 type Toast = { id: number; title: string; text: string };
+type SendActions = { connected: boolean; canSend: boolean; recover: (id: string) => Promise<unknown> };
 
 export function App() {
   const [state, setState] = useState<State | null>(null);
@@ -205,6 +206,8 @@ function Chat({ state, call, draft, editDraft, select, clear, open, latestSignal
   const input = useRef<HTMLTextAreaElement>(null);
   const selected = state.conversations.find(item => sameKey(item.key, state.currentChat));
   const act = (method: Method, params?: Record<string, unknown>) => { void call(method, params).catch(() => {}); };
+  const timelineMessages = useMemo(() => state.newerEvicted ? state.messages : [...state.messages, ...(state.outgoing || [])],
+    [state.messages, state.outgoing, state.newerEvicted]);
   useEffect(() => { setSearchOpen(false); setQuery(''); setMore(false); setAtBottom(true); readingId.current = null; }, [keyId(state.currentChat)]);
   useEffect(() => {
     const report = () => { void call('window.activity', { focused: document.hasFocus() && !document.hidden, atBottom }).catch(() => {}); };
@@ -286,7 +289,9 @@ function Chat({ state, call, draft, editDraft, select, clear, open, latestSignal
         <span className="status-dot" />{state.status}{state.syncFailed && <Button onClick={() => act('sync.retry')}>重试补取</Button>}
         {state.reconnecting && <Button onClick={() => act('session.disconnect')}>取消重连</Button>}</div>}
       {selected ? <>
-        <MessageTimeline key={state.session + keyId(state.currentChat)} messages={state.messages} query={query}
+        <MessageTimeline key={state.session + keyId(state.currentChat)}
+          messages={timelineMessages} query={query}
+          sendActions={{ connected: state.connected, canSend: state.canSend, recover: id => call('send.recover', { id }) }}
           searchOpen={searchOpen} setQuery={setQuery} closeSearch={closeSearch} atBottom={atBottom} setAtBottom={setAtBottom}
           canLoadOlder={state.canLoadOlder} loading={state.loadingHistory} loadOlder={() => act('history.older', { key: state.currentChat })}
           latestSignal={latestSignal} restorePosition={restorePosition} onRead={id => { readingId.current = id; }}
@@ -318,7 +323,8 @@ function Chat({ state, call, draft, editDraft, select, clear, open, latestSignal
 }
 
 function MessageTimeline({ messages, query, searchOpen, setQuery, closeSearch, atBottom, setAtBottom,
-  canLoadOlder, loading, loadOlder, latestSignal, restorePosition, onRead, hasNewer, loadLatest }: {
+  canLoadOlder, loading, loadOlder, latestSignal, restorePosition, onRead, hasNewer, loadLatest, sendActions }: {
+  sendActions: SendActions;
   messages: Message[]; query: string; searchOpen: boolean; setQuery: (value: string) => void; closeSearch: () => void;
   atBottom: boolean; setAtBottom: (value: boolean) => void; canLoadOlder: boolean; loading: boolean;
   loadOlder: () => void; latestSignal: number; restorePosition: string | null; onRead: (id: string) => void;
@@ -338,7 +344,7 @@ function MessageTimeline({ messages, query, searchOpen, setQuery, closeSearch, a
   }
   range.current.messages = messages;
   const first = range.current.first;
-  const hits = query ? messages.flatMap((message, index) => message.protection !== 'failed'
+  const hits = query ? messages.flatMap((message, index) => message.protection !== 'failed' && message.protection !== 'local'
     && message.content.toLocaleLowerCase().includes(query.toLocaleLowerCase()) ? [index] : []) : [];
   const focused = hits[hit % Math.max(1, hits.length)];
   const jump = (index: number) => { list.current?.scrollToIndex({ index, align: 'start' }); };
@@ -377,7 +383,7 @@ function MessageTimeline({ messages, query, searchOpen, setQuery, closeSearch, a
         components={{ Header: () => <div className="history-control"><Button disabled={!canLoadOlder || loading} onClick={loadOlder}>
           {loading ? '正在加载历史…' : canLoadOlder ? '加载更早消息' : '已加载的消息'}</Button></div> }}
         itemContent={(index, message) => <MessageRow message={message} previous={messages[index - first - 1]}
-          highlighted={searchOpen && focused === index - first} query={query} />} />
+          highlighted={searchOpen && focused === index - first} query={query} sendActions={sendActions} />} />
         : <div className="empty-conversation"><MessageSquare size={26} strokeWidth={1.3} /><p>还没有消息，打个招呼吧。</p>
           <Button disabled={!canLoadOlder || loading} onClick={loadOlder}>{loading ? '正在加载…' : '加载历史消息'}</Button></div>}
     </div>
@@ -385,7 +391,9 @@ function MessageTimeline({ messages, query, searchOpen, setQuery, closeSearch, a
   </div>;
 }
 
-function MessageRow({ message, previous, highlighted, query }: { message: Message; previous?: Message; highlighted: boolean; query: string }) {
+function MessageRow({ message, previous, highlighted, query, sendActions }: {
+  message: Message; previous?: Message; highlighted: boolean; query: string; sendActions: SendActions;
+}) {
   const [details, setDetails] = useState(false);
   const [copied, setCopied] = useState(false);
   const date = new Date(message.timestamp);
@@ -404,20 +412,43 @@ function MessageRow({ message, previous, highlighted, query }: { message: Messag
   } else parts.push(message.content);
   return <>
     {newDate && <div className="date-divider"><span>{dateLabel}</span></div>}
-    <article className={`message-row ${message.self ? 'own' : ''} ${highlighted ? 'highlighted' : ''}`} data-message-id={message.id}>
+    <article className={`message-row ${message.self ? 'own' : ''} ${highlighted ? 'highlighted' : ''} ${message.sendStatus === 'failed' ? 'send-failed' : ''}`} data-message-id={message.id}>
       <Avatar name={message.author} small />
       <div className="message-content"><div className="message-heading"><strong>{message.self ? '你' : message.author}</strong></div>
         <div className="message-body" dir="auto">{parts.map((part, index) => typeof part === 'string' ? part : <mark key={index}>{part.match}</mark>)}</div>
         <div className="message-footer"><button className="message-time" onClick={() => setDetails(value => !value)} aria-label="消息详情" aria-expanded={details}>{clock(message.timestamp)}</button>
-          {message.protection !== 'e2ee' && <span className={`message-protection ${message.protection === 'failed' ? 'danger-text' : ''}`}>{message.protection === 'failed' ? '验证失败' : '旧消息'}</span>}</div>
-        {details && <div className="message-details">{clock(message.timestamp, true)}<br />原始时间：{message.timestamp || '未提供'}<br />
-          消息编号：{message.id}<br />{message.protection === 'e2ee' ? '端到端加密 · 已通过身份与完整性验证' : message.protection === 'failed' ? '此消息未通过安全验证' : '旧消息 · 非端到端加密'}</div>}
+          {message.self && <SendIndicator message={message} actions={sendActions} />}
+          {(message.protection === 'legacy' || message.protection === 'failed') && <span className={`message-protection ${message.protection === 'failed' ? 'danger-text' : ''}`}>{message.protection === 'failed' ? '验证失败' : '旧消息'}</span>}</div>
+        {message.sendStatus === 'failed' && <p className="message-send-error">{message.sendError || '发送失败，请检查输入后重新发送。'}</p>}
+        {details && <div className="message-details">{clock(message.timestamp, true)}<br />{message.protection === 'local' ? '本机发送时间' : '原始时间'}：{message.timestamp || '未提供'}<br />
+          {message.protection === 'local' ? message.serverId ? `服务器消息编号：${message.serverId}` : '服务器消息编号尚未确认' : `消息编号：${message.id}`}<br />
+          {message.protection === 'local' ? '本机发送记录 · 收到并验证原消息后显示加密验证结果' : message.protection === 'e2ee' ? '端到端加密 · 已通过身份与完整性验证' : message.protection === 'failed' ? '此消息未通过安全验证' : '旧消息 · 非端到端加密'}
+          {message.self && <><br />保存确认只表示服务器已保存，不表示对方已收到或已读。</>}</div>}
       </div>
       <div className="message-tools"><IconButton label="复制消息" onClick={() => { void window.chatroom.copy(message.content).then(() => {
         setCopied(true); setTimeout(() => setCopied(false), 1500);
       }); }}>{copied ? <Check size={15} /> : <Copy size={15} />}</IconButton>
         <IconButton label="展开消息信息" onClick={() => setDetails(value => !value)}><Info size={15} /></IconButton></div>
     </article>
+  </>;
+}
+
+function SendIndicator({ message, actions }: { message: Message; actions: SendActions }) {
+  const status = message.sendStatus || (message.protection !== 'local' && /^[1-9]\d*$/.test(message.id) ? 'saved' : undefined);
+  if (!status) return null;
+  const labels = { sending: '发送中', saved: '服务器已保存', uncertain: '保存结果待确认', checking: '正在核对', retry: '暂无保存回执', failed: '发送失败' };
+  const recovering = status === 'uncertain' || status === 'retry';
+  return <>
+    <span className={`message-send-status ${status}`} aria-label={`发送状态：${labels[status]}`}
+      aria-live={message.protection === 'local' ? 'polite' : undefined}
+      title={status === 'saved' ? '服务器已保存，不代表对方已收到或已读。' : status === 'uncertain' ? '尚不能确定服务器是否保存，请先核对原结果。' : labels[status]}>
+      {status === 'saved' ? <Check size={12} /> : status === 'sending' || status === 'checking' ? <LoaderCircle size={12} className="send-spinner" />
+        : status === 'failed' ? <AlertCircle size={12} /> : <CircleHelp size={12} />}{labels[status]}
+    </span>
+    {recovering && message.sendId && message.canRecover && <AsyncButton className="message-recover"
+      disabled={!actions.connected || status === 'retry' && !actions.canSend}
+      action={() => actions.recover(message.sendId!)}>{status === 'retry' ? '重试发送' : '核对原结果'}</AsyncButton>}
+    {recovering && !message.canRecover && <span className="message-send-help">请查看历史记录后决定是否重发</span>}
   </>;
 }
 

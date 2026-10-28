@@ -47,10 +47,13 @@ def message_data(message):
     return {'id': str(message.message_id) if message.message_id is not None else 'local:' + str(id(message)),
             'author': message.author or '', 'content': message.content,
             'timestamp': message.timestamp, 'self': message.is_self,
-            'protection': message.encryption}
+            'protection': message.encryption,
+            **({'sendStatus': 'saved'} if message.is_self and type(message.message_id) is int and message.message_id > 0 else {})}
 
 
 class CoreView:
+    inline_send_status = True
+
     def __init__(self, runtime):
         self.runtime = runtime
         self.controller = None
@@ -269,6 +272,17 @@ class CoreView:
                 'preview': chat.preview if chat else '', 'unread': chat.unread_count if chat else 0,
                 'timestamp': latest.timestamp if latest else '', 'online': item.target in self.online if item.kind == 'private' else False})
         profiles = [asdict(profile) for profile in app.preferences.profiles]
+        outgoing = []
+        known_ids = set(conversation.message_ids) if conversation else set()
+        for item in sorted([*app.sends.owned_records(), *app.sends.owned_outcomes()], key=lambda item: item.created_at):
+            if item.context.key != key or (getattr(item, 'message_id', None) in known_ids and item.status == 'saved'):
+                continue
+            server_id = getattr(item, 'message_id', None)
+            outgoing.append({'id': 'outgoing:' + item.record_id, 'author': state.username or '', 'self': True,
+                'content': item.text, 'timestamp': item.created_at.isoformat(), 'protection': 'local',
+                'sendStatus': item.status, 'sendId': item.record_id,
+                'canRecover': getattr(item, 'receipts', False) and 'message_receipts' in app.connection.capabilities,
+                'sendError': getattr(item, 'error', ''), 'serverId': str(server_id) if server_id else None})
         return {'session': self.session, 'page': self.page, 'username': state.username,
                 'busy': self.busy, 'authStatus': self.auth_status, 'status': self.status,
                 'connected': app.connection.running, 'reconnecting': app.reconnecting,
@@ -277,6 +291,7 @@ class CoreView:
                 'notifications': app.preferences.notifications,
                 'conversations': conversations, 'currentChat': key_data(key),
                 'messages': [message_data(message) for message in conversation.messages] if conversation else [],
+                'outgoing': outgoing,
                 'groups': state.groups, 'onlineUsers': self.online,
                 'unread': state.total_unread, 'loadingHistory': state.pending_history is not None,
                 'syncing': app.sync.active or app.sync.awaiting_initial,

@@ -146,6 +146,83 @@ test('virtualized history stays bounded and search navigates far outside viewpor
   expect(errors).toEqual([]);
 });
 
+test('inline send states expose reconciliation, safe retry and failure details', async () => {
+  const snapshot = await showChat(0);
+  snapshot.messages = [{ id: '101', author: '星野', self: true, protection: 'e2ee',
+    timestamp: '2026-10-28T06:30:00Z', content: '这条消息已保存。', sendStatus: 'saved' }];
+  snapshot.outgoing = [
+    { id: 'outgoing:uncertain', author: '星野', self: true, protection: 'local', sendId: 'uncertain', canRecover: true,
+      timestamp: '2026-10-28T06:31:00Z', content: '这条消息需要核对原结果。', sendStatus: 'uncertain' },
+    { id: 'outgoing:failure', author: '星野', self: true, protection: 'local',
+      timestamp: '2026-10-28T06:32:00Z', content: '这条消息发送失败，原文保留。', sendStatus: 'failed', sendError: '好友关系已失效，请检查后重新发送。' },
+  ];
+  await app.evaluate(({ BrowserWindow, ipcMain }, snapshot) => {
+    type Fixture = { snapshot: State; recoveries: string[] };
+    const fixture: Fixture = { snapshot, recoveries: [] };
+    (globalThis as unknown as { sendFixture: Fixture }).sendFixture = fixture;
+    const win = BrowserWindow.getAllWindows()[0];
+    ipcMain.removeHandler('core:request');
+    ipcMain.handle('core:request', (_event, method: string, params: Record<string, unknown>) => {
+      if (method === 'initialize') return { protocolVersion: 1, implementation: 'send-state-fixture', state: fixture.snapshot };
+      if (method === 'settings.theme') fixture.snapshot.theme = params.theme as 'light' | 'dark';
+      if (method === 'send.recover') {
+        fixture.recoveries.push(String(params.id));
+        const item = fixture.snapshot.outgoing.find(item => item.sendId === params.id)!;
+        item.sendStatus = item.sendStatus === 'retry' ? 'sending' : 'checking';
+      }
+      win.webContents.send('core:event', { method: 'state.changed', params: fixture.snapshot });
+      return true;
+    });
+    win.webContents.send('core:event', { method: 'state.changed', params: snapshot });
+  }, snapshot);
+  const uncertain = page.locator('[data-message-id="outgoing:uncertain"]');
+  const failure = page.locator('[data-message-id="outgoing:failure"]');
+  await expect(uncertain).toContainText('保存结果待确认');
+  await expect(failure).toContainText('好友关系已失效');
+  await expect(page.getByLabel('发送状态：服务器已保存')).toHaveAttribute('title', /不代表对方已收到或已读/);
+  await expect(page.locator('.message-protection')).toHaveCount(0);
+  // Virtuoso briefly paints measurement rows at opacity zero. Wait for the
+  // visible list rather than capturing a frame during initial measurement.
+  const waitForPaint = async () => {
+    await expect(failure).toBeVisible();
+    await expect(failure).toBeInViewport();
+    await expect.poll(() => failure.evaluate(node => {
+      for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+        if (Number(getComputedStyle(parent).opacity) === 0) return false;
+      }
+      return true;
+    })).toBe(true);
+  };
+  await waitForPaint();
+  await page.screenshot({ path: 'test-results/send-status-light.png', animations: 'disabled' });
+  await page.getByRole('button', { name: '切换深色模式' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await waitForPaint();
+  await page.screenshot({ path: 'test-results/send-status-dark.png', animations: 'disabled' });
+  await page.getByLabel('消息输入', { exact: true }).fill('不应被核对或重试覆盖的草稿');
+  await uncertain.getByRole('button', { name: '核对原结果', exact: true }).click();
+  await expect(uncertain).toContainText('正在核对');
+  await expect(uncertain.getByRole('button', { name: '重试发送' })).toHaveCount(0);
+  await app.evaluate(({ BrowserWindow }) => {
+    const f = (globalThis as unknown as { sendFixture: { snapshot: State; recoveries: string[] } }).sendFixture;
+    f.snapshot.outgoing[0].sendStatus = 'retry';
+    f.snapshot.connected = false;
+    BrowserWindow.getAllWindows()[0].webContents.send('core:event', { method: 'state.changed', params: f.snapshot });
+  });
+  await expect(uncertain.getByRole('button', { name: '重试发送' })).toBeDisabled();
+  await app.evaluate(({ BrowserWindow }) => {
+    const f = (globalThis as unknown as { sendFixture: { snapshot: State } }).sendFixture;
+    f.snapshot.connected = true;
+    BrowserWindow.getAllWindows()[0].webContents.send('core:event', { method: 'state.changed', params: f.snapshot });
+  });
+  await uncertain.getByRole('button', { name: '重试发送' }).click();
+  await expect(uncertain).toContainText('发送中');
+  await expect(page.getByLabel('消息输入', { exact: true })).toHaveValue('不应被核对或重试覆盖的草稿');
+  expect(await app.evaluate(() => (globalThis as unknown as { sendFixture: { recoveries: string[] } }).sendFixture.recoveries))
+    .toEqual(['uncertain', 'uncertain']);
+  expect(errors).toEqual([]);
+});
+
 test('two desktop windows register, add friends and exchange real encrypted messages', async () => {
   const fixture = spawn(process.env.CHATROOM_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
     ['-u', resolve('tests/server_fixture.py')], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
@@ -225,6 +302,8 @@ test('two desktop windows register, add friends and exchange real encrypted mess
       notificationSpies: import('electron').Notification[];
     }).notificationSpies.map(item => ({ title: item.title, body: item.body })))).toContainEqual({ title: 'alice', body: '真实界面发送 · 中文🙂' });
     await expect(page.getByLabel('消息输入', { exact: true })).toHaveValue('');
+    await expect(page.locator('.message-body').filter({ hasText: '真实界面发送 · 中文🙂' })).toHaveCount(1);
+    await expect(page.locator('.message-row.own').filter({ hasText: '真实界面发送 · 中文🙂' }).locator('.message-send-status')).toHaveText('服务器已保存');
     // Wait past the one-second notification rate limit, then exercise Unicode
     // truncation through the real core and main process (UTF-16 != characters).
     await new Promise(resolve => setTimeout(resolve, 1050));

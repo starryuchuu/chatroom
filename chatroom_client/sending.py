@@ -30,6 +30,20 @@ class PendingSend:
         return self.payload['request_id']
 
 
+@dataclass(repr=False)
+class SendOutcome:
+    context: SessionContext
+    endpoint: tuple
+    record_id: str
+    created_at: datetime
+    text: str
+    size: int
+    status: str
+    message_id: int | None = None
+    signature: str | None = None
+    error: str = ''
+
+
 class SendController:
     MAX_RECORDS = 20
     MAX_BYTES = 8 * 1024 * 1024
@@ -37,6 +51,7 @@ class SendController:
     def __init__(self, app):
         self.app = app
         self.records = []
+        self.outcomes = []
 
     def _owns(self, record):
         state, connection = self.app.state, self.app.connection
@@ -62,6 +77,7 @@ class SendController:
         if receipts:
             payload['idempotency_key'] = payload['request_id']
         size = len(json.dumps(payload, ensure_ascii=True).encode()) + len(text.encode('utf-8'))
+        self._trim_outcomes(reserve=size + sum(item.size for item in self.records))
         if len(self.records) >= self.MAX_RECORDS or sum(item.size for item in self.records) + size > self.MAX_BYTES:
             self._notify('待确认消息较多，请先核对发送结果；输入已保留')
             return
@@ -77,7 +93,7 @@ class SendController:
         record.status, record.query, record.timer = 'sending', None, object()
         self.app.state.pending_messages[record.request_id] = record.text
         self.app.view.refresh_controls()
-        self._notify('发送中，等待服务器保存确认…')
+        self._notify('发送中，等待服务器保存确认…', inline=True)
         token, sock = record.timer, self.app.connection.sock
         request_id = record.request_id
         self.app.view.schedule(15000, lambda: self.expire(sock, request_id, token))
@@ -114,15 +130,21 @@ class SendController:
             record.status = 'uncertain'
             self._notify('发送中断，保存结果待确认；输入已保留')
         else:
-            self._complete(record, message.get('success') is True, message.get('error'))
+            self._complete(record, message.get('success') is True, message.get('error'), message.get('message_id'))
         self.app.view.refresh_controls()
         return True
 
-    def _complete(self, record, success, error=None):
+    def _complete(self, record, success, error=None, message_id=None):
         self._forget(record)
+        message_id = message_id if type(message_id) is int and message_id > 0 else None
+        signature = record.payload.get('e2ee', {}).get('signature') if isinstance(record.payload.get('e2ee'), dict) else None
+        self.outcomes.append(SendOutcome(record.context, record.endpoint, record.record_id, record.created_at,
+            record.text, len(json.dumps(record.text, ensure_ascii=False).encode('utf-8')) + 128, 'saved' if success else 'failed',
+            message_id, signature, str(error or '服务器拒绝保存，请检查后重新发送。')[:256] if not success else ''))
+        self._trim_outcomes(reserve=sum(item.size for item in self.records))
         if success:
             self.app.clear_sent_draft(record.context.key, record.text)
-            self._notify('服务器已保存')
+            self._notify('服务器已保存', inline=True)
         else:
             self._notify(error or '发送失败，输入已保留')
 
@@ -132,6 +154,30 @@ class SendController:
 
     def owned_records(self):
         return [record for record in self.records if self._owns(record)]
+
+    def owned_outcomes(self):
+        return [record for record in self.outcomes if self._owns(record)]
+
+    def _trim_outcomes(self, *, reserve=0):
+        self.outcomes[:] = [item for item in self.outcomes if self._owns(item)]
+        while self.outcomes and (len(self.outcomes) > self.MAX_RECORDS
+                or reserve + sum(item.size for item in self.outcomes) > self.MAX_BYTES):
+            self.outcomes.pop(0)
+
+    def observe_echo(self, key, item, envelope):
+        # Never correlate by plaintext: identical consecutive messages are valid.
+        # Only a verified, identical signed envelope can settle a lost ACK.
+        if (not item.is_self or item.encryption != 'e2ee' or not isinstance(envelope, dict)
+                or type(item.message_id) is not int or item.message_id <= 0):
+            return
+        for record in self.owned_records():
+            if record.context.key == key and record.payload.get('e2ee') == envelope:
+                self._complete(record, True, message_id=item.message_id)
+                break
+        signature = envelope.get('signature')
+        self.outcomes[:] = [record for record in self.outcomes if not (
+            self._owns(record) and record.context.key == key and record.status == 'saved'
+            and (record.message_id == item.message_id or signature and record.signature == signature))]
 
     def dismiss(self, record_id):
         record = next((item for item in self.owned_records() if item.record_id == record_id), None)
@@ -208,7 +254,7 @@ class SendController:
                            message_id=message['message_id'], timestamp=message.get('timestamp', ''), history=False)
             if 'content' in payload:
                 payload['content'] = encrypt_message(record.text, self.app.connection.session_key)
-            self._complete(record, True)
+            self._complete(record, True, message_id=message['message_id'])
             self.app.events.chat_message(payload, recovered=True)
         elif message.get('success') is True and message.get('status') == 'not_found':
             record.status = 'retry'
@@ -237,11 +283,15 @@ class SendController:
 
     def reset(self):
         self.records.clear()
+        self.outcomes.clear()
 
     def invalidate(self, key):
         for record in self.records[:]:
             if record.context.key == key:
                 self._forget(record)
+        self.outcomes[:] = [record for record in self.outcomes if record.context.key != key]
 
-    def _notify(self, text):
+    def _notify(self, text, *, inline=False):
+        if inline and getattr(self.app.view, 'inline_send_status', False) is True:
+            return
         self.app.view.notify('消息', text)

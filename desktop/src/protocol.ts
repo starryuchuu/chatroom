@@ -2,8 +2,10 @@
 export const PROTOCOL_VERSION = 1;
 export type ChatKey = { kind: 'private' | 'group'; target: string };
 export type Profile = { name: string; host: string; port: number; fingerprint: string | null };
+export type SendStatus = 'sending' | 'saved' | 'uncertain' | 'checking' | 'retry' | 'failed';
 export type Message = { id: string; author: string; content: string; timestamp: string;
-  self: boolean; protection: 'e2ee' | 'legacy' | 'failed' };
+  self: boolean; protection: 'e2ee' | 'legacy' | 'failed' | 'local'; sendStatus?: SendStatus;
+  sendId?: string; canRecover?: boolean; sendError?: string; serverId?: string | null };
 export type Peer = { username: string; fingerprint: string; verified: boolean; changeFingerprint: string | null };
 export type Group = { group_name: string; owner: string; members: string[] };
 export type Conversation = { key: ChatKey; title: string; preview: string; unread: number; timestamp: string; online: boolean };
@@ -15,7 +17,7 @@ export type State = {
   busy: boolean; authStatus: string; status: string; connected: boolean; reconnecting: boolean;
   theme: 'light' | 'dark'; profiles: Profile[]; selectedProfile: string;
   notifications: { enabled: boolean; do_not_disturb: boolean; preview: NotificationPreview };
-  conversations: Conversation[]; currentChat: ChatKey | null; messages: Message[];
+  conversations: Conversation[]; currentChat: ChatKey | null; messages: Message[]; outgoing: Message[];
   groups: Record<string, Group>; onlineUsers: string[]; unread: number;
   loadingHistory: boolean; syncing: boolean; syncFailed: boolean;
   canLoadOlder: boolean; newerEvicted: boolean; canSend: boolean;

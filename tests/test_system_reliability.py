@@ -142,7 +142,10 @@ class Service:
         env = dict(os.environ)
         env['PYTHONPATH'] = str(ROOT) + os.pathsep + env.get('PYTHONPATH', '')
         self.process = subprocess.Popen(command, cwd=self.path, env=env, stdout=self.log, stderr=self.log)
-        deadline = time.monotonic() + 20
+        # Hosted Windows runners can initialize a fresh server more slowly;
+        # keep probing and fail immediately on process exit, rather than treating
+        # a slow initialization as a failed interoperability assertion.
+        deadline = time.monotonic() + (60 if os.name == 'nt' else 20)
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise AssertionError('server exited on startup: ' + self.log_path.read_text(encoding='utf-8')[-4000:])

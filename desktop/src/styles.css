@@ -153,6 +153,15 @@ input[type=checkbox], input[type=radio] { accent-color: var(--text); width: 16px
 .message-time:hover { text-decoration: underline; }
 .message-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; }
 .message-row.own .message-footer { justify-content: flex-end; }
+.message-send-status { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
+.message-send-status.uncertain, .message-send-status.retry { color: var(--warning); }
+.message-send-status.failed, .message-send-error { color: var(--danger); }
+.message-row.own.send-failed .message-body { border-color: var(--danger); }
+.message-send-error { font-size: 11px; margin: 6px 0 0; max-width: 100%; overflow-wrap: anywhere; }
+.message-send-help { color: var(--warning); font-size: 10px; }
+.button.message-recover { font-size: 10px; padding: 2px 6px; min-height: 22px; border-color: var(--line); }
+.send-spinner { animation: send-spin 1.2s linear infinite; }
+@keyframes send-spin { to { transform: rotate(360deg); } }
 .message-protection { font-size: 10px; color: var(--warning); }
 .message-body { max-width: 100%; padding: 10px 15px; border: 1px solid var(--bubble-line); border-radius: 14px; background: var(--bubble); color: var(--bubble-text); font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; user-select: text; }
 .message-row.own .message-body { background: var(--own-bubble); color: var(--own-bubble-text); border-color: var(--own-bubble-line); }
@@ -290,4 +299,4 @@ mark { color: var(--text); background: var(--highlight); border-radius: 2px; }
   .composer-footer span:first-child { visibility: hidden; }
   .header-tag { display: none; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }

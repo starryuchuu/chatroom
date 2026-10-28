@@ -112,6 +112,9 @@ class ServerEvents:
             return
         item = Message(message.get('from'), content, message.get('timestamp', ''),
                        message.get('message_id'), message.get('from') == self.state.username, protection)
+        sends = getattr(self.controller, 'sends', None)
+        if sends is not None:
+            sends.observe_echo(key, item, message.get('e2ee'))
         conversation = self.state.conversation(key)
         fresh = self.state.observe_message(key, item.message_id)
         previously_cached = type(item.message_id) is int and item.message_id in conversation._seen
