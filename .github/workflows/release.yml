@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: Validate release tag and all version copies
@@ -68,7 +68,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.validate.outputs.commit }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - uses: actions/download-artifact@v8
