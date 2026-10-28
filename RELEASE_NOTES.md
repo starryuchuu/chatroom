@@ -1,4 +1,4 @@
-# v2.0.0 — 全新 Electron 桌面客户端
+# v2.0.2 — 全新 Electron 桌面客户端
 
 ## 客户端重构
 
@@ -6,21 +6,32 @@
 - 侧栏底部提供「在线用户」，显示当前服务器在线人数，支持搜索和本人标记；断线时显示上次列表。私聊、群聊、好友申请、群管理、草稿、搜索、未读及发送恢复均接入新界面。
 - 消息列表采用虚拟渲染，支持长历史、文本选择复制、搜索定位、Unicode 输入和 100% / 150% / 200% 缩放。当前窗口为不透明界面，尚未启用系统毛玻璃或透明效果。
 - 通信、OPAQUE 认证、端到端加密及消息同步继续复用独立 Python 核心，通过版本化 JSON-RPC stdio 与 Electron 通信，为后续迁移 Rust 核心保留接口。本版尚未替换为 Rust 核心；旧 Tk 视图仅留在源码中用于迁移回归，不进入新桌面分发包。
+- 核心入口显式使用 UTF-8 标准流，不依赖 Windows 系统代码页；跨进程回归同样显式以 UTF-8 解码，并覆盖非 UTF-8 启动环境下的中文 RPC 输出。
 
 ## 下载与升级
 
 - Windows x64 下载 `chatroom-desktop-windows-x64.zip`，完整解压后运行 `chatroom.exe`；Linux x64 下载 `chatroom-desktop-linux-x64.zip`，完整解压后运行 `./chatroom`。成品自带 Electron 与核心，无需安装 Python 或 Node.js。macOS 客户端尚不提供正式附件。
-- 完整源码统一为 `chatroom-v2.0.0-source.zip`，包含预编译 OPAQUE WASM；桌面源码开发需要 Node.js 24 和 Python 3.11+。不再单独提供旧式客户端源码 ZIP 或散装 Python 文件。Python 服务端、Go 六平台附件、第三方许可及 `SHA256SUMS` 继续提供。
+- 完整源码统一为 `chatroom-v2.0.2-source.zip`，包含预编译 OPAQUE WASM；桌面源码开发需要 Node.js 24 和 Python 3.11+。不再单独提供旧式客户端源码 ZIP 或散装 Python 文件。Python 服务端、Go 六平台附件、第三方许可及 `SHA256SUMS` 继续提供。
 - **大版本号表示客户端架构与分发方式变化。** 相比 v1.5.0，服务器协议、数据库结构、OPAQUE 账号、密钥和加密格式保持兼容，无需重新注册或迁移已升级的 OPAQUE 账号。现有 v1.5.0 Python / Go 服务端可继续使用；服务端附件同步版本号，业务逻辑未因 UI 重构更改。
 - 新核心沿用原服务器配置、本机密钥库和主题设置。关闭旧客户端并保留客户端配置与独立离线密钥备份，再启动新客户端。草稿和待确认发送记录仍只在当前进程保留，升级前先处理待确认结果；替换服务端前备份数据库、存储密钥及 RSA 身份。
-- 兼容 v1.3.0 或更新的 Python / Go 服务端，仍要求 `opaque_v1` 与 `e2ee_v1`；发送结果查询与幂等重试需要 v1.5.0 或更新的服务端。旧账号迁移与恢复步骤继续参照[单密码指南](https://github.com/starryuchuu/chatroom/blob/v2.0.0/docs/SINGLE_PASSWORD.md)。
+- 兼容 v1.3.0 或更新的 Python / Go 服务端，仍要求 `opaque_v1` 与 `e2ee_v1`；发送结果查询与幂等重试需要 v1.5.0 或更新的服务端。旧账号迁移与恢复步骤继续参照[单密码指南](https://github.com/starryuchuu/chatroom/blob/v2.0.2/docs/SINGLE_PASSWORD.md)。
 
 ## 项目整理与发布
 
-- 分开日常 CI 与正式发布：普通推送按改动选择检查，不再生成跨平台发布包；正式发布由版本标签触发，完整回归和成品检查通过后才公开附件。
+- 修复 Windows 成品隐私检查与 Electron ASAR 完整性资源的兼容性；仅在经过哈希核验的官方原始字节区域识别上游公开构建路径，继续检查其他内容及显式禁止值、密钥与凭据。
+
+- 分开日常 CI 与正式发布：普通推送按改动选择检查，不再生成跨平台发布包；正式发布由版本标签触发，完整回归和构建并行执行，两者及成品检查全部通过后才公开附件。
 - `python scripts/release.py <新版本>` 同步项目、Go、Electron 与 npm 锁文件版本，创建公开项目别名的提交与注解标签，再原子推送。支持 `--dry-run`；发布失败可指定原标签重试。
-- 发布页使用本文件中对应版本的说明，保留源码、许可与校验值；新桌面结构、运行命令和截图集中在[桌面指南](https://github.com/starryuchuu/chatroom/blob/v2.0.0/docs/DESKTOP_CLIENT.md)。
-- 发布流程包含 Windows / Linux 回归、真实 Python / Go 加密互操作、冻结核心自检与 Electron 成品测试。真实输入法候选窗口、系统通知和原生文件对话框仍需在目标桌面人工体验；验证范围见[迁移验证记录](https://github.com/starryuchuu/chatroom/blob/v2.0.0/docs/reviews/ELECTRON_MIGRATION_VALIDATION.md)。
+- 发布页使用本文件中对应版本的说明，保留源码、许可与校验值；新桌面结构、运行命令和截图集中在[桌面指南](https://github.com/starryuchuu/chatroom/blob/v2.0.2/docs/DESKTOP_CLIENT.md)。
+- 发布流程包含 Windows / Linux 回归、真实 Python / Go 加密互操作、冻结核心自检与 Electron 成品测试。真实输入法候选窗口、系统通知和原生文件对话框仍需在目标桌面人工体验；验证范围见[迁移验证记录](https://github.com/starryuchuu/chatroom/blob/v2.0.2/docs/reviews/ELECTRON_MIGRATION_VALIDATION.md)。
+
+# v2.0.1 — 未发布的构建修正标签
+
+修复核心与测试的 UTF-8 编码。Windows 成品隐私检查因打包器写入 ASAR 完整性资源而停止发布，未生成正式附件；此兼容问题在 v2.0.2 修复，保留原标签记录。
+
+# v2.0.0 — 未发布的重构标签
+
+该标签未发布正式附件：Windows 回归测试使用系统默认编码读取 UTF-8 核心输出，导致测试失败。后续标签修复编码和成品检查，正式重构版本见 v2.0.2；保留此标签记录。
 
 # v1.5.0 — 发送恢复、有限缓存与聊天搜索
 

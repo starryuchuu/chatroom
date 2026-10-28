@@ -67,7 +67,7 @@ jobs:
       - name: Install Python runtime
         run: python -m pip install -r requirements.txt
       - name: Install Linux desktop dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb xauth fonts-noto-cjk
+        run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update && sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y xvfb xauth fonts-noto-cjk
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci

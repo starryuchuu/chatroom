@@ -167,10 +167,11 @@ class HeadlessTests(unittest.TestCase):
                    'assert not any(name.startswith("tkinter") for name in sys.modules); core_client.main()')
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run([sys.executable, '-c', command], cwd=ROOT,
-                env=dict(os.environ, CHATROOM_CONFIG_DIR=directory), input='not-json\n' + json.dumps({
+                env=dict(os.environ, CHATROOM_CONFIG_DIR=directory, PYTHONIOENCODING='cp1252'), input='not-json\n' + json.dumps({
                     'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': 1}}) + '\n',
-                text=True, capture_output=True, timeout=20)
+                text=True, encoding='utf-8', capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(ord(character) > 127 for character in result.stdout))
         packets = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertTrue(any(item.get('id') == 1 and 'result' in item for item in packets))
         self.assertTrue(any(item.get('error', {}).get('code') == -32600 for item in packets))
