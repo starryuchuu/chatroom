@@ -5,6 +5,7 @@ opaque and is scanned as bytes, so foreign Python bytecode is also supported.
 """
 from io import BytesIO
 import hashlib
+from itertools import chain
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -38,6 +39,41 @@ UPSTREAM_RUNTIME_SHA256 = frozenset({
     'b36c3ce9b423098a7854f4912f730b0654b41ae183818f887b8f1cd0a90725eb',
     '8e84549b05d27d444da2957653200d1e0ac287eff0fc5722b92835b9e0821a59',
 })
+
+# electron-builder writes ASAR integrity into Windows PE resources even when
+# icon editing/signing are disabled. Public build paths live in the unchanged
+# .rdata section of the checksum-verified Electron 45.0.0 win32-x64 executable.
+# Trust ONLY those exact section bytes. Resources, overlays and other sections
+# still undergo every check; adding or changing a byte in .rdata loses trust.
+UPSTREAM_PE_SECTIONS_SHA256 = frozenset({
+    (b'.rdata', '0191f862a159fe5661fd918e561d4051d2c5a59d8d56bd4ad7bb004f910b7089'),
+})
+
+
+def _verified_upstream_pe_ranges(data):
+    if len(data) < 64 or data[:2] != b'MZ':
+        return ()
+    pe = struct.unpack_from('<I', data, 60)[0]
+    if pe + 24 > len(data) or data[pe:pe + 4] != b'PE\0\0':
+        return ()
+    count = struct.unpack_from('<H', data, pe + 6)[0]
+    table = pe + 24 + struct.unpack_from('<H', data, pe + 20)[0]
+    end = table + 40 * count
+    if not 1 <= count <= 96 or end > len(data):
+        return ()
+    ranges = []
+    names = {name for name, _digest in UPSTREAM_PE_SECTIONS_SHA256}
+    for index in range(count):
+        header = table + index * 40
+        name = data[header:header + 8].rstrip(b'\0')
+        if name not in names:
+            continue
+        size, start = struct.unpack_from('<II', data, header + 16)
+        if not size or start < end or start + size > len(data):
+            continue
+        if (name, hashlib.sha256(data[start:start + size]).hexdigest()) in UPSTREAM_PE_SECTIONS_SHA256:
+            ranges.append((start, start + size))
+    return ranges
 
 
 class PrivacyError(Exception):
@@ -126,8 +162,12 @@ class ScanPolicy:
             allowed = self._public_path_users
             if pattern is self._windows_path:
                 allowed = allowed | self._windows_build_users
-            if any(match[1].lower() not in allowed for match in pattern.finditer(data)):
-                if hashlib.sha256(data).hexdigest() not in UPSTREAM_RUNTIME_SHA256:
+            unexpected = (match for match in pattern.finditer(data) if match[1].lower() not in allowed)
+            first = next(unexpected, None)
+            if first is not None and hashlib.sha256(data).hexdigest() not in UPSTREAM_RUNTIME_SHA256:
+                trusted = _verified_upstream_pe_ranges(data)
+                if any(not any(start <= match.start() and match.end() <= end for start, end in trusted)
+                       for match in chain((first,), unexpected)):
                     raise PrivacyError('personal-path')
 
     def source(self, data, name):

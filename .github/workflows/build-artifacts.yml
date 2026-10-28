@@ -50,7 +50,7 @@ jobs:
       run: npm ci
     - name: Install Linux GUI runtime dependencies
       if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y xvfb xauth fonts-noto-cjk
+      run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update && sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y xvfb xauth fonts-noto-cjk
     - name: Build server
       run: pyinstaller --onefile --collect-submodules Crypto.PublicKey --collect-all wasmtime --additional-hooks-dir hooks --add-data "chatroom_client/opaque_core.wasm:chatroom_client" --clean --name server-${{ matrix.platform }} server.py
     - name: Build headless desktop core

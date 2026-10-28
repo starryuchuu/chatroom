@@ -136,6 +136,8 @@ python scripts/release.py 1.6.0
 
 发布失败可在 Actions 重跑原任务，或手动运行 `Release Chatroom` 并填写已有标签。不要为重试重复执行版本命令。流水线从 `RELEASE_NOTES.md` 提取对应版本的标题与正文作为 GitHub Release 文案，缺失或重复的版本说明会停止发布，无需另写第二份说明。
 
+如果同一标签的全部测试与构建已成功，只有 `publish` 失败，可手动运行 `Recover verified release publication`，填写原标签和原 Release 运行编号。恢复流程逐项核验原任务、标签提交及全部平台检查，复用原产物并从原标签生成源码包，再次执行最终隐私检查。不会复用测试失败、构建失败、尚未结束或其他提交的产物。无手动调度 API 的环境也可显式推送 `release/recover-vX.Y.Z-RUN_ID` 分支触发同一流程；无需修改标签或增加客户端版本。
+
 附件保留平台客户端 / 服务端、**一个完整源码 ZIP**、必要许可文件和 `SHA256SUMS`。源码 ZIP 包含客户端与两个服务端；不再重复上传客户端源码 ZIP 和零散 Python 文件。`scripts/release_assets.py` 统一验证清单并计算校验值。
 
 成品仍须包含 wasmtime 动态运行库、OPAQUE WASM 和相关许可，并执行冻结核心的 `--check-encryption-runtime` 及实际 Electron 检查。发布隐私检查覆盖发布基线后的提交 / 注解标签、源码、PNG、嵌套 ZIP / PYZ 和最终附件。检查失败会停止发布，输出不回显私人姓名、邮箱或凭据。可选 `PRIVACY_FORBIDDEN_VALUES_JSON` 仍从仓库同名 Secret 读取；可用 `python scripts/check_release_privacy.py --require-alias-head --assets <附件目录>` 本地核验。
