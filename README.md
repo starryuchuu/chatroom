@@ -2,7 +2,7 @@
 
 [English Version](README_en.md) | [文档目录](docs/README.md) | [单密码指南](docs/SINGLE_PASSWORD.md) | [群组功能指南](docs/GROUP_FEATURES_GUIDE.md) | [Go 服务端文档](go-server/README.md)
 
-> **v2.0.4：消息发送状态与核对重试。** 界面迁移到 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.4) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
+> **v2.0.5：服务端文本校验与 RSA 密钥兼容修复。** 界面采用 **Electron + React + TypeScript**，复用独立 Python 核心，为未来 Rust 替换保留版本化接口。[下载新版](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.5) · [升级说明](RELEASE_NOTES.md) · [桌面指南](docs/DESKTOP_CLIENT.md)
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
@@ -87,7 +87,7 @@ cd go-server
 start.bat
 ```
 
-> 也可从 [v2.0.4 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.4) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
+> 也可从 [v2.0.5 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.5) 下载相应平台的 Go 服务端可执行文件；源码仓库不包含预编译服务端可执行文件。
 
 **Linux/macOS:**（需先编译）
 ```bash
@@ -100,7 +100,7 @@ go build -o chatroom-server ./cmd/server/main.go
 
 ### 启动客户端
 
-普通用户可从 [v2.0.4 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.4) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
+普通用户可从 [v2.0.5 发布页](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.5) 下载 Windows / Linux x64 桌面 ZIP，完整解压后运行 `chatroom.exe` / `./chatroom`，无需安装 Python 或 Node.js。macOS 桌面尚无正式构建。
 
 源码开发：
 
@@ -463,7 +463,7 @@ A: 检查群组成员列表是否正确，确认网络连接正常。
 
 本分支采用协议 v2，不接受未认证报文或明文登录。v2.0.4 正常客户端要求服务端同时支持 `opaque_v1` 与 `e2ee_v1`，不能连接 v1.2.x 或更早服务端。旧客户端只可认证尚未迁移账号，并继续受已有端到端明文降级限制；账号升级后拒绝旧认证。
 
-源码开发使用 [chatroom-v2.0.4-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.4/chatroom-v2.0.4-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
+源码开发使用 [chatroom-v2.0.5-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.5/chatroom-v2.0.5-source.zip)，包含完整 Python / Go 模块、Electron 界面及预编译 WASM。安装 Python 依赖后进入 `desktop/` 执行 `npm ci && npm start`。Python 服务端也使用完整源码包，保留 `server_handlers/` 等共享模块。
 
 新客户端使用 React 界面、受限 Electron IPC 和独立 Python 核心，详见[客户端结构](docs/CLIENT_ARCHITECTURE.md)与 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。v2.0.2 不再单独提供旧式客户端源码包或散装 Python 附件。
 

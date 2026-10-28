@@ -435,6 +435,43 @@ class ServerConsistencyTests(unittest.TestCase):
             self.assertEqual(Path('private_key.pem').read_bytes(), private)
             self.assertEqual(Path('public_key.pem').read_bytes(), public)
 
+    @unittest.skipIf(os.name == 'nt', 'Windows does not expose POSIX permission bits')
+    def test_existing_private_key_permissions_are_restricted_before_loading(self):
+        s = self.server
+        original_import = s.RSA.import_key
+        with self.key_directory():
+            private = s.private_key.export_key()
+            public = s.private_key.publickey().export_key()
+            Path('private_key.pem').write_bytes(private)
+            Path('public_key.pem').write_bytes(public)
+            Path('private_key.pem').chmod(0o644)
+
+            def import_after_permission_check(*args, **kwargs):
+                self.assertEqual(stat.S_IMODE(Path('private_key.pem').stat().st_mode), 0o600)
+                return original_import(*args, **kwargs)
+
+            with patch.object(s.RSA, 'import_key', side_effect=import_after_permission_check):
+                loaded, advertised = s.ensure_rsa_keys()
+            self.assertEqual(loaded.n, s.private_key.n)
+            self.assertEqual(advertised, public)
+            self.assertEqual(Path('private_key.pem').read_bytes(), private)
+            self.assertEqual(Path('public_key.pem').read_bytes(), public)
+
+    def test_private_key_permission_failure_stops_before_reading_key(self):
+        s = self.server
+        with self.key_directory():
+            private = s.private_key.export_key()
+            public = s.private_key.publickey().export_key()
+            Path('private_key.pem').write_bytes(private)
+            Path('public_key.pem').write_bytes(public)
+            with patch.object(s.os, 'chmod', side_effect=PermissionError('chmod denied')), \
+                    patch('builtins.open') as read_key:
+                with self.assertRaisesRegex(RuntimeError, '无法限制RSA私钥文件权限'):
+                    s.ensure_rsa_keys()
+                read_key.assert_not_called()
+            self.assertEqual(Path('private_key.pem').read_bytes(), private)
+            self.assertEqual(Path('public_key.pem').read_bytes(), public)
+
     def test_first_start_creates_matching_key_pair_with_private_permissions(self):
         s = self.server
         with self.key_directory(), patch.object(s, 'RSA_KEY_SIZE', 1024):

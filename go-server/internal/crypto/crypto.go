@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"log"
 	"os"
+	"unicode/utf8"
 
 	"crypto/aes"
 	"crypto/cipher"
@@ -45,10 +46,25 @@ func EnsureRSAKeys() (*rsa.PrivateKey, []byte) {
 		log.Fatalf("无法读取私钥文件: %v", err)
 	}
 	privPem, _ := pem.Decode(privKeyBytes)
-	if privPem == nil || privPem.Type != "RSA PRIVATE KEY" {
+	if privPem == nil {
 		log.Fatal("私钥文件格式无效")
 	}
-	privateKey, err = x509.ParsePKCS1PrivateKey(privPem.Bytes)
+	switch privPem.Type {
+	case "RSA PRIVATE KEY":
+		privateKey, err = x509.ParsePKCS1PrivateKey(privPem.Bytes)
+	case "PRIVATE KEY":
+		var parsed interface{}
+		parsed, err = x509.ParsePKCS8PrivateKey(privPem.Bytes)
+		if err == nil {
+			var ok bool
+			privateKey, ok = parsed.(*rsa.PrivateKey)
+			if !ok {
+				log.Fatal("解析的私钥不是RSA私钥")
+			}
+		}
+	default:
+		log.Fatal("私钥文件格式无效")
+	}
 	if err != nil {
 		log.Fatalf("无法解析私钥: %v", err)
 	}
@@ -184,6 +200,9 @@ func DecryptMessage(encryptedMessage string, key []byte) (string, error) {
 	plainText, err := aesgcm.Open(nil, nonce, cipherTextWithTag, nil)
 	if err != nil {
 		return "", err
+	}
+	if !utf8.Valid(plainText) {
+		return "", errors.New("解密后的消息不是有效UTF-8文本")
 	}
 
 	return string(plainText), nil

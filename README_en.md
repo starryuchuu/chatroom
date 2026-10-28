@@ -2,7 +2,7 @@
 
 [中文文档](README.md) | [Documentation](docs/README.md) | [Go Server Documentation](go-server/README.md)
 
-> **v2.0.4: message sending status and recovery.** The UI uses **Electron + React + TypeScript**, with a separate Python core behind versioned JSON-RPC for future Rust replacement. [Download](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.4) · [Release notes](RELEASE_NOTES.md) · [Desktop guide](docs/DESKTOP_CLIENT.md).
+> **v2.0.5: server text validation and RSA key compatibility fixes.** The UI uses **Electron + React + TypeScript**, with a separate Python core behind versioned JSON-RPC for future Rust replacement. [Download](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.5) · [Release notes](RELEASE_NOTES.md) · [Desktop guide](docs/DESKTOP_CLIENT.md).
 
 ## Project Overview
 
@@ -105,7 +105,7 @@ Pending friend requests and group invitations survive server restarts and expire
 
 Both servers enforce a maximum of **256 actual group members, including the owner**, when creating groups, inviting users and accepting invitations. Invitations do not reserve capacity; an unexpired invitation can be retried after space becomes available. Group creation bounds and validates the raw member list before deduplication and batch lookup. Existing oversized groups keep their members and can shrink through leave/kick operations.
 
-Download the Windows / Linux x64 desktop ZIP from the [v2.0.4 release page](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.4), extract the complete archive, and run `chatroom.exe` / `./chatroom`. Packaged applications bundle Electron and the Python core; users need no Python or Node.js installation. macOS desktop releases are not yet provided. For development or Python servers, use the single complete [chatroom-v2.0.4-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.4/chatroom-v2.0.4-source.zip), which includes the desktop, shared Python modules and precompiled OPAQUE WASM. Install Python dependencies, then run `npm ci && npm start` from `desktop/` (Node.js 24 required). Rebuilding the authentication core requires Rust 1.87+; the desktop core itself remains Python in this release.
+Download the Windows / Linux x64 desktop ZIP from the [v2.0.5 release page](https://github.com/starryuchuu/chatroom/releases/tag/v2.0.5), extract the complete archive, and run `chatroom.exe` / `./chatroom`. Packaged applications bundle Electron and the Python core; users need no Python or Node.js installation. macOS desktop releases are not yet provided. For development or Python servers, use the single complete [chatroom-v2.0.5-source.zip](https://github.com/starryuchuu/chatroom/releases/download/v2.0.5/chatroom-v2.0.5-source.zip), which includes the desktop, shared Python modules and precompiled OPAQUE WASM. Install Python dependencies, then run `npm ci && npm start` from `desktop/` (Node.js 24 required). Rebuilding the authentication core requires Rust 1.87+; the desktop core itself remains Python in this release.
 
 `requirements.txt` pins Python runtime dependencies and their transitive packages. Developers building executables use `requirements-build.txt`, which also pins packaging dependencies; it is not needed for source development.
 

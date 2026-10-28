@@ -128,6 +128,11 @@ def ensure_rsa_keys():
         logging.info("RSA private key 'private_key.pem' generated.")
 
     try:
+        os.chmod("private_key.pem", PRIVATE_KEY_PERMISSIONS)
+    except OSError as exc:
+        raise RuntimeError("无法限制RSA私钥文件权限；拒绝加载私钥") from exc
+
+    try:
         with open("private_key.pem", "rb") as f:
             private_key = RSA.import_key(f.read())
         if not private_key.has_private():

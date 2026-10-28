@@ -60,6 +60,40 @@ func TestChatSaveFailureHasRequestIDAndDoesNotForward(t *testing.T) {
 	}
 }
 
+func TestInvalidUTF8ChatIsRejectedBeforeSavingOrForwarding(t *testing.T) {
+	manager := setupHandlers(t)
+	key := []byte("0123456789abcdef")
+	alice, bob := &recordConn{}, &recordConn{}
+	manager.AddClient("alice", alice, key, nil)
+	manager.AddClient("bob", bob, key, nil)
+	if err := database.SaveFriendRelationship("alice", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	group, err := database.CreateGroup("Team", "alice", []string{"alice", "bob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := crypto.EncryptMessage("\xff\xfe\x80", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handlePrivateChat(alice, "alice", key, map[string]interface{}{"to": "bob", "content": content, "request_id": "private"}, manager)
+	handleGroupChat(alice, "alice", key, map[string]interface{}{"gid": group.GID, "content": content, "request_id": "group"}, manager)
+	if len(bob.messages(t)) != 0 || len(alice.messages(t)) != 2 {
+		t.Fatal("invalid message was forwarded or echoed")
+	}
+	for _, kind := range []string{"private", "group"} {
+		result := alice.result(t, kind+"_chat_result")
+		if result["success"] != false || result["request_id"] != kind || result["message_id"] != nil {
+			t.Fatalf("invalid message acknowledged: %v", result)
+		}
+	}
+	history, _, err := database.GetChatHistorySnapshot("bob")
+	if err != nil || len(history) != 0 {
+		t.Fatalf("invalid message polluted history: %v, %v", history, err)
+	}
+}
+
 func TestRejectedChatAlwaysReturnsCorrelatedFailure(t *testing.T) {
 	manager := setupHandlers(t)
 	for _, request := range []map[string]interface{}{{"request_id": "invalid"}, {"request_id": "self", "to": "alice", "content": "bad"}, {"request_id": "stranger", "to": "bob", "content": "bad"}} {
