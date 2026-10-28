@@ -78,7 +78,7 @@ jobs:
         run: go build -o "${{ github.workspace }}/go-interop-server${{ runner.os == 'Windows' && '.exe' || '' }}" ./cmd/server
       - name: Install Linux GUI dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb xauth python3-tk fonts-noto-cjk
+        run: sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update && sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y xvfb xauth python3-tk fonts-noto-cjk
       - name: Python and Go interoperability tests on Windows
         if: runner.os == 'Windows'
         env:
