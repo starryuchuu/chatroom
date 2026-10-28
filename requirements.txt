@@ -1,7 +1,7 @@
 # Runtime lock: include transitive dependencies for reproducible CPython installs.
-pycryptodome==4.1.0
+pycryptodome==4.2.0
 argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
 wasmtime==50.0.1
 cffi==2.1.1
-pycparser==3.11 ; implementation_name != "pypy"
+pycparser==3.12 ; implementation_name != "pypy"
