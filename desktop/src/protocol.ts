@@ -1,5 +1,5 @@
 /** Public desktop/core contract. Keep Python and future Rust implementations compatible. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export type ChatKey = { kind: 'private' | 'group'; target: string };
 export type Profile = { name: string; host: string; port: number; fingerprint: string | null };
 export type SendStatus = 'sending' | 'saved' | 'uncertain' | 'checking' | 'retry' | 'failed';

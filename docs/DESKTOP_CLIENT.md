@@ -115,6 +115,6 @@ npm test
 
 ## Rust 替换边界
 
-Electron 只启动核心并转发 JSON-RPC，不调用 Python 模块。未来 Rust 核心实现 [Desktop Protocol v1](DESKTOP_PROTOCOL.md) 和 [`protocol.ts`](../desktop/src/protocol.ts) 后，可替换相同位置的核心程序，复用全部界面。
+Electron 只启动核心并转发 JSON-RPC，不调用 Python 模块。未来 Rust 核心实现 [Desktop Protocol v2](DESKTOP_PROTOCOL.md) 和 [`protocol.ts`](../desktop/src/protocol.ts) 后，可替换相同位置的核心程序，复用全部界面。
 
 替换时保持账号 / socket / 群代次、确认上下文、密钥库兼容与发送幂等语义，并运行相同的 Python / Go 服务端互操作测试。本次 UI 迁移不修改服务器线协议和加密格式。

@@ -2,7 +2,7 @@
 
 ## Electron 桌面开发
 
-当前桌面入口为 Electron + React + TypeScript，运行与打包见 [桌面指南](docs/DESKTOP_CLIENT.md)，Rust 可替换边界见 [Desktop Protocol v1](docs/DESKTOP_PROTOCOL.md)。从 `desktop/` 运行 `npm ci`、`npm run build`、`npm test`（Linux 无显示环境加 `xvfb-run -a`）。`tests/test_desktop_rpc.py` 使用无界面核心验证两个真实服务端。旧 Tk 视图及测试暂留作历史回归，不进入新客户端成品。
+当前桌面入口为 Electron + React + TypeScript，运行与打包见 [桌面指南](docs/DESKTOP_CLIENT.md)，Rust 可替换边界见 [Desktop Protocol v2](docs/DESKTOP_PROTOCOL.md)。从 `desktop/` 运行 `npm ci`、`npm run build`、`npm test`（Linux 无显示环境加 `xvfb-run -a`）。`tests/test_desktop_rpc.py` 使用无界面核心验证两个真实服务端。旧 Tk 视图及测试暂留作历史回归，不进入新客户端成品。
 
 ## 模块职责
 

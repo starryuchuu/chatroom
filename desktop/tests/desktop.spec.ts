@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
-import type { State } from '../src/protocol';
+import { PROTOCOL_VERSION, type State } from '../src/protocol';
 
 let app: ElectronApplication;
 let page: Page;
@@ -80,11 +80,11 @@ async function showChat(count = 6) {
         '那就这样说定了，周六下午见。', '好呀，晚一点见。',
       ][index % 6] })),
   };
-  await app.evaluate(({ BrowserWindow, ipcMain }, snapshot) => {
+  await app.evaluate(({ BrowserWindow, ipcMain }, { snapshot, protocolVersion }) => {
     const window = BrowserWindow.getAllWindows()[0];
     ipcMain.removeHandler('core:request');
     ipcMain.handle('core:request', (_event, method: string, params: Record<string, unknown>) => {
-      if (method === 'initialize') return { protocolVersion: 1, implementation: 'render-fixture', state: snapshot };
+      if (method === 'initialize') return { protocolVersion, implementation: 'render-fixture', state: snapshot };
       if (method === 'settings.theme') {
         snapshot.theme = params.theme as 'light' | 'dark';
         window.webContents.send('core:event', { method: 'state.changed', params: snapshot });
@@ -92,7 +92,7 @@ async function showChat(count = 6) {
       return true;
     });
     window.webContents.send('core:event', { method: 'state.changed', params: snapshot });
-  }, state);
+  }, { snapshot: state, protocolVersion: PROTOCOL_VERSION });
   await expect(page.getByRole('heading', { name: '木木', exact: true })).toBeVisible();
   return state;
 }
@@ -156,14 +156,14 @@ test('inline send states expose reconciliation, safe retry and failure details',
     { id: 'outgoing:failure', author: '星野', self: true, protection: 'local',
       timestamp: '2026-10-28T06:32:00Z', content: '这条消息发送失败，原文保留。', sendStatus: 'failed', sendError: '好友关系已失效，请检查后重新发送。' },
   ];
-  await app.evaluate(({ BrowserWindow, ipcMain }, snapshot) => {
+  await app.evaluate(({ BrowserWindow, ipcMain }, { snapshot, protocolVersion }) => {
     type Fixture = { snapshot: State; recoveries: string[] };
     const fixture: Fixture = { snapshot, recoveries: [] };
     (globalThis as unknown as { sendFixture: Fixture }).sendFixture = fixture;
     const win = BrowserWindow.getAllWindows()[0];
     ipcMain.removeHandler('core:request');
     ipcMain.handle('core:request', (_event, method: string, params: Record<string, unknown>) => {
-      if (method === 'initialize') return { protocolVersion: 1, implementation: 'send-state-fixture', state: fixture.snapshot };
+      if (method === 'initialize') return { protocolVersion, implementation: 'send-state-fixture', state: fixture.snapshot };
       if (method === 'settings.theme') fixture.snapshot.theme = params.theme as 'light' | 'dark';
       if (method === 'send.recover') {
         fixture.recoveries.push(String(params.id));
@@ -174,7 +174,7 @@ test('inline send states expose reconciliation, safe retry and failure details',
       return true;
     });
     win.webContents.send('core:event', { method: 'state.changed', params: snapshot });
-  }, snapshot);
+  }, { snapshot, protocolVersion: PROTOCOL_VERSION });
   const uncertain = page.locator('[data-message-id="outgoing:uncertain"]');
   const failure = page.locator('[data-message-id="outgoing:failure"]');
   await expect(uncertain).toContainText('保存结果待确认');

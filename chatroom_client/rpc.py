@@ -7,6 +7,7 @@ in snapshots/logs. See docs/DESKTOP_PROTOCOL.md for the wire contract.
 """
 from dataclasses import asdict
 from datetime import datetime
+import base64
 import heapq
 import itertools
 import json
@@ -27,8 +28,10 @@ from .notification_preview import message_preview
 from .preferences import PreferencesStore, ServerProfile
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_LINE_BYTES = 32 * 1024 * 1024
+MAX_PACKET_BYTES = 128 * 1024 * 1024
+CHUNK_BYTES = 1024 * 1024
 
 
 def key_data(key):
@@ -339,8 +342,32 @@ class CoreRuntime:
 
     def write(self, packet):
         raw = json.dumps(packet, ensure_ascii=False, separators=(',', ':'))
+        encoded = raw.encode('utf-8')
+        if len(encoded) > MAX_PACKET_BYTES:
+            # Keep the core usable even if metadata or future state fields
+            # exceed the logical packet budget. Never emit an oversized line.
+            text = '客户端状态超过显示大小限制，请关闭当前会话后重试。'
+            if 'id' in packet:
+                identifier = packet['id']
+                if not (type(identifier) is int or isinstance(identifier, str) and len(identifier) <= 128):
+                    identifier = None
+                self.write({'jsonrpc': '2.0', 'id': identifier,
+                            'error': {'code': -32000, 'message': text}})
+            else:
+                self.emit('notice', {'title': '显示未完成', 'text': text})
+            return
         with self.output_lock:
-            self.output.write(raw + '\n')
+            if len(encoded) <= MAX_LINE_BYTES:
+                self.output.write(raw + '\n')
+            else:
+                transfer = uuid.uuid4().hex
+                total = (len(encoded) + CHUNK_BYTES - 1) // CHUNK_BYTES
+                for index, start in enumerate(range(0, len(encoded), CHUNK_BYTES)):
+                    chunk = {'jsonrpc': '2.0', 'method': 'transport.chunk', 'params': {
+                        'transfer': transfer, 'index': index, 'total': total,
+                        'bytes': len(encoded),
+                        'data': base64.b64encode(encoded[start:start + CHUNK_BYTES]).decode('ascii')}}
+                    self.output.write(json.dumps(chunk, separators=(',', ':')) + '\n')
             self.output.flush()
 
     def emit(self, method, params):

@@ -34,6 +34,8 @@ class BoundaryTests(unittest.TestCase):
 
     def test_protocol_version_and_passwords_never_in_state(self):
         with self.assertRaisesRegex(ValueError, '版本'):
+            self.invoke('initialize', protocolVersion=1)
+        with self.assertRaisesRegex(ValueError, '版本'):
             self.invoke('initialize', protocolVersion=999)
         initial = self.invoke('initialize', protocolVersion=PROTOCOL_VERSION)
         self.assertEqual(initial['implementation'], 'python')
@@ -168,7 +170,7 @@ class HeadlessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run([sys.executable, '-c', command], cwd=ROOT,
                 env=dict(os.environ, CHATROOM_CONFIG_DIR=directory, PYTHONIOENCODING='cp1252'), input='not-json\n' + json.dumps({
-                    'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': 1}}) + '\n',
+                    'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': PROTOCOL_VERSION}}) + '\n',
                 text=True, encoding='utf-8', capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any(ord(character) > 127 for character in result.stdout))

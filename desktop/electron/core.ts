@@ -4,6 +4,11 @@ import { resolve } from 'node:path';
 import { PROTOCOL_VERSION, type InitResult } from '../src/protocol';
 
 const MAX_LINE = 32 * 1024 * 1024;
+const MAX_PACKET = 128 * 1024 * 1024;
+const CHUNK_BYTES = 1024 * 1024;
+type RpcPacket = { jsonrpc?: string; id?: number; method?: string; params?: unknown;
+  error?: { message: string }; result?: unknown };
+type Transfer = { id: string; total: number; bytes: number; parts: Buffer[] };
 
 /** Transport/lifecycle only; no dependency on Python semantics or application UI. */
 export class CoreProcess extends EventEmitter {
@@ -13,6 +18,7 @@ export class CoreProcess extends EventEmitter {
     timer: ReturnType<typeof setTimeout> }>();
   private ended = false;
   private stopping = false;
+  private transfer: Transfer | null = null;
 
   constructor(packaged: boolean, resources: string, repository: string) {
     super();
@@ -30,22 +36,29 @@ export class CoreProcess extends EventEmitter {
       bytes = Buffer.concat([bytes, chunk]);
       let end: number;
       while ((end = bytes.indexOf(10)) >= 0) {
-        if (end > MAX_LINE) { this.fail('核心响应超过大小限制'); this.child.kill(); return; }
-        const line = bytes.subarray(0, end).toString('utf8');
+        const contentEnd = end > 0 && bytes[end - 1] === 13 ? end - 1 : end;
+        if (contentEnd > MAX_LINE) { this.fail('核心响应超过大小限制'); this.child.kill(); return; }
+        const line = bytes.subarray(0, contentEnd).toString('utf8');
         bytes = bytes.subarray(end + 1);
         try { this.receive(JSON.parse(line)); }
         catch { this.fail('核心返回了无效响应'); this.child.kill(); return; }
       }
-      if (bytes.length > MAX_LINE) { this.fail('核心响应超过大小限制'); this.child.kill(); }
+      if (bytes.length > MAX_LINE + 1 || bytes.length > MAX_LINE && bytes[bytes.length - 1] !== 13) {
+        this.fail('核心响应超过大小限制'); this.child.kill();
+      }
     });
     this.child.stdin.on('error', () => this.fail('核心连接已关闭'));
     this.child.on('error', () => this.fail('无法启动核心。开发环境请设置 CHATROOM_PYTHON，指向安装了项目依赖的 Python。'));
     this.child.on('exit', () => this.fail(this.stopping ? '' : '核心进程已退出，请重新启动客户端。'));
   }
 
-  private receive(packet: { jsonrpc?: string; id?: number; method?: string; params?: unknown;
-    error?: { message: string }; result?: unknown }) {
-    if (packet.jsonrpc !== '2.0') throw new Error('Invalid RPC version');
+  private receive(packet: RpcPacket) {
+    if (!packet || packet.jsonrpc !== '2.0') throw new Error('Invalid RPC version');
+    if (packet.method === 'transport.chunk') {
+      this.receiveChunk(packet);
+      return;
+    }
+    if (this.transfer) throw new Error('Interrupted RPC transfer');
     if (typeof packet.id === 'number') {
       const pending = this.pending.get(packet.id);
       if (!pending) return;
@@ -56,6 +69,39 @@ export class CoreProcess extends EventEmitter {
     } else if (typeof packet.method === 'string') {
       this.emit('event', { method: packet.method, params: packet.params });
     } else throw new Error('Invalid RPC packet');
+  }
+
+  private receiveChunk(packet: RpcPacket) {
+    const chunk = packet.params as { transfer?: unknown; index?: unknown; total?: unknown;
+      bytes?: unknown; data?: unknown } | null;
+    if (packet.id !== undefined || !chunk || typeof chunk.transfer !== 'string'
+        || !/^[0-9a-f]{32}$/.test(chunk.transfer)
+        || typeof chunk.bytes !== 'number' || !Number.isSafeInteger(chunk.bytes)
+        || chunk.bytes <= MAX_LINE || chunk.bytes > MAX_PACKET
+        || typeof chunk.total !== 'number' || chunk.total !== Math.ceil(chunk.bytes / CHUNK_BYTES)
+        || typeof chunk.index !== 'number' || !Number.isInteger(chunk.index)
+        || chunk.index < 0 || chunk.index >= chunk.total
+        || typeof chunk.data !== 'string' || chunk.data.length > 4 * Math.ceil(CHUNK_BYTES / 3)) {
+      throw new Error('Invalid RPC chunk');
+    }
+    const expected = chunk.index === chunk.total - 1 ? chunk.bytes - chunk.index * CHUNK_BYTES : CHUNK_BYTES;
+    const part = Buffer.from(chunk.data, 'base64');
+    if (part.length !== expected || part.toString('base64') !== chunk.data) throw new Error('Invalid RPC chunk data');
+    if (!this.transfer) {
+      if (chunk.index !== 0) throw new Error('Missing RPC chunk');
+      this.transfer = { id: chunk.transfer, total: chunk.total, bytes: chunk.bytes, parts: [] };
+    }
+    const transfer = this.transfer;
+    if (transfer.id !== chunk.transfer || transfer.total !== chunk.total || transfer.bytes !== chunk.bytes
+        || transfer.parts.length !== chunk.index) throw new Error('Out-of-order RPC chunk');
+    transfer.parts.push(part);
+    if (transfer.parts.length === transfer.total) {
+      const encoded = Buffer.concat(transfer.parts, transfer.bytes);
+      this.transfer = null;
+      const decoded = JSON.parse(encoded.toString('utf8')) as RpcPacket;
+      if (decoded?.method === 'transport.chunk') throw new Error('Nested RPC transfer');
+      this.receive(decoded);
+    }
   }
 
   request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -82,6 +128,7 @@ export class CoreProcess extends EventEmitter {
   private fail(message: string) {
     if (this.ended) return;
     this.ended = true;
+    this.transfer = null;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error(message || '核心已关闭')); }
     this.pending.clear();
     if (message) this.emit('event', { method: 'core.failed', params: { message } });

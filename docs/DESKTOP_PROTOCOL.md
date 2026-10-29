@@ -1,4 +1,4 @@
-# Desktop Protocol v1
+# Desktop Protocol v2
 
 此协议定义 Electron 与可替换核心（当前 Python、未来 Rust）的边界。它独立于现有远程聊天协议 transport v2、OPAQUE 与 E2EE。
 
@@ -6,13 +6,29 @@
 
 核心从 stdin 接收、向 stdout 输出 UTF-8 JSONL，每行一个 JSON-RPC 2.0 对象；单行上限 32 MiB，命令队列上限 128。stdout 仅用于协议。诊断写 stderr，不记录完整请求、密码或正文；Electron 不将核心 stderr 复制到应用日志。
 
-启动后发送 `initialize`，参数 `{protocolVersion:1}`，返回版本、`implementation` 和完整 `state`。版本不符则拒绝。关闭发送 `shutdown`；stdin EOF 同样触发清理。桌面等待退出，4 秒后终止无响应核心；崩溃显示失败页，不自动重新认证或重发正文。
+行大小不计 LF 或 Windows CRLF 分隔符；分隔符跨两次读取到达时也适用相同限制。
+
+v2.0.6 起桌面与核心使用此 v2 接口，必须一起升级；它不改变远程服务端 transport v2、OPAQUE 或端到端消息格式。
+
+启动后发送 `initialize`，参数 `{protocolVersion:2}`，返回版本、`implementation` 和完整 `state`。版本不符则拒绝。关闭发送 `shutdown`；stdin EOF 同样触发清理。桌面等待退出，4 秒后终止无响应核心；崩溃显示失败页，不自动重新认证或重发正文。
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}
 ```
 
 响应携带原 `id`，包含 `result` 或 `error:{code,message}`。无效报文为 `-32600`，业务 / 参数错误为 `-32000`，内部错误为 `-32603`。错误不回显请求。核心通知无 `id`；当前核心不接受批量请求或无 ID 命令。
+
+### 有界输出分块
+
+核心先将完整响应或通知编码为紧凑 UTF-8 JSON。32 MiB 以内继续发送普通 JSONL；超过该值时按原始编码字节切为每块最多 1 MiB，再以 Base64 放入 `transport.chunk` 通知。逻辑包上限 128 MiB；超限请求返回原 `id` 的 `-32000` 错误，超限通知改发简短 `notice`，核心继续处理命令。
+
+```json
+{"jsonrpc":"2.0","method":"transport.chunk","params":{"transfer":"0123456789abcdef0123456789abcdef","index":0,"total":34,"bytes":34606997,"data":"..."}}
+```
+
+`transfer` 是每次传输独立生成的 32 位小写十六进制标识；`index` 从 0 连续递增，`total` 等于 `ceil(bytes / 1048576)`。除最后一块外，解码后长度必须为 1 MiB；最后一块必须与声明的总字节数精确匹配。Base64 必须为规范编码。
+
+同一 stdout 同时只允许一项分块传输，其间不能插入其他 JSONL 包。Electron 验证总大小、块数、标识、顺序和每块长度，完整拼接字节后才按 UTF-8 解码并解析一次原 RPC 包；不接受嵌套分块，不将分块通知交给渲染进程。异常传输按无效核心响应处理，关闭时释放尚未完成的分块缓存。分块不截断正文、不丢弃已加载消息，也不推进或改变历史分页游标。
 
 ## 状态和范围
 

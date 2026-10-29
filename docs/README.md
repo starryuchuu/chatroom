@@ -20,7 +20,7 @@
 | [开发与发布](../CONTRIBUTING.md) | 本地验证、跨平台检查和发布流程 / Tests, checks and releases |
 | [客户端结构](CLIENT_ARCHITECTURE.md) | 模块职责、依赖、线程和事件流 / Client architecture and event flow |
 | [Electron 桌面客户端](DESKTOP_CLIENT.md) | 新客户端运行、打包、界面入口及 Rust 替换边界 / New desktop development and packaging |
-| [Desktop Protocol v1](DESKTOP_PROTOCOL.md) | Electron 与独立核心之间的版本化接口 / Versioned desktop/core contract |
+| [Desktop Protocol v2](DESKTOP_PROTOCOL.md) | Electron 与独立核心之间的版本化接口 / Versioned desktop/core contract |
 | [Electron 迁移验证](reviews/ELECTRON_MIGRATION_VALIDATION.md) | 源码、成品、双窗口加密测试及验证范围 / Desktop migration validation |
 | [发送恢复、缓存与搜索](SEND_RECOVERY_AND_CACHE.md) | v1.5.0 使用方式和边界 / Send recovery, bounded caches and local search |
 | [发送恢复与缓存验证](reviews/SEND_RECOVERY_VALIDATION.md) | 本地回归、成品验证、合成测量与验证限制 / Local validation and measurement limits |

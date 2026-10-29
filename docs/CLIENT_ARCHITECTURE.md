@@ -2,7 +2,7 @@
 
 ## Electron 开发分支
 
-新桌面采用 Electron + React + TypeScript + Vite；Python 作为独立核心，通过带版本号的 JSON-RPC / stdio 与界面通信。未来 Rust 核心实现相同协议即可复用界面，服务器协议及加密格式不变。运行与构建见 [Electron 桌面客户端](DESKTOP_CLIENT.md)，接口见 [Desktop Protocol v1](DESKTOP_PROTOCOL.md)。
+新桌面采用 Electron + React + TypeScript + Vite；Python 作为独立核心，通过带版本号的 JSON-RPC / stdio 与界面通信。未来 Rust 核心实现相同协议即可复用界面，服务器协议及加密格式不变。运行与构建见 [Electron 桌面客户端](DESKTOP_CLIENT.md)，接口见 [Desktop Protocol v2](DESKTOP_PROTOCOL.md)。
 
 ```mermaid
 flowchart LR
