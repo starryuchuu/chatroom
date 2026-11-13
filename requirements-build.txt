@@ -1,7 +1,7 @@
 -r requirements.txt
 # Frozen executable build dependencies, including platform-specific transitive packages.
 pyinstaller==6.22.3
-pyinstaller-hooks-contrib==2026.9
+pyinstaller-hooks-contrib==2026.10
 altgraph==0.17.5
 packaging==26.3
 setuptools==84.2.1
